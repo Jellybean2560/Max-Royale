@@ -251,11 +251,6 @@
           <h3>Clan</h3>
           <p>Members &amp; stats</p>
         </div>
-        <div class="nav-card" onclick="goTo('leaderboard')">
-          <div class="icon">🏆</div>
-          <h3>Leaderboard</h3>
-          <p>Top players &amp; clans</p>
-        </div>
       </div>
     </div>
 
@@ -330,16 +325,6 @@
       <div id="clan-result"></div>
     </div>
 
-    <!-- ═══════════════ LEADERBOARD ═══════════════ -->
-    <div id="screen-leaderboard" class="screen">
-      <h2 style="margin-bottom:16px">🏆 Leaderboard</h2>
-      <div class="filter-bar" id="lb-type-bar">
-        <button class="filter-btn active" onclick="setLbType('players')">Players</button>
-        <button class="filter-btn" onclick="setLbType('clans')">Clans</button>
-      </div>
-      <div id="lb-result"></div>
-    </div>
-
   </div><!-- /content -->
 
   <!-- ═══════════════ BOTTOM NAV ═══════════════ -->
@@ -359,10 +344,6 @@
     <button class="nav-btn" id="nav-clan" onclick="goTo('clan')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
       Clan
-    </button>
-    <button class="nav-btn" id="nav-leaderboard" onclick="goTo('leaderboard')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
-      Ranks
     </button>
   </nav>
 </div>
@@ -482,7 +463,6 @@ function goTo(name) {
   if (navBtn) navBtn.classList.add('active');
   currentScreen = name;
   if (name === 'calc') { maybeLoadCards(); calcUpdate(); }
-  if (name === 'leaderboard') loadLeaderboard();
 }
 
 function switchTab(name) {
@@ -531,7 +511,7 @@ async function apiGet(path) {
   const key = getApiKey();
   if (!key) throw new Error('No API key set. Go to Home and save your key first.');
   const tag = path.replace('#', '%23');
-  const url = `https://corsproxy.io/?url=${encodeURIComponent('https://api.clashroyale.com/v1' + tag)}`;
+  const url = `https://proxy.royaleapi.dev/v1${tag}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
@@ -1057,71 +1037,6 @@ function renderMembers(members) {
     </div>`).join('');
 
   document.getElementById('clan-members-list').innerHTML = html;
-}
-
-// ═══════════════════════════════════════════════
-//  LEADERBOARD
-// ═══════════════════════════════════════════════
-let _lbType = 'players';
-let _lbLoaded = false;
-
-window.setLbType = function(type) {
-  _lbType = type;
-  document.querySelectorAll('#lb-type-bar .filter-btn').forEach(b =>
-    b.classList.toggle('active', b.textContent.toLowerCase() === type)
-  );
-  loadLeaderboard();
-};
-
-async function loadLeaderboard() {
-  const el = document.getElementById('lb-result');
-  if (!el) return;
-  el.innerHTML = '<div class="spinner"></div>';
-  try {
-    const path = _lbType === 'clans'
-      ? '/locations/global/rankings/clans'
-      : '/locations/global/rankings/players';
-    const data = await apiGet(path);
-    renderLeaderboard(data.items || []);
-  } catch(e) {
-    el.innerHTML = `<div class="error-msg">${e.message}</div>`;
-  }
-}
-
-function renderLeaderboard(items) {
-  const el = document.getElementById('lb-result');
-  if (!items.length) { el.innerHTML = '<div class="empty-msg">No data found.</div>'; return; }
-  const medalColor = ['#f4d03f','#bdc3c7','#cd7f32'];
-  if (_lbType === 'players') {
-    el.innerHTML = items.map((p, i) => `
-      <div class="member-item">
-        <div style="display:flex;align-items:center;gap:12px">
-          <div style="font-size:${i<3?'22':'16'}px;font-weight:700;min-width:28px;color:${medalColor[i]||'var(--muted)'};font-family:'Rajdhani',sans-serif">${i+1}</div>
-          <div>
-            <div class="member-name">${esc(p.name)}</div>
-            <div class="member-role">${p.tag}${p.clan ? ' · ' + esc(p.clan.name) : ''}</div>
-          </div>
-        </div>
-        <div class="member-stats">
-          <div>🏆 ${fmtNum(p.trophies)}</div>
-          <div style="color:var(--muted);font-size:12px">Lv ${p.expLevel}</div>
-        </div>
-      </div>`).join('');
-  } else {
-    el.innerHTML = items.map((c, i) => `
-      <div class="member-item">
-        <div style="display:flex;align-items:center;gap:12px">
-          <div style="font-size:${i<3?'22':'16'}px;font-weight:700;min-width:28px;color:${medalColor[i]||'var(--muted)'};font-family:'Rajdhani',sans-serif">${i+1}</div>
-          <div>
-            <div class="member-name">${esc(c.name)}</div>
-            <div class="member-role">${c.tag} · ${c.members} members</div>
-          </div>
-        </div>
-        <div class="member-stats">
-          <div>🏆 ${fmtNum(c.clanScore)}</div>
-        </div>
-      </div>`).join('');
-  }
 }
 
 // ═══════════════════════════════════════════════
