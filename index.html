@@ -1591,7 +1591,7 @@ function renderMembers(members) {
       </div>
       <div class="member-stats">
         <div>🏆 ${fmtNum(m.trophies)}</div>
-        <div style="color:var(--muted);font-size:12px">↑ ${fmtNum(m.donations)} ↓ ${fmtNum(m.donationsReceived)}</div>
+        <div style="color:var(--muted);font-size:12px">${fmtNum(m.donations)} donations</div>
       </div>
     </div>`;
   }).join('');
