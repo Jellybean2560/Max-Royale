@@ -510,6 +510,7 @@ function switchTab(name) {
     if (b.dataset.tab === name) b.classList.add('active');
   });
   if (name === 'evolutions') loadEvolutionsGrid();
+  if (name === 'heroes') loadHeroesGrid();
 }
 
 // ═══════════════════════════════════════════════
@@ -715,6 +716,7 @@ function renderProfile(data, battles) {
       <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
       <button class="tab-btn" data-tab="cards" onclick="switchTab('cards')">Cards</button>
       <button class="tab-btn" data-tab="evolutions" onclick="switchTab('evolutions')">Evolutions</button>
+      <button class="tab-btn" data-tab="heroes" onclick="switchTab('heroes')">Heroes</button>
       <button class="tab-btn" data-tab="battles" onclick="switchTab('battles')">Battles</button>
       <button class="tab-btn" data-tab="decks" onclick="switchTab('decks')">Decks</button>
       <button class="tab-btn" data-tab="achievements" onclick="switchTab('achievements')">Achievements</button>
@@ -723,6 +725,7 @@ function renderProfile(data, battles) {
     <div id="tab-overview" class="tab-pane active">${renderOverview(data)}</div>
     <div id="tab-cards" class="tab-pane" style="display:none">${renderCardsPane(data)}</div>
     <div id="tab-evolutions" class="tab-pane" style="display:none">${renderEvolutionsPane(data.cards || [])}</div>
+    <div id="tab-heroes" class="tab-pane" style="display:none">${renderHeroesPane(data.cards || [])}</div>
     <div id="tab-battles" class="tab-pane" style="display:none">${renderBattles(battles)}</div>
     <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles)}</div>
     <div id="tab-achievements" class="tab-pane" style="display:none">${renderAchievements(data.achievements || [])}</div>
@@ -763,10 +766,14 @@ function renderOverview(data) {
   const canMaxCards     = enriched.filter(c => c.canMax);
   const totalGoldReady  = upgradableNow.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
   const evoIds          = new Set(allCards.filter(c => c.iconUrls?.evolutionMedium).map(c => c.id));
+  const heroIds         = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
   const evolvedCount    = evoIds.size > 0
     ? cards.filter(c => (c.evolutionLevel||0) > 0 && evoIds.has(c.id)).length
     : cards.filter(c => (c.evolutionLevel||0) > 0).length;
-  const collectionLevel = enriched.reduce((s, c) => s + c.disp, 0) + (evolvedCount * 5);
+  const heroCount       = heroIds.size > 0
+    ? cards.filter(c => c.iconUrls?.heroMedium && heroIds.has(c.id)).length
+    : 0;
+  const collectionLevel = enriched.reduce((s, c) => s + c.disp, 0) + (evolvedCount * 5) + (heroCount * 5);
   const kingTowerLevel  = calcKingTowerLevel(enriched.map(c => c.disp));
   const nextMilestone   = nextCLMilestone(collectionLevel);
   const prevMilestone   = collectionLevel < 20 ? 0 : collectionLevel >= 1500
@@ -825,12 +832,12 @@ function renderOverview(data) {
       <h3 style="margin-bottom:12px">📊 Collection Level</h3>
       <div class="stat-row"><span class="stat-label">Collection Level</span><strong style="font-size:20px;font-family:'Rajdhani',sans-serif">${fmtNum(collectionLevel)}</strong></div>
       ${evolvedCount > 0 ? `<div class="stat-row"><span class="stat-label">Evolutions (×5 each)</span><span style="color:var(--blue)">+${evolvedCount * 5} (${evolvedCount} evos)</span></div>` : ''}
+      ${heroCount > 0 ? `<div class="stat-row"><span class="stat-label">Heroes (×5 each)</span><span style="color:var(--purple)">+${heroCount * 5} (${heroCount} heroes)</span></div>` : ''}
       <div class="stat-row"><span class="stat-label">Next milestone</span><strong>${fmtNum(nextMilestone)}</strong></div>
       <div class="progress-wrap mt8">
         <div class="progress-bar" style="width:${milestoneProgress}%;background:var(--blue)"></div>
       </div>
       <div style="font-size:12px;color:var(--muted);margin-top:4px">${collectionLevel - prevMilestone} / ${nextMilestone - prevMilestone} levels to next milestone</div>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px">⚠️ Heroes not yet available in the API — their +5 bonus is not included.</div>
     </div>
 
     ${suggested.length ? `
@@ -998,6 +1005,48 @@ async function loadEvolutionsGrid() {
             <img src="${c.iconUrls.evolutionMedium}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">
             <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
             ${hasEvo ? '<span style="font-size:9px;color:var(--blue);font-weight:600">⚡ Evolved</span>' : ''}
+          </div>`;
+        }).join('')}
+      </div>`;
+  } catch(e) {
+    grid.innerHTML = `<div class="error-msg">${e.message}</div>`;
+  }
+}
+
+// ── Heroes pane ──
+let _heroPlayerCards = [];
+
+function renderHeroesPane(playerCards) {
+  _heroPlayerCards = playerCards;
+  return `<div id="heroes-grid"><div class="spinner"></div></div>`;
+}
+
+async function loadHeroesGrid() {
+  const grid = document.getElementById('heroes-grid');
+  if (!grid || !grid.querySelector('.spinner')) return;
+
+  try {
+    await maybeLoadCards();
+    const heroCards = allCards.filter(c => c.iconUrls?.heroMedium);
+    if (!heroCards.length) { grid.innerHTML = '<div class="empty-msg">No hero data available.</div>'; return; }
+
+    // Build lookup: card id → whether player's card has heroMedium (= hero form owned)
+    const playerHeroMap = {};
+    _heroPlayerCards.forEach(c => { playerHeroMap[c.id] = !!(c.iconUrls?.heroMedium); });
+
+    const ownedCount = heroCards.filter(c => playerHeroMap[c.id]).length;
+
+    grid.innerHTML = `
+      <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
+        ${ownedCount} / ${heroCards.length} hero forms unlocked
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+        ${heroCards.map(c => {
+          const hasHero = !!playerHeroMap[c.id];
+          return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;${hasHero ? 'border:1px solid var(--purple)' : 'opacity:0.35;filter:grayscale(1)'}">
+            <img src="${c.iconUrls.heroMedium}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">
+            <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
+            ${hasHero ? '<span style="font-size:9px;color:var(--purple);font-weight:600">🦸 Hero</span>' : ''}
           </div>`;
         }).join('')}
       </div>`;
