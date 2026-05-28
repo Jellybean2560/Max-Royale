@@ -770,8 +770,10 @@ function renderOverview(data) {
   const totalGoldReady  = upgradableNow.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
   const evoIds          = new Set(allCards.filter(c => c.iconUrls?.evolutionMedium).map(c => c.id));
   const heroIds         = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
+  // Dual cards (both evolutionMedium AND heroMedium) use evolutionLevel to track
+  // hero stages, not evolution ownership — exclude them from the evolution count.
   const evolvedCount    = evoIds.size > 0
-    ? cards.filter(c => (c.evolutionLevel||0) > 0 && evoIds.has(c.id)).length
+    ? cards.filter(c => (c.evolutionLevel||0) > 0 && evoIds.has(c.id) && !heroIds.has(c.id)).length
     : cards.filter(c => (c.evolutionLevel||0) > 0).length;
   const heroCount       = heroIds.size > 0
     ? cards.filter(c => heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length
@@ -1001,7 +1003,12 @@ async function loadEvolutionsGrid() {
     const playerEvoMap = {};
     _evoPlayerCards.forEach(c => { playerEvoMap[c.id] = c.evolutionLevel || 0; });
 
-    const ownedCount = evoCards.filter(c => (playerEvoMap[c.id] || 0) > 0).length;
+    // Dual cards have both evolutionMedium and heroMedium — their evolutionLevel
+    // tracks hero stages, so we can't use it to detect evolution ownership.
+    const heroIdSet = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
+    const hasEvolution = c => !heroIdSet.has(c.id) && (playerEvoMap[c.id] || 0) > 0;
+
+    const ownedCount = evoCards.filter(hasEvolution).length;
 
     grid.innerHTML = `
       <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
@@ -1009,7 +1016,7 @@ async function loadEvolutionsGrid() {
       </div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
         ${evoCards.map(c => {
-          const hasEvo = (playerEvoMap[c.id] || 0) > 0;
+          const hasEvo = hasEvolution(c);
           return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;${hasEvo ? 'border:1px solid var(--blue)' : 'opacity:0.35;filter:grayscale(1)'}">
             <img src="${c.iconUrls.evolutionMedium}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">
             <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
