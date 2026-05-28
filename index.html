@@ -1503,7 +1503,7 @@ function countryFlag(code) {
 }
 
 let _clanMembers = [];
-let _clanSort = 'rank';
+let _clanSort = 'trophies';
 
 async function loadClan() {
   const raw = document.getElementById('clan-tag').value.trim();
@@ -1550,7 +1550,6 @@ function renderClan(data) {
     <div style="margin-bottom:10px">
       <select id="clan-sort-select" onchange="setClanSort(this.value)"
         style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
-        <option value="rank">Sort: Rank</option>
         <option value="trophies">Sort: Trophies</option>
         <option value="donations">Sort: Donations</option>
         <option value="role">Sort: Role</option>
