@@ -1552,7 +1552,7 @@ function renderClan(data) {
         style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
         <option value="trophies">Sort: Trophies</option>
         <option value="donations">Sort: Donations</option>
-        <option value="role">Sort: Role</option>
+        <option value="lastseen">Sort: Last Seen</option>
       </select>
     </div>
     <div id="clan-members-list"></div>`;
@@ -1568,9 +1568,9 @@ function renderMembers(members) {
   const sorted = [...members];
   if (_clanSort === 'trophies') sorted.sort((a,b) => (b.trophies||0) - (a.trophies||0));
   else if (_clanSort === 'donations') sorted.sort((a,b) => (b.donations||0) - (a.donations||0));
-  else if (_clanSort === 'role') {
-    const order = { leader:0, coLeader:1, elder:2, member:3 };
-    sorted.sort((a,b) => (order[a.role]||4) - (order[b.role]||4));
+  else if (_clanSort === 'lastseen') {
+    // lastSeen is a lexicographically-sortable timestamp; most recent first
+    sorted.sort((a,b) => (b.lastSeen||'').localeCompare(a.lastSeen||''));
   } else sorted.sort((a,b) => (a.clanRank||99) - (b.clanRank||99));
 
   const roleLabel = { leader:'👑 Leader', coLeader:'⭐ Co-Leader', elder:'🔰 Elder', member:'Member' };
