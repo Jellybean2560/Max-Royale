@@ -231,8 +231,12 @@
         <p id="api-key-status" class="text-muted" style="font-size:13px;margin-top:8px;text-align:center"></p>
         <p style="font-size:12px;color:var(--muted);margin-top:10px">
           Get a free key at <strong>developer.clashroyale.com</strong><br>
-          Use IP <code>45.79.218.79</code> as the allowed IP to work from any network.
+          Use the IP shown below as the allowed IP when creating your key.
         </p>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+          <code id="proxy-ip-display" style="background:var(--surface3);padding:4px 10px;border-radius:6px;font-size:13px;flex:1">checking…</code>
+          <button class="btn btn-secondary btn-sm" onclick="detectProxyIp()">🔍 Check IP</button>
+        </div>
       </div>
 
       <div class="nav-cards">
@@ -352,75 +356,76 @@
 // ═══════════════════════════════════════════════
 //  UPGRADE DATA
 // ═══════════════════════════════════════════════
+// Index 0 = upgrade from minLevel to minLevel+1
 const LEVEL_DATA = {
   common: [
-    {cards:2,   gold:0},     // 1→2
-    {cards:4,   gold:0},     // 2→3
-    {cards:10,  gold:20},    // 3→4
-    {cards:20,  gold:50},    // 4→5
-    {cards:50,  gold:150},   // 5→6
-    {cards:100, gold:400},   // 6→7
-    {cards:200, gold:1000},  // 7→8
-    {cards:400, gold:2000},  // 8→9
-    {cards:800, gold:4000},  // 9→10
-    {cards:1000,gold:6000},  // 10→11
-    {cards:1500,gold:8000},  // 11→12
-    {cards:2000,gold:10000}, // 12→13
-    {cards:2500,gold:12000}, // 13→14
-    {cards:3000,gold:15000}, // 14→15
-    {cards:5000,gold:20000}, // 15→16
+    {cards:2,    gold:5},      // 1→2
+    {cards:4,    gold:20},     // 2→3
+    {cards:10,   gold:50},     // 3→4
+    {cards:20,   gold:150},    // 4→5
+    {cards:50,   gold:400},    // 5→6
+    {cards:100,  gold:1000},   // 6→7
+    {cards:200,  gold:2000},   // 7→8
+    {cards:400,  gold:4000},   // 8→9
+    {cards:800,  gold:8000},   // 9→10
+    {cards:1000, gold:15000},  // 10→11
+    {cards:1500, gold:25000},  // 11→12
+    {cards:2500, gold:40000},  // 12→13
+    {cards:3500, gold:60000},  // 13→14
+    {cards:5500, gold:90000},  // 14→15
+    {cards:7500, gold:120000}, // 15→16
   ],
   rare: [
-    {cards:2,   gold:0},
-    {cards:4,   gold:0},
-    {cards:10,  gold:150},
-    {cards:20,  gold:400},
-    {cards:50,  gold:1000},
-    {cards:100, gold:2000},
-    {cards:200, gold:4000},
-    {cards:400, gold:6000},
-    {cards:800, gold:8000},
-    {cards:1000,gold:10000},
-    {cards:1500,gold:12000},
-    {cards:2000,gold:15000},
-    {cards:2500,gold:20000},
+    {cards:2,    gold:50},     // 3→4
+    {cards:4,    gold:150},    // 4→5
+    {cards:10,   gold:400},    // 5→6
+    {cards:20,   gold:1000},   // 6→7
+    {cards:50,   gold:2000},   // 7→8
+    {cards:100,  gold:4000},   // 8→9
+    {cards:200,  gold:8000},   // 9→10
+    {cards:300,  gold:15000},  // 10→11
+    {cards:400,  gold:25000},  // 11→12
+    {cards:550,  gold:40000},  // 12→13
+    {cards:750,  gold:60000},  // 13→14
+    {cards:1000, gold:90000},  // 14→15
+    {cards:1400, gold:120000}, // 15→16
   ],
   epic: [
-    {cards:2,   gold:0},
-    {cards:4,   gold:0},
-    {cards:10,  gold:400},
-    {cards:20,  gold:1000},
-    {cards:50,  gold:2000},
-    {cards:100, gold:4000},
-    {cards:200, gold:6000},
-    {cards:400, gold:8000},
-    {cards:800, gold:10000},
-    {cards:1000,gold:12000},
+    {cards:2,   gold:400},     // 6→7
+    {cards:4,   gold:2000},    // 7→8
+    {cards:10,  gold:4000},    // 8→9
+    {cards:20,  gold:8000},    // 9→10
+    {cards:30,  gold:15000},   // 10→11
+    {cards:50,  gold:25000},   // 11→12
+    {cards:70,  gold:40000},   // 12→13
+    {cards:100, gold:60000},   // 13→14
+    {cards:130, gold:90000},   // 14→15
+    {cards:180, gold:120000},  // 15→16
   ],
   legendary: [
-    {cards:2,   gold:0},
-    {cards:4,   gold:0},
-    {cards:10,  gold:1000},
-    {cards:20,  gold:2000},
-    {cards:50,  gold:4000},
-    {cards:100, gold:8000},
-    {cards:200, gold:12000},
-    {cards:400, gold:20000},
+    {cards:2,  gold:5000},     // 9→10
+    {cards:4,  gold:15000},    // 10→11
+    {cards:6,  gold:25000},    // 11→12
+    {cards:9,  gold:40000},    // 12→13
+    {cards:12, gold:60000},    // 13→14
+    {cards:14, gold:90000},    // 14→15
+    {cards:20, gold:120000},   // 15→16
   ],
   champion: [
-    {cards:2,   gold:0},
-    {cards:4,   gold:0},
-    {cards:10,  gold:1000},
-    {cards:20,  gold:2000},
-    {cards:50,  gold:4000},
-    {cards:100, gold:8000},
-    {cards:200, gold:12000},
-    {cards:400, gold:20000},
-    {cards:800, gold:25000},
-    {cards:1000,gold:35000},
-    {cards:1500,gold:45000},
-    {cards:2000,gold:60000},
+    {cards:2,  gold:25000},    // 11→12
+    {cards:5,  gold:40000},    // 12→13
+    {cards:8,  gold:60000},    // 13→14
+    {cards:11, gold:90000},    // 14→15
+    {cards:15, gold:120000},   // 15→16
   ],
+};
+
+const XP_DATA = {
+  common:    [4,5,6,10,25,50,100,200,400,600,800,1600,2000,50000,200000],
+  rare:      [6,10,25,50,100,200,400,600,800,1600,2000,50000,200000],
+  epic:      [25,100,200,400,600,800,1600,2000,50000,200000],
+  legendary: [250,600,800,1600,2000,50000,200000],
+  champion:  [800,1600,2000,50000,200000],
 };
 
 const MIN_LEVEL = { common:1, rare:3, epic:6, legendary:9, champion:11 };
@@ -428,6 +433,39 @@ const MAX_LEVEL = 16;
 
 function toDisplayLevel(rarity, apiLevel) {
   return apiLevel + MIN_LEVEL[rarity] - 1;
+}
+
+// XP earned so far (sum of XP for all upgrades already done, i.e. minLevel → dispLevel)
+function xpEarned(rarity, dispLevel) {
+  const xp = XP_DATA[rarity] || [];
+  const minL = MIN_LEVEL[rarity];
+  let total = 0;
+  for (let i = 0; i < dispLevel - minL && i < xp.length; i++) total += xp[i];
+  return total;
+}
+
+// XP still available from dispLevel → 16
+function xpToMax(rarity, dispLevel) {
+  const xp = XP_DATA[rarity] || [];
+  const minL = MIN_LEVEL[rarity];
+  let total = 0;
+  for (let i = dispLevel - minL; i < xp.length; i++) total += xp[i];
+  return total;
+}
+
+// Cards still needed (beyond what's owned) to fully upgrade to level 16
+function cardsNeededToMax(rarity, dispLevel, ownedCount) {
+  const steps = LEVEL_DATA[rarity] || [];
+  const minL = MIN_LEVEL[rarity];
+  let needed = 0, remaining = ownedCount;
+  for (let lv = dispLevel; lv < MAX_LEVEL; lv++) {
+    const idx = lv - minL;
+    if (idx < 0 || idx >= steps.length) break;
+    const req = steps[idx].cards;
+    if (remaining >= req) { remaining -= req; }
+    else { needed += req - remaining; remaining = 0; }
+  }
+  return needed; // 0 = can max right now
 }
 
 function computeUpgrade(rarity, currentLevel, currentCount, targetLevel) {
@@ -495,6 +533,19 @@ function toggleApiKey() {
   else { inp.type = 'password'; btn.textContent = 'Show'; }
 }
 
+async function detectProxyIp() {
+  const el = document.getElementById('proxy-ip-display');
+  if (!el) return;
+  el.textContent = 'checking…';
+  try {
+    const res = await fetch('https://corsproxy.io/?url=' + encodeURIComponent('https://httpbin.org/ip'));
+    const data = await res.json();
+    el.textContent = '📍 ' + data.origin + ' — use this as allowed IP';
+  } catch(e) {
+    el.textContent = 'Could not detect — try again';
+  }
+}
+
 function initApiKey() {
   const key = getApiKey();
   if (key) {
@@ -502,6 +553,9 @@ function initApiKey() {
     document.getElementById('api-key-status').textContent = '✓ Key loaded';
     document.getElementById('api-key-status').style.color = 'var(--green)';
   }
+  const savedTag = localStorage.getItem('cr_player_tag');
+  if (savedTag) document.getElementById('player-tag').value = savedTag;
+  detectProxyIp();
 }
 
 // ═══════════════════════════════════════════════
@@ -511,7 +565,7 @@ async function apiGet(path) {
   const key = getApiKey();
   if (!key) throw new Error('No API key set. Go to Home and save your key first.');
   const tag = path.replace('#', '%23');
-  const url = `https://proxy.royaleapi.dev/v1${tag}`;
+  const url = `https://corsproxy.io/?url=${encodeURIComponent('https://api.clashroyale.com/v1' + tag)}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
@@ -638,10 +692,13 @@ document.getElementById('calc-rarity').addEventListener('change', () => {
 // ═══════════════════════════════════════════════
 //  PLAYER LOOKUP
 // ═══════════════════════════════════════════════
-async function loadPlayer() {
-  const raw = document.getElementById('player-tag').value.trim();
+async function loadPlayer(tagOverride) {
+  const raw = (tagOverride || document.getElementById('player-tag').value).trim();
   if (!raw) return;
   const tag = raw.startsWith('#') ? raw : '#' + raw;
+  // Save tag so it survives page reload
+  localStorage.setItem('cr_player_tag', tag);
+  document.getElementById('player-tag').value = tag;
   const el = document.getElementById('player-result');
   el.innerHTML = '<div class="spinner"></div>';
   try {
@@ -676,6 +733,7 @@ function renderProfile(data, battles) {
         </div>
       </div>
       ${data.clan ? `<div class="mt8" style="font-size:13px;color:var(--muted)">🛡 ${esc(data.clan.name)}</div>` : ''}
+      <button class="btn btn-secondary btn-sm mt8" onclick="loadPlayer(localStorage.getItem('cr_player_tag'))">🔄 Refresh</button>
     </div>
 
     <div class="tab-bar">
@@ -708,24 +766,42 @@ function esc(str) {
 
 function renderOverview(data) {
   const cards = data.cards || [];
-  const maxed = cards.filter(c => {
-    const r = (c.rarity||'common').toLowerCase();
-    const disp = toDisplayLevel(r, c.level);
-    return disp === MAX_LEVEL;
-  }).length;
-  const upgradable = cards.filter(c => {
-    const r = (c.rarity||'common').toLowerCase();
-    const minL = MIN_LEVEL[r];
-    const steps = LEVEL_DATA[r];
-    if (!steps) return false;
-    const disp = toDisplayLevel(r, c.level);
-    const idx = disp - minL;
-    if (idx >= steps.length) return false;
-    return (c.count || 0) >= steps[idx].cards;
-  }).length;
 
-  const wb = data.warDayWins || 0;
+  // Compute per-card enriched data
+  const enriched = cards.map(c => {
+    const r = (c.rarity||'common').toLowerCase();
+    const disp = toDisplayLevel(r, c.level);
+    const minL = MIN_LEVEL[r];
+    const steps = LEVEL_DATA[r] || [];
+    const idx = disp - minL;
+    const isMaxed = disp >= MAX_LEVEL || idx >= steps.length;
+    const nextStep = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
+    const isUpgradable = !isMaxed && nextStep && (c.count||0) >= nextStep.cards;
+    const canMax = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
+    const xpSoFar = xpEarned(r, disp);
+    const xpLeft = xpToMax(r, disp);
+    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, xpSoFar, xpLeft };
+  });
+
+  const maxedCount     = enriched.filter(c => c.isMaxed).length;
+  const upgradableNow  = enriched.filter(c => c.isUpgradable);
+  const canMaxCards    = enriched.filter(c => c.canMax);
+  const totalGoldReady = upgradableNow.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
+  const totalXpEarned  = enriched.reduce((s, c) => s + c.xpSoFar, 0);
+  const totalXpLeft    = enriched.reduce((s, c) => s + c.xpLeft, 0);
   const fav = data.currentFavouriteCard;
+
+  // Top 5 suggested upgrades: upgradable sorted by cheapest gold first
+  const suggested = [...upgradableNow]
+    .sort((a, b) => (a.nextStep?.gold||0) - (b.nextStep?.gold||0))
+    .slice(0, 5);
+
+  const suggestedRows = suggested.map(c =>
+    `<div class="stat-row">
+      <span class="stat-label">${esc(c.name)} <span style="color:var(--muted);font-size:11px">(Lv ${c.disp}→${c.disp+1})</span></span>
+      <span class="stat-value text-accent">${fmtNum(c.nextStep?.gold)} 💰</span>
+    </div>`
+  ).join('');
 
   return `
     <div class="card">
@@ -735,36 +811,51 @@ function renderOverview(data) {
       <div class="stat-row"><span class="stat-label">3-Crown Wins</span><span class="stat-value">👑 ${fmtNum(data.threeCrownWins)}</span></div>
       <div class="stat-row"><span class="stat-label">Challenge Max Wins</span><span class="stat-value">${fmtNum(data.challengeMaxWins)}</span></div>
       <div class="stat-row"><span class="stat-label">Challenge Cards Won</span><span class="stat-value">${fmtNum(data.challengeCardsWon)}</span></div>
-      <div class="stat-row"><span class="stat-label">Tournament Cards Won</span><span class="stat-value">${fmtNum(data.tournamentCardsWon)}</span></div>
-      <div class="stat-row"><span class="stat-label">War Day Wins</span><span class="stat-value">${fmtNum(wb)}</span></div>
       <div class="stat-row"><span class="stat-label">Cards Donated</span><span class="stat-value">${fmtNum(data.totalDonations)}</span></div>
-      <div class="stat-row"><span class="stat-label">Cards Received</span><span class="stat-value">${fmtNum(data.donationsReceived)}</span></div>
       ${fav ? `<div class="stat-row"><span class="stat-label">Favourite Card</span><span class="stat-value">${esc(fav.name)}</span></div>` : ''}
     </div>
+
     <div class="card">
-      <h3 style="margin-bottom:12px">Card Collection</h3>
-      <div class="flex-between mb8"><span class="text-muted">Total cards</span><strong>${cards.length}</strong></div>
-      <div class="flex-between mb8"><span class="text-muted">Maxed</span><strong class="text-accent">${maxed}</strong></div>
-      <div class="flex-between mb8"><span class="text-muted">Upgradable now</span><strong class="text-green">${upgradable}</strong></div>
-      <div class="progress-wrap mt8"><div class="progress-bar" style="width:${Math.round(maxed/Math.max(cards.length,1)*100)}%;background:var(--accent)"></div></div>
-      <div style="font-size:12px;color:var(--muted);margin-top:4px">${Math.round(maxed/Math.max(cards.length,1)*100)}% maxed</div>
-    </div>`;
+      <h3 style="margin-bottom:12px">⚡ Upgrade Insights</h3>
+      <div class="stat-row"><span class="stat-label">Total cards in collection</span><strong>${cards.length}</strong></div>
+      <div class="stat-row"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${maxedCount}</strong></div>
+      <div class="stat-row"><span class="stat-label">Upgradable now</span><strong class="text-green">${upgradableNow.length}</strong></div>
+      <div class="stat-row"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${canMaxCards.length}</strong></div>
+      <div class="stat-row"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(totalGoldReady)} 💰</strong></div>
+      <div class="stat-row"><span class="stat-label">Total XP earned</span><strong>${fmtNum(totalXpEarned)} ✨</strong></div>
+      <div class="stat-row"><span class="stat-label">Total XP left to max all</span><strong>${fmtNum(totalXpLeft)} ✨</strong></div>
+      <div class="progress-wrap mt8">
+        <div class="progress-bar" style="width:${Math.round(maxedCount/Math.max(cards.length,1)*100)}%;background:var(--accent)"></div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px">${Math.round(maxedCount/Math.max(cards.length,1)*100)}% maxed</div>
+    </div>
+
+    ${suggested.length ? `
+    <div class="card">
+      <h3 style="margin-bottom:12px">💡 Suggested Upgrades</h3>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Cheapest upgrades you can do right now</p>
+      ${suggestedRows}
+    </div>` : ''}`;
 }
 
 // ── Cards pane ──
 let _cardData = [];
 let _cardFilter = 'all';
 let _cardRarity = 'all';
-let _cardSort = 'name';
+let _cardSort   = 'level-desc';
 
 function renderCardsPane(data) {
-  _cardData = data.cards || [];
+  _cardData  = data.cards || [];
+  _cardFilter = 'all';
+  _cardRarity = 'all';
+  _cardSort   = 'level-desc';
   return `
     <div class="filter-bar" id="card-status-filter">
       <button class="filter-btn active" onclick="setCardFilter('all','status')">All</button>
       <button class="filter-btn" onclick="setCardFilter('upgradable','status')">Upgradable</button>
       <button class="filter-btn" onclick="setCardFilter('maxed','status')">Maxed</button>
       <button class="filter-btn" onclick="setCardFilter('locked','status')">Need Cards</button>
+      <button class="filter-btn" onclick="setCardFilter('canmax','status')">Can Max</button>
     </div>
     <div class="filter-bar" id="card-rarity-filter">
       <button class="filter-btn active" onclick="setCardFilter('all','rarity')">All</button>
@@ -774,14 +865,26 @@ function renderCardsPane(data) {
       <button class="filter-btn" onclick="setCardFilter('legendary','rarity')">Legendary</button>
       <button class="filter-btn" onclick="setCardFilter('champion','rarity')">Champion</button>
     </div>
+    <div class="filter-bar" id="card-sort-filter">
+      <button class="filter-btn active" onclick="setCardFilter('level-desc','sort')">Level ↓</button>
+      <button class="filter-btn" onclick="setCardFilter('level-asc','sort')">Level ↑</button>
+      <button class="filter-btn" onclick="setCardFilter('rarity','sort')">Rarity</button>
+    </div>
     <div id="cards-grid"></div>`;
 }
 
 window.setCardFilter = function(val, type) {
-  if (type === 'status') { _cardFilter = val; document.querySelectorAll('#card-status-filter .filter-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase().replace(' ','') === val || (val==='all'&&b.textContent==='All'))); }
-  if (type === 'rarity') { _cardRarity = val; document.querySelectorAll('#card-rarity-filter .filter-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase() === val)); }
+  const barId = { status:'card-status-filter', rarity:'card-rarity-filter', sort:'card-sort-filter' }[type];
+  if (type === 'status') _cardFilter = val;
+  if (type === 'rarity') _cardRarity = val;
+  if (type === 'sort')   _cardSort   = val;
+  document.querySelectorAll(`#${barId} .filter-btn`).forEach(b =>
+    b.classList.toggle('active', b.getAttribute('onclick').includes(`'${val}'`))
+  );
   renderCards();
 };
+
+const RARITY_ORDER = { common:0, rare:1, epic:2, legendary:3, champion:4 };
 
 function renderCards() {
   const grid = document.getElementById('cards-grid');
@@ -793,29 +896,67 @@ function renderCards() {
     const r = (c.rarity||'common').toLowerCase();
     const disp = toDisplayLevel(r, c.level);
     const steps = LEVEL_DATA[r] || [];
-    const minL = MIN_LEVEL[r];
-    const idx = disp - minL;
-    const isMaxed = disp >= MAX_LEVEL || idx >= steps.length;
-    const isUpgradable = !isMaxed && idx >= 0 && idx < steps.length && (c.count||0) >= steps[idx].cards;
-    return { ...c, disp, isMaxed, isUpgradable, r };
+    const minL  = MIN_LEVEL[r];
+    const idx   = disp - minL;
+    const isMaxed     = disp >= MAX_LEVEL || idx >= steps.length;
+    const nextStep    = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
+    const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
+    const canMax       = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
+    const xpSoFar      = xpEarned(r, disp);
+    const xpLeft       = xpToMax(r, disp);
+    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, xpSoFar, xpLeft };
   });
 
-  if (_cardFilter === 'maxed') cards = cards.filter(c => c.isMaxed);
+  if (_cardFilter === 'maxed')     cards = cards.filter(c => c.isMaxed);
   if (_cardFilter === 'upgradable') cards = cards.filter(c => c.isUpgradable);
-  if (_cardFilter === 'locked') cards = cards.filter(c => !c.isMaxed && !c.isUpgradable);
+  if (_cardFilter === 'locked')    cards = cards.filter(c => !c.isMaxed && !c.isUpgradable);
+  if (_cardFilter === 'canmax')    cards = cards.filter(c => c.canMax);
+
+  // Sort
+  if (_cardSort === 'level-desc') cards.sort((a,b) => b.disp - a.disp);
+  if (_cardSort === 'level-asc')  cards.sort((a,b) => a.disp - b.disp);
+  if (_cardSort === 'rarity')     cards.sort((a,b) => (RARITY_ORDER[b.r]||0) - (RARITY_ORDER[a.r]||0) || b.disp - a.disp);
 
   if (!cards.length) { grid.innerHTML = '<div class="empty-msg">No cards match this filter.</div>'; return; }
 
-  grid.innerHTML = `<div class="card-grid">${cards.map(c => `
-    <div class="card-item ${c.isMaxed ? 'maxed' : c.isUpgradable ? 'upgradable' : ''}">
-      <div class="card-level">${c.disp}${c.isMaxed ? ' ★' : ''}</div>
-      <div class="card-name">${esc(c.name)}</div>
-      <div class="card-count">${fmtNum(c.count)}</div>
-    </div>`).join('')}</div>`;
-}
+  const rarityColor = { common:'var(--text)', rare:'var(--blue)', epic:'var(--purple)', legendary:'var(--accent)', champion:'#e74c3c' };
 
-// auto-render cards when tab shown
-const _origSwitchTab = window.switchTab;
+  grid.innerHTML = cards.map(c => {
+    const needed = c.nextStep ? c.nextStep.cards : 0;
+    const owned  = c.count || 0;
+    const pct    = c.isMaxed ? 100 : needed ? Math.min(100, Math.round(owned / needed * 100)) : 0;
+    const statusLabel = c.isMaxed ? '<span class="badge badge-gold">MAX ★</span>'
+      : c.isUpgradable ? '<span class="badge badge-green">Ready</span>'
+      : c.canMax       ? '<span class="badge badge-blue">Can Max</span>'
+      : '';
+
+    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
+      <div class="flex-between mb8">
+        <div>
+          <span style="font-weight:600;font-size:15px">${esc(c.name)}</span>
+          <span style="font-size:11px;color:${rarityColor[c.r]||'var(--muted)'};margin-left:6px">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:var(--accent)">Lv ${c.disp}</span>
+          ${statusLabel}
+        </div>
+      </div>
+      ${!c.isMaxed && c.nextStep ? `
+        <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px">
+          <span>Cards: ${fmtNum(owned)} / ${fmtNum(needed)}</span>
+          <span>${fmtNum(c.nextStep.gold)} 💰 to Lv ${c.disp+1}</span>
+        </div>
+        <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;background:${c.isUpgradable?'var(--green)':'var(--blue)'}"></div></div>
+        <div class="flex-between mt8" style="font-size:11px;color:var(--muted)">
+          <span>XP earned: ${fmtNum(c.xpSoFar)} ✨</span>
+          <span>XP to max: ${fmtNum(c.xpLeft)} ✨</span>
+        </div>
+      ` : `
+        <div style="font-size:12px;color:var(--muted)">XP earned: ${fmtNum(c.xpSoFar)} ✨ — Fully maxed!</div>
+      `}
+    </div>`;
+  }).join('');
+}
 
 // ── Battles pane ──
 function renderBattles(battles) {
