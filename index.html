@@ -129,7 +129,7 @@
   .lookup-header { background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
   .player-name { font-family: 'Rajdhani', sans-serif; font-size: 26px; font-weight: 700; }
   .player-tag { color: var(--muted); font-size: 13px; font-family: monospace; }
-  .trophies { display: block; margin-top: 8px; font-size: 20px; font-weight: 700; color: var(--accent); }
+  .trophies { display: block; margin-top: 6px; font-size: 13px; color: var(--muted); }
 
   /* ── Card grid ── */
   .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 10px; }
@@ -691,7 +691,7 @@ function renderProfile(data, battles) {
         <div>
           <div class="player-name">${esc(data.name)}</div>
           <div class="player-tag">${data.tag}</div>
-          <div class="trophies">🏆 ${fmtNum(data.trophies)}</div>
+          <div class="trophies">🏆 <span style="color:var(--accent);font-weight:700">${fmtNum(data.trophies)}</span></div>
           ${data.currentPathOfLegendSeasonResult ? `<div style="font-size:13px;color:var(--muted);margin-top:2px">⚔️ PoL: <span style="color:var(--text)">${fmtNum(data.currentPathOfLegendSeasonResult.trophies)} trophies · Rank ${fmtNum(data.currentPathOfLegendSeasonResult.rank)}</span></div>` : ''}
         </div>
         <div style="text-align:right">
