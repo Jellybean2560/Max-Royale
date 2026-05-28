@@ -913,7 +913,11 @@ function renderCardsPane(data) {
   _cardFilter = 'all';
   _cardRarity = 'all';
   _cardSort   = 'level-desc';
+  const totalCards = allCards.length || _cardData.length;
   return `
+    <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
+      ${_cardData.length} / ${totalCards} cards unlocked
+    </div>
     <div style="display:flex;gap:8px;margin-bottom:10px">
       <select id="card-rarity-select" onchange="setCardFilter(this.value,'rarity')"
         style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
@@ -1315,7 +1319,7 @@ async function loadTowerTroopsGrid() {
 
     grid.innerHTML = `
       <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
-        ${troops.length} tower ${troops.length === 1 ? 'troop' : 'troops'}
+        ${troops.length} / ${troops.length} tower troops unlocked
       </div>
       ${troopRows}`;
   } catch(e) {
