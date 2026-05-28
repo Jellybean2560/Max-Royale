@@ -509,6 +509,7 @@ function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => {
     if (b.dataset.tab === name) b.classList.add('active');
   });
+  if (name === 'evolutions') loadEvolutionsGrid();
 }
 
 // ═══════════════════════════════════════════════
@@ -712,6 +713,7 @@ function renderProfile(data, battles) {
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
       <button class="tab-btn" data-tab="cards" onclick="switchTab('cards')">Cards</button>
+      <button class="tab-btn" data-tab="evolutions" onclick="switchTab('evolutions')">Evolutions</button>
       <button class="tab-btn" data-tab="battles" onclick="switchTab('battles')">Battles</button>
       <button class="tab-btn" data-tab="decks" onclick="switchTab('decks')">Decks</button>
       <button class="tab-btn" data-tab="achievements" onclick="switchTab('achievements')">Achievements</button>
@@ -719,6 +721,7 @@ function renderProfile(data, battles) {
 
     <div id="tab-overview" class="tab-pane active">${renderOverview(data)}</div>
     <div id="tab-cards" class="tab-pane" style="display:none">${renderCardsPane(data)}</div>
+    <div id="tab-evolutions" class="tab-pane" style="display:none">${renderEvolutionsPane(data.cards || [])}</div>
     <div id="tab-battles" class="tab-pane" style="display:none">${renderBattles(battles)}</div>
     <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles)}</div>
     <div id="tab-achievements" class="tab-pane" style="display:none">${renderAchievements(data.achievements || [])}</div>
@@ -953,6 +956,50 @@ function renderCards() {
       `}
     </div>`;
   }).join('');
+}
+
+// ── Evolutions pane ──
+let _evoPlayerCards = [];
+
+function renderEvolutionsPane(playerCards) {
+  _evoPlayerCards = playerCards;
+  return `<div id="evolutions-grid"><div class="spinner"></div></div>`;
+}
+
+async function loadEvolutionsGrid() {
+  const grid = document.getElementById('evolutions-grid');
+  if (!grid) return;
+  // Already rendered (non-spinner content means it's loaded)
+  if (!grid.querySelector('.spinner')) return;
+
+  try {
+    await maybeLoadCards();
+    const evoCards = allCards.filter(c => c.iconUrls?.evolutionMedium);
+    if (!evoCards.length) { grid.innerHTML = '<div class="empty-msg">No evolution data available.</div>'; return; }
+
+    // Build lookup: card id → evolutionLevel the player has
+    const playerEvoMap = {};
+    _evoPlayerCards.forEach(c => { playerEvoMap[c.id] = c.evolutionLevel || 0; });
+
+    const ownedCount = evoCards.filter(c => (playerEvoMap[c.id] || 0) > 0).length;
+
+    grid.innerHTML = `
+      <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
+        ${ownedCount} / ${evoCards.length} evolutions unlocked
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+        ${evoCards.map(c => {
+          const hasEvo = (playerEvoMap[c.id] || 0) > 0;
+          return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;${hasEvo ? 'border:1px solid var(--blue)' : 'opacity:0.35;filter:grayscale(1)'}">
+            <img src="${c.iconUrls.evolutionMedium}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">
+            <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
+            ${hasEvo ? '<span style="font-size:9px;color:var(--blue);font-weight:600">⚡ Evolved</span>' : ''}
+          </div>`;
+        }).join('')}
+      </div>`;
+  } catch(e) {
+    grid.innerHTML = `<div class="error-msg">${e.message}</div>`;
+  }
 }
 
 // ── Battles pane ──
