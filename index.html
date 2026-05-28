@@ -894,6 +894,7 @@ function renderCards() {
           <div>
             <span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br>
             <span style="font-size:11px;color:${rarityColor[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
+            ${(c.starLevel||0) > 0 ? `&nbsp;<span style="font-size:12px;letter-spacing:1px">${'<span style="color:#FFD700">★</span>'.repeat(Math.min(c.starLevel,3))}${'<span style="color:#555577">★</span>'.repeat(Math.max(0,3-Math.min(c.starLevel,3)))}</span>` : ''}
           </div>
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
