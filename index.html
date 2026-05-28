@@ -914,12 +914,6 @@ function renderCardsPane(data) {
   _cardRarity = 'all';
   _cardSort   = 'level-desc';
   return `
-    <div class="filter-bar" id="card-status-filter">
-      <button class="filter-btn active" onclick="setCardFilter('all','status')">All</button>
-      <button class="filter-btn" onclick="setCardFilter('upgradable','status')">Upgradable</button>
-      <button class="filter-btn" onclick="setCardFilter('canmax','status')">Can Max</button>
-      <button class="filter-btn" onclick="setCardFilter('maxed','status')">Maxed</button>
-    </div>
     <div style="display:flex;gap:8px;margin-bottom:10px">
       <select id="card-rarity-select" onchange="setCardFilter(this.value,'rarity')"
         style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
@@ -936,6 +930,12 @@ function renderCardsPane(data) {
         <option value="level-asc">Level ↑</option>
         <option value="rarity">Rarity</option>
       </select>
+    </div>
+    <div class="filter-bar" id="card-status-filter">
+      <button class="filter-btn active" onclick="setCardFilter('all','status')">All</button>
+      <button class="filter-btn" onclick="setCardFilter('upgradable','status')">Upgradable</button>
+      <button class="filter-btn" onclick="setCardFilter('canmax','status')">Can Max</button>
+      <button class="filter-btn" onclick="setCardFilter('maxed','status')">Maxed</button>
     </div>
     <div id="cards-grid"></div>`;
 }
