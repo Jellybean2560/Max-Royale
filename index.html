@@ -249,7 +249,11 @@
 
     <!-- ═══════════════ PLAYER LOOKUP ═══════════════ -->
     <div id="screen-lookup" class="screen active">
-      <h2 style="margin-bottom:16px">🔍 Player Lookup</h2>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;position:relative">
+        <h2 style="margin:0">🔍 Player Lookup</h2>
+        <button id="accounts-btn" onclick="toggleAccountsMenu(event)" style="display:none;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:16px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer">👤 Accounts ▾</button>
+        <div id="saved-accounts" style="display:none;position:absolute;right:0;top:100%;margin-top:6px;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px;min-width:200px;max-width:280px;box-shadow:0 8px 24px rgba(0,0,0,0.4)"></div>
+      </div>
       <div class="card">
         <div class="field" style="margin-bottom:0">
           <label>Player Tag</label>
@@ -258,7 +262,6 @@
             <button class="btn btn-primary" onclick="loadPlayer()">Search</button>
           </div>
         </div>
-        <div id="saved-accounts" style="margin-top:12px"></div>
       </div>
       <div id="player-result">
         <div style="text-align:center;padding:48px 0 32px">
@@ -688,22 +691,43 @@ function removeAccount(tag, ev) {
   localStorage.setItem('cr_saved_accounts', JSON.stringify(list));
   renderSavedAccounts();
 }
-function renderSavedAccounts() {
+function toggleAccountsMenu(ev) {
+  if (ev) ev.stopPropagation();
   const wrap = document.getElementById('saved-accounts');
   if (!wrap) return;
+  wrap.style.display = wrap.style.display === 'none' || !wrap.style.display ? 'block' : 'none';
+}
+function renderSavedAccounts() {
+  const wrap = document.getElementById('saved-accounts');
+  const btn  = document.getElementById('accounts-btn');
+  if (!wrap) return;
   const list = getSavedAccounts();
-  if (!list.length) { wrap.innerHTML = ''; return; }
+  if (!list.length) {
+    wrap.innerHTML = '';
+    wrap.style.display = 'none';
+    if (btn) btn.style.display = 'none';
+    return;
+  }
+  if (btn) btn.style.display = 'block';
   const current = localStorage.getItem('cr_player_tag');
   wrap.innerHTML = `
-    <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Saved Accounts</div>
-    <div style="display:flex;flex-wrap:wrap;gap:8px">
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Saved Accounts</div>
+    <div style="display:flex;flex-direction:column;gap:6px">
       ${list.map(a => `
-        <span onclick="loadPlayer('${a.tag}')" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;background:${a.tag===current?'var(--accent)':'var(--surface2)'};color:${a.tag===current?'#1a1a2e':'var(--text)'};border:1px solid var(--border);border-radius:16px;padding:5px 10px;font-size:13px">
-          ${esc(a.name)}
-          <span onclick="removeAccount('${a.tag}',event)" style="opacity:0.6;font-weight:700;padding:0 2px" title="Remove">×</span>
+        <span onclick="loadPlayer('${a.tag}');toggleAccountsMenu(event)" style="display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;background:${a.tag===current?'var(--accent)':'var(--surface2)'};color:${a.tag===current?'#1a1a2e':'var(--text)'};border:1px solid var(--border);border-radius:10px;padding:7px 10px;font-size:13px">
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.name)}</span>
+          <span onclick="removeAccount('${a.tag}',event)" style="opacity:0.6;font-weight:700;padding:0 4px;flex-shrink:0" title="Remove">×</span>
         </span>`).join('')}
     </div>`;
 }
+// Close the accounts dropdown when clicking elsewhere
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('saved-accounts');
+  const btn  = document.getElementById('accounts-btn');
+  if (wrap && wrap.style.display === 'block' && !wrap.contains(e.target) && e.target !== btn && !btn?.contains(e.target)) {
+    wrap.style.display = 'none';
+  }
+});
 
 async function loadPlayer(tagOverride) {
   const raw = (tagOverride || document.getElementById('player-tag').value).trim();
