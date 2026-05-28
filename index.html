@@ -75,8 +75,6 @@
   .badge-green { background: #003322; color: var(--green); }
   .badge-red { background: #330011; color: var(--red); }
   .badge-purple { background: #220033; color: var(--purple); }
-  .badge-evo    { background: #001833; color: #44aaff; border: 1px solid #44aaff; }
-  .badge-hero   { background: #1a0033; color: #cc66ff; border: 1px solid #cc66ff; }
 
   /* ── Progress bar ── */
   .progress-wrap { background: var(--surface3); border-radius: 4px; height: 8px; overflow: hidden; }
@@ -406,7 +404,7 @@ const XP_DATA = {
   champion:  [800,1600,2000,50000,200000],
 };
 
-const MIN_LEVEL = { common:1, rare:3, epic:6, legendary:9, champion:11, hero:11 };
+const MIN_LEVEL = { common:1, rare:3, epic:6, legendary:9, champion:11 };
 const MAX_LEVEL = 16;
 
 function toDisplayLevel(rarity, apiLevel) {
@@ -727,14 +725,13 @@ function renderOverview(data) {
     const minL = MIN_LEVEL[r] || 1;
     const steps = LEVEL_DATA[r] || [];
     const idx = disp - minL;
-    const hasUpgradeData = steps.length > 0;
-    const isMaxed = !hasUpgradeData ? (disp >= MAX_LEVEL) : (disp >= MAX_LEVEL || idx >= steps.length);
-    const nextStep = (hasUpgradeData && !isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
-    const isUpgradable = hasUpgradeData && !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
-    const canMax = hasUpgradeData && !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
-    const xpSoFar = hasUpgradeData ? xpEarned(r, disp) : 0;
-    const xpLeft  = hasUpgradeData ? xpToMax(r, disp) : 0;
-    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, xpSoFar, xpLeft, hasUpgradeData };
+    const isMaxed = disp >= MAX_LEVEL || idx >= steps.length;
+    const nextStep = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
+    const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
+    const canMax = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
+    const xpSoFar = xpEarned(r, disp);
+    const xpLeft  = xpToMax(r, disp);
+    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, xpSoFar, xpLeft };
   });
 
   const maxedCount     = enriched.filter(c => c.isMaxed).length;
@@ -743,8 +740,6 @@ function renderOverview(data) {
   const totalGoldReady = upgradableNow.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
   const totalXpEarned  = enriched.reduce((s, c) => s + c.xpSoFar, 0);
   const totalXpLeft    = enriched.reduce((s, c) => s + c.xpLeft, 0);
-  const evolvedCount   = enriched.filter(c => (c.evolutionLevel||0) > 0).length;
-  const heroCount      = enriched.filter(c => c.r === 'hero').length;
   const fav = data.currentFavouriteCard;
 
   // Top 5 suggested upgrades: upgradable sorted by cheapest gold first
@@ -783,8 +778,6 @@ function renderOverview(data) {
       <div class="stat-row"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(totalGoldReady)} 💰</strong></div>
       <div class="stat-row"><span class="stat-label">Total XP earned</span><strong>${fmtNum(totalXpEarned)} ✨</strong></div>
       <div class="stat-row"><span class="stat-label">Total XP left to max all</span><strong>${fmtNum(totalXpLeft)} ✨</strong></div>
-      ${evolvedCount > 0 ? `<div class="stat-row"><span class="stat-label">Evolved cards</span><strong class="text-blue">${evolvedCount} ⚡</strong></div>` : ''}
-      ${heroCount    > 0 ? `<div class="stat-row"><span class="stat-label">Hero cards</span><strong style="color:#cc66ff">${heroCount} 🦸</strong></div>` : ''}
       <div class="progress-wrap mt8">
         <div class="progress-bar" style="width:${Math.round(maxedCount/Math.max(cards.length,1)*100)}%;background:var(--accent)"></div>
       </div>
@@ -817,7 +810,6 @@ function renderCardsPane(data) {
       <button class="filter-btn" onclick="setCardFilter('maxed','status')">Maxed</button>
       <button class="filter-btn" onclick="setCardFilter('locked','status')">Need Cards</button>
       <button class="filter-btn" onclick="setCardFilter('canmax','status')">Can Max</button>
-      <button class="filter-btn" onclick="setCardFilter('evolved','status')">⚡ Evolved</button>
     </div>
     <div class="filter-bar" id="card-rarity-filter">
       <button class="filter-btn active" onclick="setCardFilter('all','rarity')">All</button>
@@ -826,7 +818,6 @@ function renderCardsPane(data) {
       <button class="filter-btn" onclick="setCardFilter('epic','rarity')">Epic</button>
       <button class="filter-btn" onclick="setCardFilter('legendary','rarity')">Legendary</button>
       <button class="filter-btn" onclick="setCardFilter('champion','rarity')">Champion</button>
-      <button class="filter-btn" onclick="setCardFilter('hero','rarity')">Hero</button>
     </div>
     <div class="filter-bar" id="card-sort-filter">
       <button class="filter-btn active" onclick="setCardFilter('level-desc','sort')">Level ↓</button>
@@ -847,7 +838,7 @@ window.setCardFilter = function(val, type) {
   renderCards();
 };
 
-const RARITY_ORDER = { common:0, rare:1, epic:2, legendary:3, champion:4, hero:5 };
+const RARITY_ORDER = { common:0, rare:1, epic:2, legendary:3, champion:4 };
 
 function renderCards() {
   const grid = document.getElementById('cards-grid');
@@ -861,21 +852,19 @@ function renderCards() {
     const steps = LEVEL_DATA[r] || [];
     const minL  = MIN_LEVEL[r] || 1;
     const idx   = disp - minL;
-    const hasUpgradeData = steps.length > 0;
-    const isMaxed     = !hasUpgradeData ? (disp >= MAX_LEVEL) : (disp >= MAX_LEVEL || idx >= steps.length);
-    const nextStep    = (hasUpgradeData && !isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
-    const isUpgradable = hasUpgradeData && !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
-    const canMax       = hasUpgradeData && !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
-    const xpSoFar      = hasUpgradeData ? xpEarned(r, disp) : 0;
-    const xpLeft       = hasUpgradeData ? xpToMax(r, disp) : 0;
-    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, xpSoFar, xpLeft, hasUpgradeData };
+    const isMaxed     = disp >= MAX_LEVEL || idx >= steps.length;
+    const nextStep    = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
+    const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
+    const canMax       = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
+    const xpSoFar      = xpEarned(r, disp);
+    const xpLeft       = xpToMax(r, disp);
+    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, xpSoFar, xpLeft };
   });
 
   if (_cardFilter === 'maxed')     cards = cards.filter(c => c.isMaxed);
   if (_cardFilter === 'upgradable') cards = cards.filter(c => c.isUpgradable);
   if (_cardFilter === 'locked')    cards = cards.filter(c => !c.isMaxed && !c.isUpgradable);
   if (_cardFilter === 'canmax')    cards = cards.filter(c => c.canMax);
-  if (_cardFilter === 'evolved')  cards = cards.filter(c => (c.evolutionLevel||0) > 0);
 
   // Sort
   if (_cardSort === 'level-desc') cards.sort((a,b) => b.disp - a.disp);
@@ -883,9 +872,7 @@ function renderCards() {
   if (_cardSort === 'rarity')     cards.sort((a,b) => (RARITY_ORDER[b.r]||0) - (RARITY_ORDER[a.r]||0) || b.disp - a.disp);
 
   if (!cards.length) {
-    grid.innerHTML = _cardRarity === 'hero'
-      ? '<div class="empty-msg">🦸 Hero cards are not yet included in the official Clash Royale API.<br><br>Supercell will likely add them in a future API update — the filter will populate automatically once they do.</div>'
-      : '<div class="empty-msg">No cards match this filter.</div>';
+    grid.innerHTML = '<div class="empty-msg">No cards match this filter.</div>';
     return;
   }
 
@@ -899,9 +886,6 @@ function renderCards() {
       : c.isUpgradable ? '<span class="badge badge-green">Ready</span>'
       : c.canMax       ? '<span class="badge badge-blue">Can Max</span>'
       : '';
-    const evoLabel  = (c.evolutionLevel||0) > 0 ? '<span class="badge badge-evo">⚡ Evo</span>' : '';
-    const heroLabel = c.r === 'hero' ? '<span class="badge badge-hero">🦸 Hero</span>' : '';
-    const stars     = (c.starLevel||0) > 0 ? `<span style="color:#FFD700;font-size:12px;letter-spacing:1px">${'★'.repeat(Math.min(c.starLevel,3))}</span>` : '';
 
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
       <div class="flex-between mb8">
@@ -910,20 +894,14 @@ function renderCards() {
           <div>
             <span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br>
             <span style="font-size:11px;color:${rarityColor[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
-            ${stars ? `&nbsp;${stars}` : ''}
           </div>
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
-          <div style="display:flex;align-items:center;gap:4px">
-            ${evoLabel}${heroLabel}
-            <span style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:var(--accent)">Lv ${c.disp}</span>
-          </div>
+          <span style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:var(--accent)">Lv ${c.disp}</span>
           ${statusLabel}
         </div>
       </div>
-      ${!c.hasUpgradeData ? `
-        <div style="font-size:12px;color:var(--muted)">Upgrade cost data not yet available for this card type.</div>
-      ` : !c.isMaxed && c.nextStep ? `
+      ${!c.isMaxed && c.nextStep ? `
         <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px">
           <span>Cards: ${fmtNum(owned)} / ${fmtNum(needed)}</span>
           <span>${fmtNum(c.nextStep.gold)} 💰 to Lv ${c.disp+1}</span>
