@@ -113,11 +113,6 @@
   .nav-card h3 { font-size: 16px; }
   .nav-card p { font-size: 12px; color: var(--muted); margin-top: 4px; }
 
-  /* ── API key section ── */
-  .api-key-wrap { position: relative; }
-  .api-key-wrap input { padding-right: 80px; font-family: monospace; font-size: 13px; }
-  .api-toggle { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: var(--surface3); border: none; color: var(--muted); border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
-
   /* ── Calculator ── */
   .calc-result { background: var(--surface2); border-radius: var(--radius); padding: 16px; margin-top: 16px; }
   .calc-result h3 { color: var(--accent); margin-bottom: 12px; }
@@ -216,23 +211,6 @@
       <div class="home-header">
         <h1>⚔ Max Royale</h1>
         <p>Upgrade calculator &amp; player stats</p>
-      </div>
-
-      <div class="card">
-        <h3 style="margin-bottom:12px">API Key</h3>
-        <div class="field">
-          <label>Clash Royale API Token</label>
-          <div class="api-key-wrap">
-            <input type="password" id="api-key-input" placeholder="Paste your API key here…">
-            <button class="api-toggle" onclick="toggleApiKey()">Show</button>
-          </div>
-        </div>
-        <button class="btn btn-primary btn-full" onclick="saveApiKey()">Save Key</button>
-        <p id="api-key-status" class="text-muted" style="font-size:13px;margin-top:8px;text-align:center"></p>
-        <p style="font-size:12px;color:var(--muted);margin-top:10px">
-          Get a free key at <strong>developer.clashroyale.com</strong><br>
-          Use IP <code>45.79.218.79</code> as the allowed IP — works from any network.
-        </p>
       </div>
 
       <div class="nav-cards">
@@ -510,32 +488,12 @@ function switchTab(name) {
 }
 
 // ═══════════════════════════════════════════════
-//  API KEY
+//  API KEY — hardcoded for personal use
 // ═══════════════════════════════════════════════
-function getApiKey() { return localStorage.getItem('cr_api_key') || ''; }
-
-function saveApiKey() {
-  const val = document.getElementById('api-key-input').value.trim();
-  if (!val) return;
-  localStorage.setItem('cr_api_key', val);
-  document.getElementById('api-key-status').textContent = '✓ Key saved';
-  document.getElementById('api-key-status').style.color = 'var(--green)';
-}
-
-function toggleApiKey() {
-  const inp = document.getElementById('api-key-input');
-  const btn = inp.nextElementSibling;
-  if (inp.type === 'password') { inp.type = 'text'; btn.textContent = 'Hide'; }
-  else { inp.type = 'password'; btn.textContent = 'Show'; }
-}
+const _API_KEY = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiIsImtpZCI6IjI4YTMxOGY3LTAwMDAtYTFlYi03ZmExLTJjNzQzM2M2Y2NhNSJ9.eyJpc3MiOiJzdXBlcmNlbGwiLCJhdWQiOiJzdXBlcmNlbGw6Z2FtZWFwaSIsImp0aSI6ImQyOWUyZTMwLTUzZjAtNDhhZi04YWY1LWI5YzMzZmFlNzFiZiIsImlhdCI6MTc3OTkyMDkxOCwic3ViIjoiZGV2ZWxvcGVyL2Q3ODc5ZjEyLTA3ZDUtYTM1NC1lNTkyLTZiZWRjYjBjZWIzYyIsInNjb3BlcyI6WyJyb3lhbGUiXSwibGltaXRzIjpbeyJ0aWVyIjoiZGV2ZWxvcGVyL3NpbHZlciIsInR5cGUiOiJ0aHJvdHRsaW5nIn0seyJjaWRycyI6WyI0NS43OS4yMTguNzkiXSwidHlwZSI6ImNsaWVudCJ9XX0.Z0yLs-ZVmUsVyFfL7R226WyB3ZpYlMaQ93_eTLof2h7Kg5NniLO0YommI0qUtR8NQXWklNQVSL55yds29nyS2w';
+function getApiKey() { return _API_KEY; }
 
 function initApiKey() {
-  const key = getApiKey();
-  if (key) {
-    document.getElementById('api-key-input').value = key;
-    document.getElementById('api-key-status').textContent = '✓ Key loaded';
-    document.getElementById('api-key-status').style.color = 'var(--green)';
-  }
   const savedTag = localStorage.getItem('cr_player_tag');
   if (savedTag) document.getElementById('player-tag').value = savedTag;
 }
