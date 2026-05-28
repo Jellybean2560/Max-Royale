@@ -691,11 +691,20 @@ function removeAccount(tag, ev) {
   localStorage.setItem('cr_saved_accounts', JSON.stringify(list));
   renderSavedAccounts();
 }
+let _accountsEditMode = false;
 function toggleAccountsMenu(ev) {
   if (ev) ev.stopPropagation();
   const wrap = document.getElementById('saved-accounts');
   if (!wrap) return;
-  wrap.style.display = wrap.style.display === 'none' || !wrap.style.display ? 'block' : 'none';
+  const opening = wrap.style.display === 'none' || !wrap.style.display;
+  if (opening) _accountsEditMode = false;  // always start in normal mode
+  wrap.style.display = opening ? 'block' : 'none';
+  if (opening) renderSavedAccounts();
+}
+function toggleAccountsEdit(ev) {
+  if (ev) ev.stopPropagation();
+  _accountsEditMode = !_accountsEditMode;
+  renderSavedAccounts();
 }
 function renderSavedAccounts() {
   const wrap = document.getElementById('saved-accounts');
@@ -711,12 +720,15 @@ function renderSavedAccounts() {
   if (btn) btn.style.display = 'block';
   const current = localStorage.getItem('cr_player_tag');
   wrap.innerHTML = `
-    <div style="font-size:11px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Saved Accounts</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Saved Accounts</span>
+      <span onclick="toggleAccountsEdit(event)" style="cursor:pointer;font-size:14px;opacity:${_accountsEditMode?1:0.6}" title="Edit accounts">⚙️</span>
+    </div>
     <div style="display:flex;flex-direction:column;gap:6px">
       ${list.map(a => `
-        <span onclick="loadPlayer('${a.tag}');toggleAccountsMenu(event)" style="display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer;background:${a.tag===current?'var(--accent)':'var(--surface2)'};color:${a.tag===current?'#1a1a2e':'var(--text)'};border:1px solid var(--border);border-radius:10px;padding:7px 10px;font-size:13px">
+        <span onclick="${_accountsEditMode ? '' : `loadPlayer('${a.tag}');toggleAccountsMenu(event)`}" style="display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:${_accountsEditMode?'default':'pointer'};background:${a.tag===current?'var(--accent)':'var(--surface2)'};color:${a.tag===current?'#1a1a2e':'var(--text)'};border:1px solid var(--border);border-radius:10px;padding:7px 10px;font-size:13px">
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.name)}</span>
-          <span onclick="removeAccount('${a.tag}',event)" style="opacity:0.6;font-weight:700;padding:0 4px;flex-shrink:0" title="Remove">×</span>
+          ${_accountsEditMode ? `<span onclick="removeAccount('${a.tag}',event)" style="color:var(--red);font-weight:700;padding:0 4px;flex-shrink:0;cursor:pointer" title="Remove">🗑</span>` : ''}
         </span>`).join('')}
     </div>`;
 }
