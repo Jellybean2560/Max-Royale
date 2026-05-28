@@ -208,8 +208,11 @@
 
       <div class="card">
         <div class="field">
-          <label>Card Lookup</label>
-          <div class="dropdown-wrap">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <label style="margin:0">Card Lookup</label>
+            <button onclick="resetCalculator()" style="background:var(--surface2);color:var(--muted);border:1px solid var(--border);border-radius:14px;padding:3px 10px;font-size:11px;font-family:'Inter',sans-serif;cursor:pointer">↺ Reset</button>
+          </div>
+          <div class="dropdown-wrap" style="margin-top:6px">
             <input type="text" id="card-search" placeholder="Type card name…" oninput="onCardSearch(this.value)" autocomplete="off">
             <div class="dropdown-list" id="card-dropdown"></div>
           </div>
@@ -1099,6 +1102,18 @@ function renderCards() {
       ` : ''}
     </div>`;
   }).join('');
+}
+
+function resetCalculator() {
+  document.getElementById('card-search').value = '';
+  document.getElementById('card-dropdown').classList.remove('open');
+  const note = document.getElementById('card-lookup-note');
+  if (note) note.style.display = 'none';
+  document.getElementById('calc-rarity').value = 'common';
+  document.getElementById('calc-current').value = MIN_LEVEL['common'];
+  document.getElementById('calc-count').value = 0;
+  document.getElementById('calc-target').value = MAX_LEVEL;
+  calcUpdate();
 }
 
 function openInCalculator(cardId) {
