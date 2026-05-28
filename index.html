@@ -915,6 +915,12 @@ const RARITY_ORDER = { common:0, rare:1, epic:2, legendary:3, champion:4 };
 function renderCards() {
   const grid = document.getElementById('cards-grid');
   if (!grid) return;
+
+  // Build maxStarLevel lookup from the /cards catalog so we show the right number
+  // of empty stars (e.g. Poison has maxStarLevel 1, not 3)
+  const catalogStarMax = {};
+  allCards.forEach(ac => { if (ac.maxStarLevel) catalogStarMax[ac.id] = ac.maxStarLevel; });
+
   let cards = [..._cardData];
   if (_cardRarity !== 'all') cards = cards.filter(c => (c.rarity||'').toLowerCase() === _cardRarity);
 
@@ -969,7 +975,7 @@ function renderCards() {
           <div>
             <span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br>
             <span style="font-size:11px;color:${rarityColor[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
-            ${(c.starLevel||0) > 0 ? `&nbsp;<span style="font-size:12px;letter-spacing:1px">${'<span style="color:#FFD700">★</span>'.repeat(Math.min(c.starLevel,3))}${'<span style="color:#555577">★</span>'.repeat(Math.max(0,3-Math.min(c.starLevel,3)))}</span>` : ''}
+            ${(() => { const sl = c.starLevel||0; const ms = c.maxStarLevel || catalogStarMax[c.id] || 0; return sl > 0 && ms > 0 ? `&nbsp;<span style="font-size:12px;letter-spacing:1px">${'<span style="color:#FFD700">★</span>'.repeat(Math.min(sl,ms))}${'<span style="color:#555577">★</span>'.repeat(Math.max(0,ms-Math.min(sl,ms)))}</span>` : ''; })()}
           </div>
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
