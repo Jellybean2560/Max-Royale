@@ -843,7 +843,6 @@ function renderOverview(data) {
     <div class="card">
       <h3 style="margin-bottom:8px">⚡ Card Insights</h3>
       <div style="margin-top:14px;margin-bottom:10px;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px"><img src="cards-icon.webp" style="width:22px;height:18px;object-fit:contain;filter:brightness(0) invert(0.55)"> Cards</div>
-      <div class="stat-row"><span class="stat-label">Total cards in collection</span><strong>${cards.length}</strong></div>
       <div class="stat-row" style="border-bottom:none"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${maxedCount} / ${cards.length}</strong></div>
       <div class="progress-wrap mt8">
         <div class="progress-bar" style="width:${Math.round(maxedCount/Math.max(cards.length,1)*100)}%;background:var(--accent)"></div>
@@ -856,7 +855,6 @@ function renderOverview(data) {
       ${troopEnriched.length ? `
       <div style="margin-top:14px">
         <div style="margin-bottom:10px;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px"><img src="tower-troop-icon.webp" style="width:14px;height:20px;object-fit:contain;filter:brightness(0) invert(0.55)"> Tower Troops</div>
-        <div class="stat-row"><span class="stat-label">Total troops in collection</span><strong>${troopEnriched.length}</strong></div>
         <div class="stat-row" style="border-bottom:none"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${troopMaxed} / ${troopEnriched.length}</strong></div>
         <div class="progress-wrap mt8">
           <div class="progress-bar" style="width:${Math.round(troopMaxed/troopEnriched.length*100)}%;background:var(--accent)"></div>
