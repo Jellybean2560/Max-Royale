@@ -258,6 +258,7 @@
             <button class="btn btn-primary" onclick="loadPlayer()">Search</button>
           </div>
         </div>
+        <div id="saved-accounts" style="margin-top:12px"></div>
       </div>
       <div id="player-result">
         <div style="text-align:center;padding:48px 0 32px">
@@ -668,6 +669,42 @@ document.getElementById('calc-rarity').addEventListener('change', () => {
 // ═══════════════════════════════════════════════
 //  PLAYER LOOKUP
 // ═══════════════════════════════════════════════
+// Saved accounts (stored in localStorage — per browser/device, like a cookie)
+function getSavedAccounts() {
+  try { return JSON.parse(localStorage.getItem('cr_saved_accounts') || '[]'); }
+  catch(e) { return []; }
+}
+function saveAccount(tag, name) {
+  if (!tag) return;
+  let list = getSavedAccounts().filter(a => a.tag !== tag);
+  list.unshift({ tag, name: name || tag });
+  list = list.slice(0, 10);  // cap at 10
+  localStorage.setItem('cr_saved_accounts', JSON.stringify(list));
+  renderSavedAccounts();
+}
+function removeAccount(tag, ev) {
+  if (ev) ev.stopPropagation();
+  const list = getSavedAccounts().filter(a => a.tag !== tag);
+  localStorage.setItem('cr_saved_accounts', JSON.stringify(list));
+  renderSavedAccounts();
+}
+function renderSavedAccounts() {
+  const wrap = document.getElementById('saved-accounts');
+  if (!wrap) return;
+  const list = getSavedAccounts();
+  if (!list.length) { wrap.innerHTML = ''; return; }
+  const current = localStorage.getItem('cr_player_tag');
+  wrap.innerHTML = `
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Saved Accounts</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      ${list.map(a => `
+        <span onclick="loadPlayer('${a.tag}')" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;background:${a.tag===current?'var(--accent)':'var(--surface2)'};color:${a.tag===current?'#1a1a2e':'var(--text)'};border:1px solid var(--border);border-radius:16px;padding:5px 10px;font-size:13px">
+          ${esc(a.name)}
+          <span onclick="removeAccount('${a.tag}',event)" style="opacity:0.6;font-weight:700;padding:0 2px" title="Remove">×</span>
+        </span>`).join('')}
+    </div>`;
+}
+
 async function loadPlayer(tagOverride) {
   const raw = (tagOverride || document.getElementById('player-tag').value).trim();
   if (!raw) return;
@@ -684,6 +721,8 @@ async function loadPlayer(tagOverride) {
       maybeLoadCards()
     ]);
     renderProfile(data, battles);
+    // Save this account (name + tag) so the user can switch between accounts
+    saveAccount(data.tag, data.name);
     // Cache this player's cards (+ tower troops) for the calculator's Card Lookup
     _playerCardsById = {};
     [...(data.cards || []), ...(data.supportCards || [])].forEach(c => {
@@ -1700,6 +1739,7 @@ calcUpdate();
 // Restore last-used player tag into the input
 const _savedTag = localStorage.getItem('cr_player_tag');
 if (_savedTag) document.getElementById('player-tag').value = _savedTag;
+renderSavedAccounts();
 
 // Register service worker for PWA (standalone fullscreen install)
 if ('serviceWorker' in navigator) {
