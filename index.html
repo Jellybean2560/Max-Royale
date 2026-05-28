@@ -871,9 +871,11 @@ function renderOverview(data) {
     <div class="card">
       <h3 style="margin-bottom:12px">📊 Collection Level</h3>
       <div class="stat-row"><span class="stat-label">Collection Level</span><strong style="font-size:20px;font-family:'Rajdhani',sans-serif">${fmtNum(collectionLevel)}</strong></div>
-      <div class="stat-row"><span class="stat-label">Cards (levels)</span><span style="color:var(--text)">+${fmtNum(cardLevelCL)}</span></div>
-      ${evolvedCount > 0 ? `<div class="stat-row"><span class="stat-label">Evolutions (×5 each)</span><span style="color:var(--blue)">+${evolvedCount * 5} (${evolvedCount} evos)</span></div>` : ''}
-      ${heroCount > 0 ? `<div class="stat-row"><span class="stat-label">Heroes (×5 each)</span><span style="color:var(--purple)">+${heroCount * 5} (${heroCount} heroes)</span></div>` : ''}
+      <div style="padding:6px 0 2px;display:flex;flex-direction:column;gap:3px;border-bottom:1px solid var(--border);margin-bottom:2px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>Cards (levels)</span><span>+${fmtNum(cardLevelCL)}</span></div>
+        ${evolvedCount > 0 ? `<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>Evolutions (×5 each)</span><span style="color:var(--blue)">+${evolvedCount * 5} (${evolvedCount} evos)</span></div>` : ''}
+        ${heroCount > 0 ? `<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>Heroes (×5 each)</span><span style="color:var(--purple)">+${heroCount * 5} (${heroCount} heroes)</span></div>` : ''}
+      </div>
       <div class="stat-row"><span class="stat-label">Next milestone</span><strong>${fmtNum(nextMilestone)}</strong></div>
       <div class="progress-wrap mt8">
         <div class="progress-bar" style="width:${milestoneProgress}%;background:var(--blue)"></div>
