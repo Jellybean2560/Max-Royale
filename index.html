@@ -870,11 +870,14 @@ function renderOverview(data) {
 
     <div class="card">
       <h3 style="margin-bottom:12px">📊 Collection Level</h3>
-      <div class="stat-row"><span class="stat-label">Collection Level</span><strong style="font-size:20px;font-family:'Rajdhani',sans-serif">${fmtNum(collectionLevel)}</strong></div>
-      <div style="padding:6px 0 2px;display:flex;flex-direction:column;gap:3px;border-bottom:1px solid var(--border);margin-bottom:2px">
-        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>Cards (levels)</span><span>+${fmtNum(cardLevelCL)}</span></div>
-        ${evolvedCount > 0 ? `<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>Evolutions (×5 each)</span><span style="color:var(--blue)">+${evolvedCount * 5} (${evolvedCount} evos)</span></div>` : ''}
-        ${heroCount > 0 ? `<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>Heroes (×5 each)</span><span style="color:var(--purple)">+${heroCount * 5} (${heroCount} heroes)</span></div>` : ''}
+      <div class="stat-row" onclick="toggleCardMax('cl-breakdown')" style="cursor:pointer">
+        <span class="stat-label">Collection Level <span id="cl-breakdown-toggle" style="font-size:10px;color:var(--muted)">▼</span></span>
+        <strong style="font-size:20px;font-family:'Rajdhani',sans-serif">${fmtNum(collectionLevel)}</strong>
+      </div>
+      <div id="cl-breakdown-max" style="display:none;padding:6px 0 4px;border-bottom:1px solid var(--border);margin-bottom:2px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding:2px 0"><span>Cards (levels)</span><span>+${fmtNum(cardLevelCL)}</span></div>
+        ${evolvedCount > 0 ? `<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding:2px 0"><span>Evolutions (×5 each)</span><span style="color:var(--blue)">+${evolvedCount * 5} (${evolvedCount} evos)</span></div>` : ''}
+        ${heroCount > 0 ? `<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding:2px 0"><span>Heroes (×5 each)</span><span style="color:var(--purple)">+${heroCount * 5} (${heroCount} heroes)</span></div>` : ''}
       </div>
       <div class="stat-row"><span class="stat-label">Next milestone</span><strong>${fmtNum(nextMilestone)}</strong></div>
       <div class="progress-wrap mt8">
@@ -1044,7 +1047,9 @@ function toggleCardMax(id) {
   if (!el) return;
   const opening = el.style.display === 'none' || el.style.display === '';
   el.style.display = opening ? 'block' : 'none';
-  if (toggle) toggle.textContent = opening ? '▲ Hide' : '▼ Total to Lv 16';
+  if (toggle) toggle.textContent = opening
+    ? '▲'
+    : id === 'cl-breakdown' ? '▼' : '▼ Total to Lv 16';
 }
 
 // ── Evolutions pane ──
