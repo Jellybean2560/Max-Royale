@@ -407,6 +407,28 @@ const XP_DATA = {
 const MIN_LEVEL = { common:1, rare:3, epic:6, legendary:9, champion:11 };
 const MAX_LEVEL = 16;
 
+// King Tower Level requirements (May 2026 update)
+const KTL_REQ = [
+  {lvl:2, need:9, min:1},{lvl:3, need:9, min:2},{lvl:4, need:10, min:3},
+  {lvl:5, need:10, min:4},{lvl:6, need:10, min:5},{lvl:7, need:10, min:6},
+  {lvl:8, need:10, min:7},{lvl:9, need:10, min:8},{lvl:10, need:10, min:9},
+  {lvl:11, need:10, min:10},{lvl:12, need:11, min:11},{lvl:13, need:11, min:12},
+  {lvl:14, need:12, min:13},{lvl:15, need:13, min:14},{lvl:16, need:14, min:15}
+];
+function calcKingTowerLevel(dispLevels) {
+  let ktl = 1;
+  for (const r of KTL_REQ) {
+    if (dispLevels.filter(l => l >= r.min).length >= r.need) ktl = r.lvl;
+    else break;
+  }
+  return ktl;
+}
+function nextCLMilestone(cl) {
+  if (cl < 20) return 20;
+  if (cl >= 1500) return Math.ceil((cl + 1) / 5) * 5;
+  return Math.ceil((cl + 1) / 10) * 10;
+}
+
 function toDisplayLevel(rarity, apiLevel) {
   return apiLevel + (MIN_LEVEL[rarity] || 1) - 1;
 }
@@ -679,8 +701,8 @@ function renderProfile(data, battles) {
           <div class="trophies">🏆 ${fmtNum(data.trophies)} ${league}</div>
         </div>
         <div style="text-align:right">
-          <div style="font-size:13px;color:var(--muted)">Exp Level</div>
-          <div style="font-size:28px;font-weight:700;font-family:'Rajdhani',sans-serif;color:var(--accent)">${data.expLevel}</div>
+          <div style="font-size:13px;color:var(--muted)">King Level</div>
+          <div style="font-size:28px;font-weight:700;font-family:'Rajdhani',sans-serif;color:var(--accent)">${calcKingTowerLevel((data.cards||[]).map(c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level)))}</div>
         </div>
       </div>
       ${data.clan ? `<div class="mt8" style="font-size:13px;color:var(--muted)">🛡 ${esc(data.clan.name)}</div>` : ''}
@@ -729,17 +751,25 @@ function renderOverview(data) {
     const nextStep = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
     const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
     const canMax = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
-    const xpSoFar = xpEarned(r, disp);
-    const xpLeft  = xpToMax(r, disp);
-    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, xpSoFar, xpLeft };
+    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep };
   });
 
-  const maxedCount     = enriched.filter(c => c.isMaxed).length;
-  const upgradableNow  = enriched.filter(c => c.isUpgradable);
-  const canMaxCards    = enriched.filter(c => c.canMax);
-  const totalGoldReady = upgradableNow.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
-  const totalXpEarned  = enriched.reduce((s, c) => s + c.xpSoFar, 0);
-  const totalXpLeft    = enriched.reduce((s, c) => s + c.xpLeft, 0);
+  const maxedCount      = enriched.filter(c => c.isMaxed).length;
+  const upgradableNow   = enriched.filter(c => c.isUpgradable);
+  const canMaxCards     = enriched.filter(c => c.canMax);
+  const totalGoldReady  = upgradableNow.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
+  const collectionLevel = enriched.reduce((s, c) => s + c.disp, 0);
+  const kingTowerLevel  = calcKingTowerLevel(enriched.map(c => c.disp));
+  const nextMilestone   = nextCLMilestone(collectionLevel);
+  const prevMilestone   = collectionLevel < 20 ? 0 : collectionLevel >= 1500
+    ? Math.floor(collectionLevel / 5) * 5
+    : Math.floor(collectionLevel / 10) * 10;
+  const milestoneProgress = Math.round((collectionLevel - prevMilestone) / (nextMilestone - prevMilestone) * 100);
+  // King Tower Level — progress toward next level
+  const nextKtlReq = KTL_REQ.find(r => r.lvl === kingTowerLevel + 1);
+  const ktlProgress = nextKtlReq
+    ? enriched.filter(c => c.disp >= nextKtlReq.min).length
+    : null;
   const fav = data.currentFavouriteCard;
 
   // Top 5 suggested upgrades: upgradable sorted by cheapest gold first
@@ -776,12 +806,21 @@ function renderOverview(data) {
       <div class="stat-row"><span class="stat-label">Upgradable now</span><strong class="text-green">${upgradableNow.length}</strong></div>
       <div class="stat-row"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${canMaxCards.length}</strong></div>
       <div class="stat-row"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(totalGoldReady)} 💰</strong></div>
-      <div class="stat-row"><span class="stat-label">Total XP earned</span><strong>${fmtNum(totalXpEarned)} ✨</strong></div>
-      <div class="stat-row"><span class="stat-label">Total XP left to max all</span><strong>${fmtNum(totalXpLeft)} ✨</strong></div>
+      <div class="stat-row"><span class="stat-label">King Tower Level</span><strong class="text-accent">${kingTowerLevel === 16 ? '👑 16 (Max)' : `${kingTowerLevel} → ${kingTowerLevel+1} (${ktlProgress}/${nextKtlReq.need} cards at Lv ${nextKtlReq.min}+)`}</strong></div>
       <div class="progress-wrap mt8">
         <div class="progress-bar" style="width:${Math.round(maxedCount/Math.max(cards.length,1)*100)}%;background:var(--accent)"></div>
       </div>
       <div style="font-size:12px;color:var(--muted);margin-top:4px">${Math.round(maxedCount/Math.max(cards.length,1)*100)}% maxed</div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:12px">📊 Collection Level</h3>
+      <div class="stat-row"><span class="stat-label">Collection Level</span><strong style="font-size:20px;font-family:'Rajdhani',sans-serif">${fmtNum(collectionLevel)}</strong></div>
+      <div class="stat-row"><span class="stat-label">Next milestone</span><strong>${fmtNum(nextMilestone)}</strong></div>
+      <div class="progress-wrap mt8">
+        <div class="progress-bar" style="width:${milestoneProgress}%;background:var(--blue)"></div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px">${collectionLevel - prevMilestone} / ${nextMilestone - prevMilestone} levels to next milestone</div>
     </div>
 
     ${suggested.length ? `
@@ -856,9 +895,7 @@ function renderCards() {
     const nextStep    = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
     const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
     const canMax       = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
-    const xpSoFar      = xpEarned(r, disp);
-    const xpLeft       = xpToMax(r, disp);
-    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, xpSoFar, xpLeft };
+    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep };
   });
 
   if (_cardFilter === 'maxed')     cards = cards.filter(c => c.isMaxed);
@@ -908,12 +945,8 @@ function renderCards() {
           <span>${fmtNum(c.nextStep.gold)} 💰 to Lv ${c.disp+1}</span>
         </div>
         <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;background:${c.isUpgradable?'var(--green)':'var(--blue)'}"></div></div>
-        <div class="flex-between mt8" style="font-size:11px;color:var(--muted)">
-          <span>XP earned: ${fmtNum(c.xpSoFar)} ✨</span>
-          <span>XP to max: ${fmtNum(c.xpLeft)} ✨</span>
-        </div>
       ` : `
-        <div style="font-size:12px;color:var(--muted)">XP earned: ${fmtNum(c.xpSoFar)} ✨ — Fully maxed!</div>
+        <div style="font-size:12px;color:var(--muted)">Fully maxed! ✓</div>
       `}
     </div>`;
   }).join('');
