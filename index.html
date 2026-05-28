@@ -706,6 +706,20 @@ function renderProfile(data, battles) {
   const li = data.leagueStatistics;
   const league = li ? (leagueEmoji[Math.min((li.currentSeason.trophies||0) / 500 | 0, 12)] || '') : '';
 
+  // Compute collection level here so the header can show it
+  const _cards    = data.cards || [];
+  const _evoIds   = new Set(allCards.filter(c => c.iconUrls?.evolutionMedium).map(c => c.id));
+  const _heroIds  = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
+  const _cardCL   = _cards.reduce((s, c) => s + toDisplayLevel((c.rarity||'common').toLowerCase(), c.level), 0);
+  const _evoCount = _cards.filter(c => {
+    if (!_evoIds.has(c.id)) return false;
+    const evo = c.evolutionLevel || 0, maxEvo = c.maxEvolutionLevel || 0;
+    return _heroIds.has(c.id) ? maxEvo > 0 && evo >= maxEvo : evo > 0;
+  }).length;
+  const _heroCount   = _cards.filter(c => _heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length;
+  const _troopCL     = (data.supportCards||[]).reduce((s, c) => s + toDisplayLevel((c.rarity||'common').toLowerCase(), c.level), 0);
+  const _profileCL   = _cardCL + _evoCount * 5 + _heroCount * 5 + _troopCL;
+
   el.innerHTML = `
     <div class="lookup-header">
       <div class="flex-between">
@@ -716,7 +730,8 @@ function renderProfile(data, battles) {
         </div>
         <div style="text-align:right">
           <div style="font-size:13px;color:var(--muted)">King Level</div>
-          <div style="font-size:28px;font-weight:700;font-family:'Rajdhani',sans-serif;color:var(--accent)">${calcKingTowerLevel((data.cards||[]).map(c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level)))}</div>
+          <div style="font-size:28px;font-weight:700;font-family:'Rajdhani',sans-serif;color:var(--accent)">${calcKingTowerLevel(_cards.map(c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level)))}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">CL <span style="color:var(--text);font-weight:600">${fmtNum(_profileCL)}</span></div>
         </div>
       </div>
       ${data.clan ? `<div class="mt8" style="font-size:13px;color:var(--muted)">🛡 ${esc(data.clan.name)}</div>` : ''}
