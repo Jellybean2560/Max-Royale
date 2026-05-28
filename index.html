@@ -957,6 +957,11 @@ function renderCards() {
       : c.canMax       ? '<span class="badge badge-blue">Can Max</span>'
       : '';
 
+    // Full path to Lv 16 (shown on tap) for cards at Lv 14 or below
+    const showMax = !c.isMaxed && c.disp <= 14;
+    const toMax   = showMax ? computeUpgrade(c.r, c.disp, owned, MAX_LEVEL) : null;
+    const domId   = `card-${c.id}`;
+
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
       <div class="flex-between mb8">
         <div style="display:flex;align-items:center;gap:10px">
@@ -981,8 +986,32 @@ function renderCards() {
       ` : `
         <div style="font-size:12px;color:var(--muted)">Fully maxed! ✓</div>
       `}
+      ${showMax ? `
+        <div onclick="toggleCardMax('${domId}')" style="cursor:pointer;margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);text-align:center;user-select:none">
+          <span id="${domId}-toggle">▼ Total to Lv 16</span>
+        </div>
+        <div id="${domId}-max" style="display:none;margin-top:6px">
+          <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px">
+            <span>Cards still needed</span>
+            <span class="${toMax.totalCards > 0 ? 'text-red' : 'text-green'}">${toMax.totalCards > 0 ? '+'+fmtNum(toMax.totalCards) : '✓ Enough cards'}</span>
+          </div>
+          <div class="flex-between" style="font-size:12px;color:var(--muted)">
+            <span>Total gold to Lv 16</span>
+            <span style="color:var(--accent)">${fmtNum(toMax.totalGold)} 💰</span>
+          </div>
+        </div>
+      ` : ''}
     </div>`;
   }).join('');
+}
+
+function toggleCardMax(id) {
+  const el     = document.getElementById(id + '-max');
+  const toggle = document.getElementById(id + '-toggle');
+  if (!el) return;
+  const opening = el.style.display === 'none' || el.style.display === '';
+  el.style.display = opening ? 'block' : 'none';
+  if (toggle) toggle.textContent = opening ? '▲ Hide' : '▼ Total to Lv 16';
 }
 
 // ── Evolutions pane ──
