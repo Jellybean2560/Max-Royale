@@ -503,13 +503,14 @@ function initApiKey() {
 // ═══════════════════════════════════════════════
 async function apiGet(path) {
   const key = getApiKey();
-  if (!key) throw new Error('No API key set. Go to Home and save your key first.');
-  const tag = path.replace('#', '%23');
-  const url = `https://proxy.royaleapi.dev/v1${tag}`;
+  const cleanPath = path.replace(/#/g, '%23');
+  const url = `https://corsproxy.io/?https://api.clashroyale.com/v1${cleanPath}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
-    throw new Error(`API error ${res.status}${txt ? ': ' + JSON.parse(txt).message : ''}`);
+    let msg = '';
+    try { msg = JSON.parse(txt).message; } catch(e) { msg = txt.slice(0, 300); }
+    throw new Error(`API error ${res.status}${msg ? ': ' + msg : ''}`);
   }
   return res.json();
 }
