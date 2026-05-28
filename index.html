@@ -846,7 +846,7 @@ function renderOverview(data) {
       <div class="stat-row"><span class="stat-label">Upgradable now</span><strong class="text-green">${upgradableNow.length}</strong></div>
       <div class="stat-row"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${canMaxCards.length}</strong></div>
       <div class="stat-row"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(totalGoldReady)} 💰</strong></div>
-      <div class="stat-row"><span class="stat-label">King Tower Level</span><strong class="text-accent">${kingTowerLevel === 16 ? '👑 16 (Max)' : `${kingTowerLevel} → ${kingTowerLevel+1} (${ktlProgress}/${nextKtlReq.need} cards at Lv ${nextKtlReq.min}+)`}</strong></div>
+
       ${troopEnriched.length ? `
       <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">
         <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">🗼 Tower Troops</div>
