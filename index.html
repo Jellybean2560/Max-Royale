@@ -504,8 +504,13 @@ function initApiKey() {
 async function apiGet(path) {
   const key = getApiKey();
   const cleanPath = path.replace(/#/g, '%23');
-  const url = `https://corsproxy.io/?https://api.clashroyale.com/v1${cleanPath}`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
+  const url = `https://proxy.royaleapi.dev/v1${cleanPath}`;
+  let res;
+  try {
+    res = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
+  } catch(e) {
+    throw new Error('Connection failed — proxy may be temporarily down. Try again in a moment.');
+  }
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     let msg = '';
