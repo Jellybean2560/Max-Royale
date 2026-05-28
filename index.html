@@ -798,7 +798,8 @@ function renderOverview(data) {
     const r = (c.rarity||'common').toLowerCase();
     return s + toDisplayLevel(r, c.level);
   }, 0);
-  const collectionLevel = enriched.reduce((s, c) => s + c.disp, 0) + (evolvedCount * 5) + (heroCount * 5) + towerTroopCL;
+  const cardLevelCL     = enriched.reduce((s, c) => s + c.disp, 0) + towerTroopCL;
+  const collectionLevel = cardLevelCL + (evolvedCount * 5) + (heroCount * 5);
   const kingTowerLevel  = calcKingTowerLevel(enriched.map(c => c.disp));
   const nextMilestone   = nextCLMilestone(collectionLevel);
   const prevMilestone   = collectionLevel < 20 ? 0 : collectionLevel >= 1500
@@ -870,9 +871,9 @@ function renderOverview(data) {
     <div class="card">
       <h3 style="margin-bottom:12px">📊 Collection Level</h3>
       <div class="stat-row"><span class="stat-label">Collection Level</span><strong style="font-size:20px;font-family:'Rajdhani',sans-serif">${fmtNum(collectionLevel)}</strong></div>
+      <div class="stat-row"><span class="stat-label">Cards (levels)</span><span style="color:var(--text)">+${fmtNum(cardLevelCL)}</span></div>
       ${evolvedCount > 0 ? `<div class="stat-row"><span class="stat-label">Evolutions (×5 each)</span><span style="color:var(--blue)">+${evolvedCount * 5} (${evolvedCount} evos)</span></div>` : ''}
       ${heroCount > 0 ? `<div class="stat-row"><span class="stat-label">Heroes (×5 each)</span><span style="color:var(--purple)">+${heroCount * 5} (${heroCount} heroes)</span></div>` : ''}
-      ${towerTroopCL > 0 ? `<div class="stat-row"><span class="stat-label">Tower Troops (levels)</span><span style="color:var(--accent)">+${towerTroopCL} (${supportCards.length} troops)</span></div>` : ''}
       <div class="stat-row"><span class="stat-label">Next milestone</span><strong>${fmtNum(nextMilestone)}</strong></div>
       <div class="progress-wrap mt8">
         <div class="progress-bar" style="width:${milestoneProgress}%;background:var(--blue)"></div>
