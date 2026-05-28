@@ -927,12 +927,14 @@ let _cardData = [];
 let _cardFilter = 'all';
 let _cardRarity = 'all';
 let _cardSort   = 'level-desc';
+let _cardSearch = '';
 
 function renderCardsPane(data) {
   _cardData  = data.cards || [];
   _cardFilter = 'all';
   _cardRarity = 'all';
   _cardSort   = 'level-desc';
+  _cardSearch = '';
   const totalCards = allCards.length || _cardData.length;
   return `
     <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
@@ -961,6 +963,8 @@ function renderCardsPane(data) {
       <button class="filter-btn" onclick="setCardFilter('canmax','status')">Can Max</button>
       <button class="filter-btn" onclick="setCardFilter('maxed','status')">Maxed</button>
     </div>
+    <input type="text" id="card-name-search" placeholder="🔍 Search card name…" oninput="setCardSearch(this.value)" autocomplete="off"
+      style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:8px 14px;font-size:13px;font-family:'Inter',sans-serif;margin-bottom:10px">
     <div id="cards-grid"></div>`;
 }
 
@@ -973,6 +977,11 @@ window.setCardFilter = function(val, type) {
   }
   if (type === 'rarity') _cardRarity = val;
   if (type === 'sort')   _cardSort   = val;
+  renderCards();
+};
+
+window.setCardSearch = function(val) {
+  _cardSearch = (val || '').toLowerCase().trim();
   renderCards();
 };
 
@@ -989,6 +998,7 @@ function renderCards() {
 
   let cards = [..._cardData];
   if (_cardRarity !== 'all') cards = cards.filter(c => (c.rarity||'').toLowerCase() === _cardRarity);
+  if (_cardSearch) cards = cards.filter(c => (c.name||'').toLowerCase().includes(_cardSearch));
 
   cards = cards.map(c => {
     const r = (c.rarity||'common').toLowerCase();
