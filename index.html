@@ -677,7 +677,8 @@ async function loadPlayer(tagOverride) {
   try {
     const [data, battles] = await Promise.all([
       apiGet('/players/' + encodeURIComponent(tag)),
-      apiGet('/players/' + encodeURIComponent(tag) + '/battlelog').catch(() => [])
+      apiGet('/players/' + encodeURIComponent(tag) + '/battlelog').catch(() => []),
+      maybeLoadCards()
     ]);
     renderProfile(data, battles);
   } catch(e) {
@@ -761,7 +762,10 @@ function renderOverview(data) {
   const upgradableNow   = enriched.filter(c => c.isUpgradable);
   const canMaxCards     = enriched.filter(c => c.canMax);
   const totalGoldReady  = upgradableNow.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
-  const evolvedCount    = cards.filter(c => (c.evolutionLevel||0) > 0).length;
+  const evoIds          = new Set(allCards.filter(c => c.iconUrls?.evolutionMedium).map(c => c.id));
+  const evolvedCount    = evoIds.size > 0
+    ? cards.filter(c => (c.evolutionLevel||0) > 0 && evoIds.has(c.id)).length
+    : cards.filter(c => (c.evolutionLevel||0) > 0).length;
   const collectionLevel = enriched.reduce((s, c) => s + c.disp, 0) + (evolvedCount * 5);
   const kingTowerLevel  = calcKingTowerLevel(enriched.map(c => c.disp));
   const nextMilestone   = nextCLMilestone(collectionLevel);
