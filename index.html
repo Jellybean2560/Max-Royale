@@ -701,7 +701,9 @@ function renderProfile(data, battles) {
         </div>
       </div>
 
-      <div style="font-size:10px;color:var(--muted);margin-top:6px;word-break:break-all">DEBUG keys: ${Object.keys(data).join(', ')}</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;word-break:break-all">DEBUG arena: ${JSON.stringify(data.arena)}</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px;word-break:break-all">DEBUG badges[0]: ${JSON.stringify(data.badges?.[0])}</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px;word-break:break-all">DEBUG badges[1]: ${JSON.stringify(data.badges?.[1])}</div>
       <button class="btn btn-secondary btn-sm mt8" onclick="loadPlayer(localStorage.getItem('cr_player_tag'))">🔄 Refresh</button>
     </div>
 
