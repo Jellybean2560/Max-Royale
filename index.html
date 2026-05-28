@@ -789,6 +789,7 @@ function renderOverview(data) {
   });
   const troopMaxed      = troopEnriched.filter(c => c.isMaxed).length;
   const troopUpgradable = troopEnriched.filter(c => c.isUpgradable);
+  const troopCanMax     = troopEnriched.filter(c => !c.isMaxed && cardsNeededToMax(c.r, c.disp, c.count||0) === 0).length;
   const troopGoldReady  = troopUpgradable.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
   const towerTroopCL    = supportCards.reduce((s, c) => {
     const r = (c.rarity||'common').toLowerCase();
@@ -857,6 +858,7 @@ function renderOverview(data) {
         </div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px;margin-bottom:8px">${Math.round(troopMaxed/troopEnriched.length*100)}% maxed</div>
         <div class="stat-row"><span class="stat-label">Upgradable now</span><strong class="text-green">${troopUpgradable.length}</strong></div>
+        <div class="stat-row"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${troopCanMax}</strong></div>
         ${troopGoldReady > 0 ? `<div class="stat-row"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(troopGoldReady)} 💰</strong></div>` : ''}
       </div>` : ''}
     </div>
