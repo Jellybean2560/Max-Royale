@@ -618,9 +618,22 @@ function calcUpdate() {
     </tr>`
   ).join('');
 
+  // Find the icon for the currently-searched card (regular cards or tower troops)
+  const searchName = (document.getElementById('card-search').value || '').trim().toLowerCase();
+  let cardIcon = '';
+  if (searchName) {
+    const cat = allCards.find(c => (c.name||'').toLowerCase() === searchName);
+    cardIcon = cat?.iconUrls?.medium
+      || Object.values(_playerCardsById).find(c => (c.name||'').toLowerCase() === searchName)?.iconUrls?.medium
+      || '';
+  }
+
   const html = `
     <div class="calc-result">
-      <h3>Upgrade Path: ${rarity.charAt(0).toUpperCase()+rarity.slice(1)} ${clampedCurrent} → ${clampedTarget}</h3>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+        <h3 style="margin:0">Upgrade Path: ${rarity.charAt(0).toUpperCase()+rarity.slice(1)} ${clampedCurrent} → ${clampedTarget}</h3>
+        ${cardIcon ? `<img src="${cardIcon}" alt="" style="width:48px;height:58px;object-fit:contain;flex-shrink:0">` : ''}
+      </div>
       <table class="level-table">
         <thead><tr><th>Level</th><th>Cards req.</th><th>Need</th><th>Gold</th></tr></thead>
         <tbody>${rows}</tbody>
