@@ -721,7 +721,6 @@ function renderProfile(data, battles) {
       <button class="tab-btn" data-tab="towerTroops" onclick="switchTab('towerTroops')">Tower Troops</button>
       <button class="tab-btn" data-tab="battles" onclick="switchTab('battles')">Battles</button>
       <button class="tab-btn" data-tab="decks" onclick="switchTab('decks')">Decks</button>
-      <button class="tab-btn" data-tab="achievements" onclick="switchTab('achievements')">Achievements</button>
     </div>
 
     <div id="tab-overview" class="tab-pane active">${renderOverview(data)}</div>
@@ -731,7 +730,6 @@ function renderProfile(data, battles) {
     <div id="tab-towerTroops" class="tab-pane" style="display:none">${renderTowerTroopsPane(data)}</div>
     <div id="tab-battles" class="tab-pane" style="display:none">${renderBattles(battles)}</div>
     <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles)}</div>
-    <div id="tab-achievements" class="tab-pane" style="display:none">${renderAchievements(data.achievements || [])}</div>
   `;
 
   // wire up tab switching to show/hide panes properly
@@ -1323,27 +1321,6 @@ window.copyDeckLink = function(names, btn) {
   });
 };
 
-// ── Achievements pane ──
-function renderAchievements(achievements) {
-  if (!achievements.length) return '<div class="empty-msg">No achievements found.</div>';
-  return achievements.map(a => {
-    const stars = '★'.repeat(a.stars || 0) + '☆'.repeat(Math.max(0, 3 - (a.stars||0)));
-    const pct = a.target ? Math.min(100, Math.round(a.value / a.target * 100)) : 100;
-    return `
-      <div class="ach-item">
-        <div class="ach-header">
-          <div class="ach-name">${esc(a.name)}</div>
-          <div class="ach-stars">${stars}</div>
-        </div>
-        <div class="ach-info">${esc(a.info||'')}</div>
-        <div class="flex-between mb8" style="font-size:13px">
-          <span class="text-muted">${fmtNum(a.value)} / ${fmtNum(a.target)}</span>
-          <span>${pct}%</span>
-        </div>
-        <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;background:${a.stars>=3?'var(--accent)':'var(--blue)'}"></div></div>
-      </div>`;
-  }).join('');
-}
 
 // tab pane show — lazy render cards
 document.addEventListener('click', e => {
