@@ -511,6 +511,7 @@ function switchTab(name) {
   });
   if (name === 'evolutions') loadEvolutionsGrid();
   if (name === 'heroes') loadHeroesGrid();
+  if (name === 'towerTroops') loadTowerTroopsGrid();
 }
 
 // ═══════════════════════════════════════════════
@@ -717,6 +718,7 @@ function renderProfile(data, battles) {
       <button class="tab-btn" data-tab="cards" onclick="switchTab('cards')">Cards</button>
       <button class="tab-btn" data-tab="evolutions" onclick="switchTab('evolutions')">Evolutions</button>
       <button class="tab-btn" data-tab="heroes" onclick="switchTab('heroes')">Heroes</button>
+      <button class="tab-btn" data-tab="towerTroops" onclick="switchTab('towerTroops')">Tower Troops</button>
       <button class="tab-btn" data-tab="battles" onclick="switchTab('battles')">Battles</button>
       <button class="tab-btn" data-tab="decks" onclick="switchTab('decks')">Decks</button>
       <button class="tab-btn" data-tab="achievements" onclick="switchTab('achievements')">Achievements</button>
@@ -726,6 +728,7 @@ function renderProfile(data, battles) {
     <div id="tab-cards" class="tab-pane" style="display:none">${renderCardsPane(data)}</div>
     <div id="tab-evolutions" class="tab-pane" style="display:none">${renderEvolutionsPane(data.cards || [])}</div>
     <div id="tab-heroes" class="tab-pane" style="display:none">${renderHeroesPane(data.cards || [])}</div>
+    <div id="tab-towerTroops" class="tab-pane" style="display:none">${renderTowerTroopsPane(data)}</div>
     <div id="tab-battles" class="tab-pane" style="display:none">${renderBattles(battles)}</div>
     <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles)}</div>
     <div id="tab-achievements" class="tab-pane" style="display:none">${renderAchievements(data.achievements || [])}</div>
@@ -773,7 +776,12 @@ function renderOverview(data) {
   const heroCount       = heroIds.size > 0
     ? cards.filter(c => heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length
     : 0;
-  const collectionLevel = enriched.reduce((s, c) => s + c.disp, 0) + (evolvedCount * 5) + (heroCount * 5);
+  const supportCards    = data.supportCards || [];
+  const towerTroopCL    = supportCards.reduce((s, c) => {
+    const r = (c.rarity||'common').toLowerCase();
+    return s + toDisplayLevel(r, c.level);
+  }, 0);
+  const collectionLevel = enriched.reduce((s, c) => s + c.disp, 0) + (evolvedCount * 5) + (heroCount * 5) + towerTroopCL;
   const kingTowerLevel  = calcKingTowerLevel(enriched.map(c => c.disp));
   const nextMilestone   = nextCLMilestone(collectionLevel);
   const prevMilestone   = collectionLevel < 20 ? 0 : collectionLevel >= 1500
@@ -833,6 +841,7 @@ function renderOverview(data) {
       <div class="stat-row"><span class="stat-label">Collection Level</span><strong style="font-size:20px;font-family:'Rajdhani',sans-serif">${fmtNum(collectionLevel)}</strong></div>
       ${evolvedCount > 0 ? `<div class="stat-row"><span class="stat-label">Evolutions (×5 each)</span><span style="color:var(--blue)">+${evolvedCount * 5} (${evolvedCount} evos)</span></div>` : ''}
       ${heroCount > 0 ? `<div class="stat-row"><span class="stat-label">Heroes (×5 each)</span><span style="color:var(--purple)">+${heroCount * 5} (${heroCount} heroes)</span></div>` : ''}
+      ${towerTroopCL > 0 ? `<div class="stat-row"><span class="stat-label">Tower Troops (levels)</span><span style="color:var(--accent)">+${towerTroopCL} (${supportCards.length} troops)</span></div>` : ''}
       <div class="stat-row"><span class="stat-label">Next milestone</span><strong>${fmtNum(nextMilestone)}</strong></div>
       <div class="progress-wrap mt8">
         <div class="progress-bar" style="width:${milestoneProgress}%;background:var(--blue)"></div>
@@ -1051,6 +1060,86 @@ async function loadHeroesGrid() {
             ${hasHero ? '<span style="font-size:9px;color:var(--purple);font-weight:600">🦸 Hero</span>' : ''}
           </div>`;
         }).join('')}
+      </div>`;
+  } catch(e) {
+    grid.innerHTML = `<div class="error-msg">${e.message}</div>`;
+  }
+}
+
+// ── Tower Troops pane ──
+let _towerTroopSupportCards = [];  // data.supportCards from player API
+let _towerTroopAllPlayerCards = []; // data.cards — fallback if supportCards absent
+
+function renderTowerTroopsPane(data) {
+  _towerTroopSupportCards  = data.supportCards || [];
+  _towerTroopAllPlayerCards = data.cards || [];
+  return `<div id="tower-troops-grid"><div class="spinner"></div></div>`;
+}
+
+async function loadTowerTroopsGrid() {
+  const grid = document.getElementById('tower-troops-grid');
+  if (!grid || !grid.querySelector('.spinner')) return;
+
+  try {
+    await maybeLoadCards();
+
+    // Build a quick lookup from the full /cards catalog
+    const catalogById = {};
+    allCards.forEach(c => { catalogById[c.id] = c; });
+
+    // Tower troops arrive in data.supportCards (separate from deck cards).
+    // Each entry: { id, name, level, rarity, iconUrls: { medium, … } }
+    // Fallback: if the API ever moves them into data.cards, filter by
+    // iconUrls.towerProjectileMedium from the catalog (same naming pattern
+    // as evolutionMedium / heroMedium).
+    let troops = _towerTroopSupportCards;
+    if (!troops.length) {
+      // Fallback: identify via catalog flag and match against player cards
+      const troopIds = new Set(allCards.filter(c => c.iconUrls?.towerProjectileMedium).map(c => c.id));
+      if (troopIds.size) {
+        troops = _towerTroopAllPlayerCards.filter(c => troopIds.has(c.id));
+      }
+    }
+
+    if (!troops.length) {
+      grid.innerHTML = '<div class="empty-msg">No tower troop data available from the API.</div>';
+      return;
+    }
+
+    // For display-level we reuse toDisplayLevel with rarity.
+    // Tower troop entries in supportCards may not have rarity — default to 'legendary'.
+    const troopRows = troops.map(c => {
+      const rarity  = (c.rarity || 'legendary').toLowerCase();
+      const disp    = toDisplayLevel(rarity, c.level);
+      const maxDisp = MAX_LEVEL;
+      const isMax   = disp >= maxDisp;
+      // Prefer a specific tower thumbnail if catalog has one, else fall back to medium
+      const cat   = catalogById[c.id] || {};
+      const imgUrl = cat.iconUrls?.towerProjectileMedium || c.iconUrls?.towerProjectileMedium
+                  || cat.iconUrls?.medium               || c.iconUrls?.medium || '';
+      return `
+        <div style="display:flex;flex-direction:column;align-items:center;gap:4px;
+                    background:var(--surface2);border-radius:8px;padding:8px 4px;
+                    border:1px solid var(--accent)">
+          ${imgUrl ? `<img src="${imgUrl}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">` : ''}
+          <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
+          <span style="font-size:11px;font-weight:700;color:${isMax ? 'var(--accent)' : 'var(--blue)'}">
+            ${isMax ? '👑 Max' : `Lv ${disp}`}
+          </span>
+        </div>`;
+    }).join('');
+
+    const totalCL = troops.reduce((s, c) => {
+      const r = (c.rarity || 'legendary').toLowerCase();
+      return s + toDisplayLevel(r, c.level);
+    }, 0);
+
+    grid.innerHTML = `
+      <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
+        ${troops.length} tower ${troops.length === 1 ? 'troop' : 'troops'} · +${totalCL} to Collection Level
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+        ${troopRows}
       </div>`;
   } catch(e) {
     grid.innerHTML = `<div class="error-msg">${e.message}</div>`;
