@@ -667,6 +667,17 @@ async function loadPlayer(tagOverride) {
 function renderProfile(data, battles) {
   const el = document.getElementById('player-result');
 
+  // ── Hero debug (temporary) ──────────────────────────────────────────────
+  console.log('[MaxRoyale] Top-level player fields:', Object.keys(data));
+  const knownRarities = new Set(['common','rare','epic','legendary','champion']);
+  const unknownRarity = (data.cards||[]).filter(c => !knownRarities.has((c.rarity||'').toLowerCase()));
+  if (unknownRarity.length) console.log('[MaxRoyale] Unknown-rarity cards:', unknownRarity.map(c=>({name:c.name,rarity:c.rarity,level:c.level,id:c.id})));
+  else console.log('[MaxRoyale] All cards have known rarities. Hero cards may be in a separate field.');
+  if (data.heroCards)  console.log('[MaxRoyale] data.heroCards:',  data.heroCards);
+  if (data.heroes)     console.log('[MaxRoyale] data.heroes:',     data.heroes);
+  if (data.heroSlots)  console.log('[MaxRoyale] data.heroSlots:',  data.heroSlots);
+  // ── End hero debug ───────────────────────────────────────────────────────
+
   const leagueEmoji = ['🥉','🥉','🥉','🥈','🥈','🥈','🥇','🥇','🥇','💎','💎','💎','👑'];
   const li = data.leagueStatistics;
   const league = li ? (leagueEmoji[Math.min((li.currentSeason.trophies||0) / 500 | 0, 12)] || '') : '';
