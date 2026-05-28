@@ -824,14 +824,14 @@ function renderOverview(data) {
       <h3 style="margin-bottom:12px">⚡ Upgrade Insights</h3>
       <div class="stat-row"><span class="stat-label">Total cards in collection</span><strong>${cards.length}</strong></div>
       <div class="stat-row"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${maxedCount}</strong></div>
+      <div class="progress-wrap mt8">
+        <div class="progress-bar" style="width:${Math.round(maxedCount/Math.max(cards.length,1)*100)}%;background:var(--accent)"></div>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px;margin-bottom:8px">${Math.round(maxedCount/Math.max(cards.length,1)*100)}% maxed</div>
       <div class="stat-row"><span class="stat-label">Upgradable now</span><strong class="text-green">${upgradableNow.length}</strong></div>
       <div class="stat-row"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${canMaxCards.length}</strong></div>
       <div class="stat-row"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(totalGoldReady)} 💰</strong></div>
       <div class="stat-row"><span class="stat-label">King Tower Level</span><strong class="text-accent">${kingTowerLevel === 16 ? '👑 16 (Max)' : `${kingTowerLevel} → ${kingTowerLevel+1} (${ktlProgress}/${nextKtlReq.need} cards at Lv ${nextKtlReq.min}+)`}</strong></div>
-      <div class="progress-wrap mt8">
-        <div class="progress-bar" style="width:${Math.round(maxedCount/Math.max(cards.length,1)*100)}%;background:var(--accent)"></div>
-      </div>
-      <div style="font-size:12px;color:var(--muted);margin-top:4px">${Math.round(maxedCount/Math.max(cards.length,1)*100)}% maxed</div>
     </div>
 
     <div class="card">
