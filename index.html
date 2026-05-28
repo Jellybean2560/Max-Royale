@@ -703,6 +703,8 @@ function renderProfile(data, battles) {
       </div>
 
 
+      <div style="font-size:10px;color:var(--muted);margin-top:6px;word-break:break-all">DEBUG allCards iconUrl keys: ${[...new Set(allCards.flatMap(c => Object.keys(c.iconUrls||{})))].join(', ')}</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:4px;word-break:break-all">DEBUG player emote fields: ${Object.keys(data).filter(k => k.toLowerCase().includes('emote')).join(', ') || 'none'}</div>
       <button class="btn btn-secondary btn-sm mt8" onclick="loadPlayer(localStorage.getItem('cr_player_tag'))">🔄 Refresh</button>
     </div>
 
