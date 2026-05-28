@@ -208,11 +208,12 @@
 
       <div class="card">
         <div class="field">
-          <label>Search Card (optional)</label>
+          <label>Card Lookup</label>
           <div class="dropdown-wrap">
             <input type="text" id="card-search" placeholder="Type card name…" oninput="onCardSearch(this.value)" autocomplete="off">
             <div class="dropdown-list" id="card-dropdown"></div>
           </div>
+          <div id="card-lookup-note" style="display:none;font-size:12px;color:var(--accent);margin-top:6px"></div>
         </div>
         <div class="field">
           <label>Rarity</label>
@@ -534,6 +535,7 @@ function formatBattleTime(ts) {
 //  CALCULATOR
 // ═══════════════════════════════════════════════
 let allCards = [];
+let _playerCardsById = {};  // populated after a player lookup; used by Card Lookup
 
 async function maybeLoadCards() {
   if (allCards.length) return;
@@ -568,9 +570,22 @@ function selectCard(id) {
   if (!card) return;
   document.getElementById('card-search').value = card.name;
   document.getElementById('card-dropdown').classList.remove('open');
-  if (card.rarity) {
-    const r = card.rarity.toLowerCase();
-    if (LEVEL_DATA[r]) document.getElementById('calc-rarity').value = r;
+
+  const r = (card.rarity || '').toLowerCase();
+  if (LEVEL_DATA[r]) document.getElementById('calc-rarity').value = r;
+
+  // If we have this player's card data, auto-fill their actual level + card count
+  const pc = _playerCardsById[id];
+  const note = document.getElementById('card-lookup-note');
+  if (pc) {
+    const disp = toDisplayLevel((pc.rarity || r || 'common').toLowerCase(), pc.level);
+    document.getElementById('calc-current').value = disp;
+    document.getElementById('calc-count').value = pc.count || 0;
+    document.getElementById('calc-target').value = MAX_LEVEL;
+    if (note) { note.textContent = `Loaded your ${card.name}: Level ${disp}, ${fmtNum(pc.count||0)} cards`; note.style.display = 'block'; }
+  } else if (note) {
+    note.textContent = 'Tip: look up your player profile first to auto-load your card levels.';
+    note.style.display = 'block';
   }
   calcUpdate();
 }
@@ -653,6 +668,11 @@ async function loadPlayer(tagOverride) {
       maybeLoadCards()
     ]);
     renderProfile(data, battles);
+    // Cache this player's cards (+ tower troops) for the calculator's Card Lookup
+    _playerCardsById = {};
+    [...(data.cards || []), ...(data.supportCards || [])].forEach(c => {
+      _playerCardsById[c.id] = c;
+    });
     // Auto-fill and auto-load the clan from the player's clan tag
     if (data.clan?.tag) {
       document.getElementById('clan-tag').value = data.clan.tag;
