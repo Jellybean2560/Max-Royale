@@ -255,7 +255,13 @@
           </div>
         </div>
       </div>
-      <div id="player-result"></div>
+      <div id="player-result">
+        <div style="text-align:center;padding:48px 0 32px">
+          <img src="icon.png" alt="Max Royale" style="width:120px;height:120px;border-radius:24px;margin-bottom:20px;box-shadow:0 4px 24px rgba(0,0,0,0.4)">
+          <div style="font-family:'Rajdhani',sans-serif;font-size:34px;font-weight:700;color:var(--accent);letter-spacing:1px">Max Royale</div>
+          <div style="font-size:13px;color:var(--muted);margin-top:6px">Enter a player tag above to get started</div>
+        </div>
+      </div>
     </div>
 
     <!-- ═══════════════ CLAN LOOKUP ═══════════════ -->
@@ -1451,6 +1457,9 @@ function renderMembers(members) {
 // ═══════════════════════════════════════════════
 initApiKey();
 calcUpdate();
+// Restore last-used player tag into the input
+const _savedTag = localStorage.getItem('cr_player_tag');
+if (_savedTag) document.getElementById('player-tag').value = _savedTag;
 
 // Register service worker for PWA (standalone fullscreen install)
 if ('serviceWorker' in navigator) {
