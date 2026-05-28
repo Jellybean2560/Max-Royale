@@ -731,7 +731,8 @@ function renderProfile(data, battles) {
         <div style="text-align:right">
           <div style="font-size:13px;color:var(--muted)">King Level</div>
           <div style="font-size:28px;font-weight:700;font-family:'Rajdhani',sans-serif;color:var(--accent)">${calcKingTowerLevel(_cards.map(c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level)))}</div>
-          <div style="font-size:11px;color:var(--muted);margin-top:2px">CL <span style="color:var(--text);font-weight:600">${fmtNum(_profileCL)}</span></div>
+          <div style="font-size:13px;color:var(--muted);margin-top:6px">Collection Level</div>
+          <div style="font-size:28px;font-weight:700;font-family:'Rajdhani',sans-serif;color:var(--accent)">${fmtNum(_profileCL)}</div>
         </div>
       </div>
       ${data.clan ? `<div class="mt8" style="font-size:13px;color:var(--muted)">🛡 ${esc(data.clan.name)}</div>` : ''}
