@@ -735,7 +735,7 @@ function renderProfile(data, battles) {
           <div style="font-size:28px;font-weight:700;font-family:'Rajdhani',sans-serif;color:var(--accent)">${fmtNum(_profileCL)}</div>
         </div>
       </div>
-      ${data.clan ? `<div class="mt8" style="font-size:13px;color:var(--muted)">🛡 ${esc(data.clan.name)}</div>` : ''}
+
       <button class="btn btn-secondary btn-sm mt8" onclick="loadPlayer(localStorage.getItem('cr_player_tag'))">🔄 Refresh</button>
     </div>
 
