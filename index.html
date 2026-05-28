@@ -237,7 +237,7 @@
         </div>
         <div class="field">
           <label>Target Level</label>
-          <input type="number" id="calc-target" min="2" max="16" value="14" oninput="calcUpdate()">
+          <input type="number" id="calc-target" min="2" max="16" value="16" oninput="calcUpdate()">
         </div>
       </div>
 
@@ -600,7 +600,7 @@ function calcUpdate() {
   const rarity = document.getElementById('calc-rarity').value;
   const current = parseInt(document.getElementById('calc-current').value) || 1;
   const count = parseInt(document.getElementById('calc-count').value) || 0;
-  const target = parseInt(document.getElementById('calc-target').value) || 14;
+  const target = parseInt(document.getElementById('calc-target').value) || 16;
   const minL = MIN_LEVEL[rarity];
   const maxL = minL + LEVEL_DATA[rarity].length;
 
