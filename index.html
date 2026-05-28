@@ -683,6 +683,10 @@ async function loadPlayer(tagOverride) {
       maybeLoadCards()
     ]);
     renderProfile(data, battles);
+    // Auto-fill the clan tag input from the player's clan
+    if (data.clan?.tag) {
+      document.getElementById('clan-tag').value = data.clan.tag;
+    }
   } catch(e) {
     el.innerHTML = `<div class="error-msg">${e.message}</div>`;
   }
