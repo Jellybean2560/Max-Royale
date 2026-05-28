@@ -771,7 +771,7 @@ function renderOverview(data) {
     ? cards.filter(c => (c.evolutionLevel||0) > 0 && evoIds.has(c.id)).length
     : cards.filter(c => (c.evolutionLevel||0) > 0).length;
   const heroCount       = heroIds.size > 0
-    ? cards.filter(c => c.iconUrls?.heroMedium && heroIds.has(c.id)).length
+    ? cards.filter(c => heroIds.has(c.id) && (c.evolutionLevel||0) > 0 && (c.evolutionLevel||0) >= (c.maxEvolutionLevel||Infinity)).length
     : 0;
   const collectionLevel = enriched.reduce((s, c) => s + c.disp, 0) + (evolvedCount * 5) + (heroCount * 5);
   const kingTowerLevel  = calcKingTowerLevel(enriched.map(c => c.disp));
@@ -1030,9 +1030,13 @@ async function loadHeroesGrid() {
     const heroCards = allCards.filter(c => c.iconUrls?.heroMedium);
     if (!heroCards.length) { grid.innerHTML = '<div class="empty-msg">No hero data available.</div>'; return; }
 
-    // Build lookup: card id → whether player's card has heroMedium (= hero form owned)
+    // Hero form owned = evolutionLevel has reached maxEvolutionLevel (hero is the final form slot)
     const playerHeroMap = {};
-    _heroPlayerCards.forEach(c => { playerHeroMap[c.id] = !!(c.iconUrls?.heroMedium); });
+    _heroPlayerCards.forEach(c => {
+      const evo = c.evolutionLevel || 0;
+      const maxEvo = c.maxEvolutionLevel || 0;
+      playerHeroMap[c.id] = evo > 0 && maxEvo > 0 && evo >= maxEvo;
+    });
 
     const ownedCount = heroCards.filter(c => playerHeroMap[c.id]).length;
 
