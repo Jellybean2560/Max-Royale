@@ -502,14 +502,13 @@ function initApiKey() {
 //  API HELPER
 // ═══════════════════════════════════════════════
 async function apiGet(path) {
-  const key = getApiKey();
   const cleanPath = path.replace(/#/g, '%23');
-  const url = `https://proxy.royaleapi.dev/v1${cleanPath}`;
+  const url = `https://quiet-frost-f9f0.jellevandenwouwer.workers.dev${cleanPath}`;
   let res;
   try {
-    res = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
+    res = await fetch(url);
   } catch(e) {
-    throw new Error('Connection failed — proxy may be temporarily down. Try again in a moment.');
+    throw new Error('Connection failed — check your internet connection and try again.');
   }
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
