@@ -667,16 +667,6 @@ async function loadPlayer(tagOverride) {
 function renderProfile(data, battles) {
   const el = document.getElementById('player-result');
 
-  // ── Hero debug (temporary) ──────────────────────────────────────────────
-  console.log('[MaxRoyale] Top-level player fields:', Object.keys(data));
-  const knownRarities = new Set(['common','rare','epic','legendary','champion']);
-  const unknownRarity = (data.cards||[]).filter(c => !knownRarities.has((c.rarity||'').toLowerCase()));
-  if (unknownRarity.length) console.log('[MaxRoyale] Unknown-rarity cards:', unknownRarity.map(c=>({name:c.name,rarity:c.rarity,level:c.level,id:c.id})));
-  else console.log('[MaxRoyale] All cards have known rarities. Hero cards may be in a separate field.');
-  if (data.heroCards)  console.log('[MaxRoyale] data.heroCards:',  data.heroCards);
-  if (data.heroes)     console.log('[MaxRoyale] data.heroes:',     data.heroes);
-  if (data.heroSlots)  console.log('[MaxRoyale] data.heroSlots:',  data.heroSlots);
-  // ── End hero debug ───────────────────────────────────────────────────────
 
   const leagueEmoji = ['🥉','🥉','🥉','🥈','🥈','🥈','🥇','🥇','🥇','💎','💎','💎','👑'];
   const li = data.leagueStatistics;
@@ -892,7 +882,12 @@ function renderCards() {
   if (_cardSort === 'level-asc')  cards.sort((a,b) => a.disp - b.disp);
   if (_cardSort === 'rarity')     cards.sort((a,b) => (RARITY_ORDER[b.r]||0) - (RARITY_ORDER[a.r]||0) || b.disp - a.disp);
 
-  if (!cards.length) { grid.innerHTML = '<div class="empty-msg">No cards match this filter.</div>'; return; }
+  if (!cards.length) {
+    grid.innerHTML = _cardRarity === 'hero'
+      ? '<div class="empty-msg">🦸 Hero cards are not yet included in the official Clash Royale API.<br><br>Supercell will likely add them in a future API update — the filter will populate automatically once they do.</div>'
+      : '<div class="empty-msg">No cards match this filter.</div>';
+    return;
+  }
 
   const rarityColor = { common:'var(--text)', rare:'var(--blue)', epic:'var(--purple)', legendary:'var(--accent)', champion:'#e74c3c' };
 
