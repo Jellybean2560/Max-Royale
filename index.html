@@ -770,10 +770,16 @@ function renderOverview(data) {
   const totalGoldReady  = upgradableNow.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
   const evoIds          = new Set(allCards.filter(c => c.iconUrls?.evolutionMedium).map(c => c.id));
   const heroIds         = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
-  // Dual cards (both evolutionMedium AND heroMedium) use evolutionLevel to track
-  // hero stages, not evolution ownership — exclude them from the evolution count.
+  // For dual cards (both evolutionMedium AND heroMedium), evolutionLevel tracks
+  // hero stages (1…maxEvolutionLevel). Owning the evolution form pushes
+  // evolutionLevel *above* maxEvolutionLevel. Pure evolution cards just need > 0.
   const evolvedCount    = evoIds.size > 0
-    ? cards.filter(c => (c.evolutionLevel||0) > 0 && evoIds.has(c.id) && !heroIds.has(c.id)).length
+    ? cards.filter(c => {
+        if (!evoIds.has(c.id)) return false;
+        const evo = c.evolutionLevel || 0;
+        if (heroIds.has(c.id)) return evo > (c.maxEvolutionLevel || 0); // dual card
+        return evo > 0; // evolution-only card
+      }).length
     : cards.filter(c => (c.evolutionLevel||0) > 0).length;
   const heroCount       = heroIds.size > 0
     ? cards.filter(c => heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length
@@ -999,14 +1005,19 @@ async function loadEvolutionsGrid() {
     const evoCards = allCards.filter(c => c.iconUrls?.evolutionMedium);
     if (!evoCards.length) { grid.innerHTML = '<div class="empty-msg">No evolution data available.</div>'; return; }
 
-    // Build lookup: card id → evolutionLevel the player has
-    const playerEvoMap = {};
-    _evoPlayerCards.forEach(c => { playerEvoMap[c.id] = c.evolutionLevel || 0; });
-
-    // Dual cards have both evolutionMedium and heroMedium — their evolutionLevel
-    // tracks hero stages, so we can't use it to detect evolution ownership.
+    // For dual cards (both evolutionMedium AND heroMedium), evolutionLevel tracks
+    // hero stages. Owning the evolution form pushes evolutionLevel above maxEvolutionLevel.
+    // Pure evolution-only cards just need evolutionLevel > 0.
     const heroIdSet = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
-    const hasEvolution = c => !heroIdSet.has(c.id) && (playerEvoMap[c.id] || 0) > 0;
+    const playerCardMap = {};
+    _evoPlayerCards.forEach(c => { playerCardMap[c.id] = c; });
+    const hasEvolution = c => {
+      const pc = playerCardMap[c.id];
+      if (!pc) return false;
+      const evo = pc.evolutionLevel || 0;
+      if (heroIdSet.has(c.id)) return evo > (pc.maxEvolutionLevel || 0); // dual card
+      return evo > 0; // evolution-only card
+    };
 
     const ownedCount = evoCards.filter(hasEvolution).length;
 
