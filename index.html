@@ -1065,6 +1065,14 @@ function toggleCardMax(id) {
 }
 
 // ── Evolutions pane ──
+// Override for cards whose API evolutionMedium image is wrong/outdated.
+// Keyed by card name → corrected local image path.
+const EVO_IMG_OVERRIDE = {
+  'Skeleton Army': 'evo-skeleton-army.png'
+};
+function evoImg(c) {
+  return EVO_IMG_OVERRIDE[c.name] || c.iconUrls.evolutionMedium;
+}
 let _evoPlayerCards = [];
 let _evoCatalog = [];
 let _evoHasEvolution = null;
@@ -1124,7 +1132,7 @@ function _renderEvoCards() {
     ${cards.map(c => {
       const hasEvo = _evoHasEvolution(c);
       return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;${hasEvo ? 'border:1px solid var(--blue)' : 'opacity:0.35;filter:grayscale(1)'}">
-        <img src="${c.iconUrls.evolutionMedium}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">
+        <img src="${evoImg(c)}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">
         <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
         ${hasEvo ? '<span style="font-size:9px;color:var(--blue);font-weight:600">⚡ Evolved</span>' : ''}
       </div>`;
