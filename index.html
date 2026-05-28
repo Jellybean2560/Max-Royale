@@ -1081,10 +1081,38 @@ function renderCards() {
             <span>Total gold to Lv 16</span>
             <span style="color:var(--accent)">${fmtNum(toMax.totalGold)} 💰</span>
           </div>
+          <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="openInCalculator(${c.id})">🧮 Open in Calculator</button>
         </div>
       ` : ''}
     </div>`;
   }).join('');
+}
+
+function openInCalculator(cardId) {
+  goTo('calc');
+  const cat = allCards.find(c => c.id === cardId);   // regular cards only
+  const pc  = _playerCardsById[cardId];               // cards + tower troops
+  const name = cat?.name || pc?.name || '';
+  let r = (cat?.rarity || pc?.rarity || 'common').toLowerCase();
+  if (!LEVEL_DATA[r]) r = 'common';
+
+  const search = document.getElementById('card-search');
+  if (search) search.value = name;
+  const dd = document.getElementById('card-dropdown');
+  if (dd) dd.classList.remove('open');
+  document.getElementById('calc-rarity').value = r;
+
+  const note = document.getElementById('card-lookup-note');
+  if (pc) {
+    const disp = toDisplayLevel(r, pc.level);
+    document.getElementById('calc-current').value = disp;
+    document.getElementById('calc-count').value = pc.count || 0;
+    document.getElementById('calc-target').value = MAX_LEVEL;
+    if (note) { note.textContent = `Loaded your ${name}: Level ${disp}, ${fmtNum(pc.count||0)} cards`; note.style.display = 'block'; }
+  }
+  calcUpdate();
+  const res = document.getElementById('calc-result');
+  if (res) res.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function toggleCardMax(id) {
@@ -1342,6 +1370,7 @@ async function loadTowerTroopsGrid() {
                 <span>Total gold to Lv 16</span>
                 <span style="color:var(--accent)">${fmtNum(toMax.totalGold)} 💰</span>
               </div>
+              <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="openInCalculator(${c.id})">🧮 Open in Calculator</button>
             </div>
           ` : ''}
         </div>`;
