@@ -775,6 +775,21 @@ function renderOverview(data) {
     ? cards.filter(c => heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length
     : 0;
   const supportCards    = data.supportCards || [];
+  // Enrich tower troops for Upgrade Insights
+  const troopEnriched   = supportCards.map(c => {
+    const r    = (c.rarity || 'legendary').toLowerCase();
+    const disp = toDisplayLevel(r, c.level);
+    const minL = MIN_LEVEL[r] || 1;
+    const steps = LEVEL_DATA[r] || [];
+    const idx  = disp - minL;
+    const isMaxed    = disp >= MAX_LEVEL || idx >= steps.length;
+    const nextStep   = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
+    const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
+    return { ...c, r, disp, isMaxed, nextStep, isUpgradable };
+  });
+  const troopMaxed      = troopEnriched.filter(c => c.isMaxed).length;
+  const troopUpgradable = troopEnriched.filter(c => c.isUpgradable);
+  const troopGoldReady  = troopUpgradable.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
   const towerTroopCL    = supportCards.reduce((s, c) => {
     const r = (c.rarity||'common').toLowerCase();
     return s + toDisplayLevel(r, c.level);
@@ -832,6 +847,17 @@ function renderOverview(data) {
       <div class="stat-row"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${canMaxCards.length}</strong></div>
       <div class="stat-row"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(totalGoldReady)} 💰</strong></div>
       <div class="stat-row"><span class="stat-label">King Tower Level</span><strong class="text-accent">${kingTowerLevel === 16 ? '👑 16 (Max)' : `${kingTowerLevel} → ${kingTowerLevel+1} (${ktlProgress}/${nextKtlReq.need} cards at Lv ${nextKtlReq.min}+)`}</strong></div>
+      ${troopEnriched.length ? `
+      <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:12px">
+        <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">🗼 Tower Troops</div>
+        <div class="stat-row"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${troopMaxed} / ${troopEnriched.length}</strong></div>
+        <div class="progress-wrap mt8">
+          <div class="progress-bar" style="width:${Math.round(troopMaxed/troopEnriched.length*100)}%;background:var(--accent)"></div>
+        </div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px;margin-bottom:8px">${Math.round(troopMaxed/troopEnriched.length*100)}% maxed</div>
+        <div class="stat-row"><span class="stat-label">Upgradable now</span><strong class="text-green">${troopUpgradable.length}</strong></div>
+        ${troopGoldReady > 0 ? `<div class="stat-row"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(troopGoldReady)} 💰</strong></div>` : ''}
+      </div>` : ''}
     </div>
 
     <div class="card">
