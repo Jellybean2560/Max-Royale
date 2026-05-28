@@ -686,7 +686,12 @@ function renderProfile(data, battles) {
   const _profileCL   = _cardCL + _evoCount * 5 + _heroCount * 5 + _troopCL;
 
   el.innerHTML = `
-    <div class="lookup-header">
+    <div class="lookup-header" style="position:relative;overflow:hidden">
+      ${(data.badges||[]).length > 0 ? `
+        <img src="${data.badges[0].iconUrls?.large}" style="position:absolute;right:-24px;top:-24px;width:180px;height:180px;object-fit:contain;opacity:0.07;filter:blur(3px);pointer-events:none;z-index:0">
+        ${data.badges[1]?.iconUrls?.large ? `<img src="${data.badges[1].iconUrls.large}" style="position:absolute;left:-24px;bottom:0;width:130px;height:130px;object-fit:contain;opacity:0.05;filter:blur(2px);pointer-events:none;z-index:0">` : ''}
+      ` : ''}
+      <div style="position:relative;z-index:1">
       <div class="flex-between" style="align-items:flex-start">
         <div>
           <div class="player-name">${esc(data.name)}</div>
@@ -701,10 +706,14 @@ function renderProfile(data, battles) {
         </div>
       </div>
 
-      <div style="font-size:10px;color:var(--muted);margin-top:6px;word-break:break-all">DEBUG arena: ${JSON.stringify(data.arena)}</div>
-      <div style="font-size:10px;color:var(--muted);margin-top:4px;word-break:break-all">DEBUG badges[0]: ${JSON.stringify(data.badges?.[0])}</div>
-      <div style="font-size:10px;color:var(--muted);margin-top:4px;word-break:break-all">DEBUG badges[1]: ${JSON.stringify(data.badges?.[1])}</div>
+      ${(data.badges||[]).length > 0 ? `
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
+          ${data.badges.slice(0,10).map(b => b.iconUrls?.large
+            ? `<img src="${b.iconUrls.large}" title="${b.name}" style="width:36px;height:36px;object-fit:contain;opacity:0.85">`
+            : '').join('')}
+        </div>` : ''}
       <button class="btn btn-secondary btn-sm mt8" onclick="loadPlayer(localStorage.getItem('cr_player_tag'))">🔄 Refresh</button>
+      </div>
     </div>
 
     <div class="tab-bar">
