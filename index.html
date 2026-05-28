@@ -1106,41 +1106,66 @@ async function loadTowerTroopsGrid() {
       return;
     }
 
-    // For display-level we reuse toDisplayLevel with rarity.
-    // Tower troop entries in supportCards may not have rarity — default to 'legendary'.
-    const troopRows = troops.map(c => {
-      const rarity  = (c.rarity || 'legendary').toLowerCase();
-      const disp    = toDisplayLevel(rarity, c.level);
-      const maxDisp = MAX_LEVEL;
-      const isMax   = disp >= maxDisp;
-      // Prefer a specific tower thumbnail if catalog has one, else fall back to medium
-      const cat   = catalogById[c.id] || {};
+    // Build enriched troop data (mirrors renderCards logic)
+    const rarityColor = { common:'var(--text)', rare:'var(--blue)', epic:'var(--purple)', legendary:'var(--accent)', champion:'#e74c3c' };
+    const enriched = troops.map(c => {
+      const r       = (c.rarity || 'legendary').toLowerCase();
+      const disp    = toDisplayLevel(r, c.level);
+      const minL    = MIN_LEVEL[r] || 1;
+      const steps   = LEVEL_DATA[r] || [];
+      const idx     = disp - minL;
+      const isMaxed = disp >= MAX_LEVEL || idx >= steps.length;
+      const nextStep     = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
+      const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
+      const canMax       = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
+      // Image: prefer towerProjectileMedium, fall back to medium
+      const cat    = catalogById[c.id] || {};
       const imgUrl = cat.iconUrls?.towerProjectileMedium || c.iconUrls?.towerProjectileMedium
                   || cat.iconUrls?.medium               || c.iconUrls?.medium || '';
+      return { ...c, r, disp, isMaxed, nextStep, isUpgradable, canMax, imgUrl };
+    });
+
+    const totalCL = enriched.reduce((s, c) => s + c.disp, 0);
+
+    const troopRows = enriched.map(c => {
+      const owned  = c.count || 0;
+      const needed = c.nextStep ? c.nextStep.cards : 0;
+      const pct    = c.isMaxed ? 100 : needed ? Math.min(100, Math.round(owned / needed * 100)) : 0;
+      const statusLabel = c.isMaxed
+        ? '<span class="badge badge-gold">MAX ★</span>'
+        : c.isUpgradable ? '<span class="badge badge-green">Ready</span>'
+        : c.canMax       ? '<span class="badge badge-blue">Can Max</span>'
+        : '';
       return `
-        <div style="display:flex;flex-direction:column;align-items:center;gap:4px;
-                    background:var(--surface2);border-radius:8px;padding:8px 4px;
-                    border:1px solid var(--accent)">
-          ${imgUrl ? `<img src="${imgUrl}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">` : ''}
-          <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
-          <span style="font-size:11px;font-weight:700;color:${isMax ? 'var(--accent)' : 'var(--blue)'}">
-            ${isMax ? '👑 Max' : `Lv ${disp}`}
-          </span>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
+          <div class="flex-between mb8">
+            <div style="display:flex;align-items:center;gap:10px">
+              ${c.imgUrl ? `<img src="${c.imgUrl}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
+              <div>
+                <span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br>
+                <span style="font-size:11px;color:${rarityColor[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+              <span style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:var(--accent)">Lv ${c.disp}</span>
+              ${statusLabel}
+            </div>
+          </div>
+          ${!c.isMaxed && c.nextStep ? `
+            <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px">
+              <span>Cards: ${fmtNum(owned)} / ${fmtNum(needed)}</span>
+              <span>${fmtNum(c.nextStep.gold)} 💰 to Lv ${c.disp+1}</span>
+            </div>
+            <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;background:${c.isUpgradable?'var(--green)':'var(--blue)'}"></div></div>
+          ` : `<div style="font-size:12px;color:var(--muted)">Fully maxed! ✓</div>`}
         </div>`;
     }).join('');
-
-    const totalCL = troops.reduce((s, c) => {
-      const r = (c.rarity || 'legendary').toLowerCase();
-      return s + toDisplayLevel(r, c.level);
-    }, 0);
 
     grid.innerHTML = `
       <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
         ${troops.length} tower ${troops.length === 1 ? 'troop' : 'troops'} · +${totalCL} to Collection Level
       </div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
-        ${troopRows}
-      </div>`;
+      ${troopRows}`;
   } catch(e) {
     grid.innerHTML = `<div class="error-msg">${e.message}</div>`;
   }
