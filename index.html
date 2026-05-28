@@ -1547,11 +1547,14 @@ function renderClan(data) {
       <div style="font-size:13px;color:var(--muted);margin-top:6px">📦 ${fmtNum(data.donationsPerWeek)} donations / week</div>
       ${data.description ? `<div class="clan-desc">${esc(data.description)}</div>` : ''}
     </div>
-    <div class="filter-bar" id="clan-sort-bar">
-      <button class="filter-btn active" onclick="setClanSort('rank')">Rank</button>
-      <button class="filter-btn" onclick="setClanSort('trophies')">Trophies</button>
-      <button class="filter-btn" onclick="setClanSort('donations')">Donations</button>
-      <button class="filter-btn" onclick="setClanSort('role')">Role</button>
+    <div style="margin-bottom:10px">
+      <select id="clan-sort-select" onchange="setClanSort(this.value)"
+        style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
+        <option value="rank">Sort: Rank</option>
+        <option value="trophies">Sort: Trophies</option>
+        <option value="donations">Sort: Donations</option>
+        <option value="role">Sort: Role</option>
+      </select>
     </div>
     <div id="clan-members-list"></div>`;
   renderMembers(_clanMembers);
@@ -1559,7 +1562,6 @@ function renderClan(data) {
 
 window.setClanSort = function(by) {
   _clanSort = by;
-  document.querySelectorAll('#clan-sort-bar .filter-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase() === by));
   renderMembers(_clanMembers);
 };
 
