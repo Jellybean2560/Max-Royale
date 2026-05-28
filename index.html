@@ -1068,31 +1068,17 @@ async function loadEvolutionsGrid() {
 
     const ownedCount = evoCards.filter(hasEvolution).length;
 
-    // DEBUG: show all numeric/shard-like fields for the first unowned evo card
-    const firstUnowned = evoCards.find(c => !hasEvolution(c) && playerCardMap[c.id]);
-    const debugInfo = firstUnowned ? (() => {
-      const pc = playerCardMap[firstUnowned.id];
-      const fields = Object.entries(pc)
-        .filter(([k, v]) => typeof v === 'number' || k.toLowerCase().includes('shard') || k.toLowerCase().includes('evo'))
-        .map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(', ');
-      return `<div style="font-size:10px;color:var(--muted);background:var(--surface2);border-radius:6px;padding:6px;margin-bottom:10px;line-height:1.6"><strong>DEBUG (${esc(firstUnowned.name)}):</strong> ${fields}</div>`;
-    })() : '';
-
     grid.innerHTML = `
       <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
         ${ownedCount} / ${evoCards.length} evolutions unlocked
       </div>
-      ${debugInfo}
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
         ${evoCards.map(c => {
           const hasEvo = hasEvolution(c);
-          const pc = playerCardMap[c.id];
-          const shards = pc?.evolutionShards || 0;
           return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;${hasEvo ? 'border:1px solid var(--blue)' : 'opacity:0.35;filter:grayscale(1)'}">
             <img src="${c.iconUrls.evolutionMedium}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">
             <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
-            ${hasEvo ? '<span style="font-size:9px;color:var(--blue);font-weight:600">⚡ Evolved</span>'
-                     : shards > 0 ? `<span style="font-size:9px;color:var(--accent);font-weight:600">🔮 ${shards}/6</span>` : ''}
+            ${hasEvo ? '<span style="font-size:9px;color:var(--blue);font-weight:600">⚡ Evolved</span>' : ''}
           </div>`;
         }).join('')}
       </div>`;
