@@ -1066,103 +1066,130 @@ function toggleCardMax(id) {
 
 // ── Evolutions pane ──
 let _evoPlayerCards = [];
+let _evoCatalog = [];
+let _evoHasEvolution = null;
+let _evoFilter = 'all';
 
 function renderEvolutionsPane(playerCards) {
   _evoPlayerCards = playerCards;
+  _evoFilter = 'all';
   return `<div id="evolutions-grid"><div class="spinner"></div></div>`;
 }
 
 async function loadEvolutionsGrid() {
   const grid = document.getElementById('evolutions-grid');
-  if (!grid) return;
-  // Already rendered (non-spinner content means it's loaded)
-  if (!grid.querySelector('.spinner')) return;
-
+  if (!grid || !grid.querySelector('.spinner')) return;
   try {
     await maybeLoadCards();
-    const evoCards = allCards.filter(c => c.iconUrls?.evolutionMedium);
-    if (!evoCards.length) { grid.innerHTML = '<div class="empty-msg">No evolution data available.</div>'; return; }
-
-    // For dual cards (both evolutionMedium AND heroMedium), evolutionLevel tracks
-    // hero stages. Owning the evolution form pushes evolutionLevel above maxEvolutionLevel.
-    // Pure evolution-only cards just need evolutionLevel > 0.
+    _evoCatalog = allCards.filter(c => c.iconUrls?.evolutionMedium);
+    if (!_evoCatalog.length) { grid.innerHTML = '<div class="empty-msg">No evolution data available.</div>'; return; }
     const heroIdSet = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
     const playerCardMap = {};
     _evoPlayerCards.forEach(c => { playerCardMap[c.id] = c; });
-    const hasEvolution = c => {
+    _evoHasEvolution = c => {
       const pc = playerCardMap[c.id];
       if (!pc) return false;
-      const evo    = pc.evolutionLevel    || 0;
-      const maxEvo = pc.maxEvolutionLevel || 0;
-      // Dual card: evolutionLevel tracks hero stages (1…maxEvo).
-      // Reaching maxEvo means the evolution form is also unlocked.
+      const evo = pc.evolutionLevel || 0, maxEvo = pc.maxEvolutionLevel || 0;
       if (heroIdSet.has(c.id)) return maxEvo > 0 && evo >= maxEvo;
-      return evo > 0; // evolution-only card
+      return evo > 0;
     };
-
-    const ownedCount = evoCards.filter(hasEvolution).length;
-
+    const ownedCount = _evoCatalog.filter(_evoHasEvolution).length;
     grid.innerHTML = `
-      <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
-        ${ownedCount} / ${evoCards.length} evolutions unlocked
+      <div style="font-size:13px;color:var(--muted);margin-bottom:8px">${ownedCount} / ${_evoCatalog.length} evolutions unlocked</div>
+      <div class="filter-bar" id="evo-filter-bar" style="margin-bottom:12px">
+        <button class="filter-btn active" onclick="setEvoFilter('all')">All</button>
+        <button class="filter-btn" onclick="setEvoFilter('unlocked')">Unlocked</button>
+        <button class="filter-btn" onclick="setEvoFilter('locked')">Locked</button>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
-        ${evoCards.map(c => {
-          const hasEvo = hasEvolution(c);
-          return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;${hasEvo ? 'border:1px solid var(--blue)' : 'opacity:0.35;filter:grayscale(1)'}">
-            <img src="${c.iconUrls.evolutionMedium}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">
-            <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
-            ${hasEvo ? '<span style="font-size:9px;color:var(--blue);font-weight:600">⚡ Evolved</span>' : ''}
-          </div>`;
-        }).join('')}
+      <div id="evo-cards-grid"></div>`;
+    _renderEvoCards();
+  } catch(e) { grid.innerHTML = `<div class="error-msg">${e.message}</div>`; }
+}
+
+function setEvoFilter(val) {
+  _evoFilter = val;
+  document.querySelectorAll('#evo-filter-bar .filter-btn').forEach(b =>
+    b.classList.toggle('active', b.getAttribute('onclick').includes(`'${val}'`)));
+  _renderEvoCards();
+}
+
+function _renderEvoCards() {
+  const container = document.getElementById('evo-cards-grid');
+  if (!container || !_evoCatalog.length) return;
+  let cards = _evoCatalog;
+  if (_evoFilter === 'unlocked') cards = cards.filter(_evoHasEvolution);
+  if (_evoFilter === 'locked')   cards = cards.filter(c => !_evoHasEvolution(c));
+  if (!cards.length) { container.innerHTML = '<div class="empty-msg">No cards match this filter.</div>'; return; }
+  container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+    ${cards.map(c => {
+      const hasEvo = _evoHasEvolution(c);
+      return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;${hasEvo ? 'border:1px solid var(--blue)' : 'opacity:0.35;filter:grayscale(1)'}">
+        <img src="${c.iconUrls.evolutionMedium}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">
+        <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
+        ${hasEvo ? '<span style="font-size:9px;color:var(--blue);font-weight:600">⚡ Evolved</span>' : ''}
       </div>`;
-  } catch(e) {
-    grid.innerHTML = `<div class="error-msg">${e.message}</div>`;
-  }
+    }).join('')}
+  </div>`;
 }
 
 // ── Heroes pane ──
 let _heroPlayerCards = [];
+let _heroCatalog = [];
+let _heroMap = {};
+let _heroFilter = 'all';
 
 function renderHeroesPane(playerCards) {
   _heroPlayerCards = playerCards;
+  _heroFilter = 'all';
   return `<div id="heroes-grid"><div class="spinner"></div></div>`;
 }
 
 async function loadHeroesGrid() {
   const grid = document.getElementById('heroes-grid');
   if (!grid || !grid.querySelector('.spinner')) return;
-
   try {
     await maybeLoadCards();
-    const heroCards = allCards.filter(c => c.iconUrls?.heroMedium);
-    if (!heroCards.length) { grid.innerHTML = '<div class="empty-msg">No hero data available.</div>'; return; }
-
-    // Hero form owned = any evolutionLevel > 0 on a hero-capable card
-    const playerHeroMap = {};
-    _heroPlayerCards.forEach(c => {
-      playerHeroMap[c.id] = (c.evolutionLevel || 0) > 0;
-    });
-
-    const ownedCount = heroCards.filter(c => playerHeroMap[c.id]).length;
-
+    _heroCatalog = allCards.filter(c => c.iconUrls?.heroMedium);
+    if (!_heroCatalog.length) { grid.innerHTML = '<div class="empty-msg">No hero data available.</div>'; return; }
+    _heroMap = {};
+    _heroPlayerCards.forEach(c => { _heroMap[c.id] = (c.evolutionLevel || 0) > 0; });
+    const ownedCount = _heroCatalog.filter(c => _heroMap[c.id]).length;
     grid.innerHTML = `
-      <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
-        ${ownedCount} / ${heroCards.length} hero forms unlocked
+      <div style="font-size:13px;color:var(--muted);margin-bottom:8px">${ownedCount} / ${_heroCatalog.length} hero forms unlocked</div>
+      <div class="filter-bar" id="hero-filter-bar" style="margin-bottom:12px">
+        <button class="filter-btn active" onclick="setHeroFilter('all')">All</button>
+        <button class="filter-btn" onclick="setHeroFilter('unlocked')">Unlocked</button>
+        <button class="filter-btn" onclick="setHeroFilter('locked')">Locked</button>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
-        ${heroCards.map(c => {
-          const hasHero = !!playerHeroMap[c.id];
-          return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;${hasHero ? 'border:1px solid var(--purple)' : 'opacity:0.35;filter:grayscale(1)'}">
-            <img src="${c.iconUrls.heroMedium}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">
-            <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
-            ${hasHero ? '<span style="font-size:9px;color:var(--purple);font-weight:600">🦸 Hero</span>' : ''}
-          </div>`;
-        }).join('')}
+      <div id="hero-cards-grid"></div>`;
+    _renderHeroCards();
+  } catch(e) { grid.innerHTML = `<div class="error-msg">${e.message}</div>`; }
+}
+
+function setHeroFilter(val) {
+  _heroFilter = val;
+  document.querySelectorAll('#hero-filter-bar .filter-btn').forEach(b =>
+    b.classList.toggle('active', b.getAttribute('onclick').includes(`'${val}'`)));
+  _renderHeroCards();
+}
+
+function _renderHeroCards() {
+  const container = document.getElementById('hero-cards-grid');
+  if (!container || !_heroCatalog.length) return;
+  let cards = _heroCatalog;
+  if (_heroFilter === 'unlocked') cards = cards.filter(c =>  _heroMap[c.id]);
+  if (_heroFilter === 'locked')   cards = cards.filter(c => !_heroMap[c.id]);
+  if (!cards.length) { container.innerHTML = '<div class="empty-msg">No cards match this filter.</div>'; return; }
+  container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+    ${cards.map(c => {
+      const hasHero = !!_heroMap[c.id];
+      return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;${hasHero ? 'border:1px solid var(--purple)' : 'opacity:0.35;filter:grayscale(1)'}">
+        <img src="${c.iconUrls.heroMedium}" alt="${esc(c.name)}" style="width:48px;height:58px;object-fit:contain" loading="lazy">
+        <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
+        ${hasHero ? '<span style="font-size:9px;color:var(--purple);font-weight:600">🦸 Hero</span>' : ''}
       </div>`;
-  } catch(e) {
-    grid.innerHTML = `<div class="error-msg">${e.message}</div>`;
-  }
+    }).join('')}
+  </div>`;
 }
 
 // ── Tower Troops pane ──
