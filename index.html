@@ -776,8 +776,9 @@ function renderOverview(data) {
   const evolvedCount    = evoIds.size > 0
     ? cards.filter(c => {
         if (!evoIds.has(c.id)) return false;
-        const evo = c.evolutionLevel || 0;
-        if (heroIds.has(c.id)) return evo > (c.maxEvolutionLevel || 0); // dual card
+        const evo    = c.evolutionLevel    || 0;
+        const maxEvo = c.maxEvolutionLevel || 0;
+        if (heroIds.has(c.id)) return maxEvo > 0 && evo >= maxEvo; // dual card
         return evo > 0; // evolution-only card
       }).length
     : cards.filter(c => (c.evolutionLevel||0) > 0).length;
@@ -1014,27 +1015,19 @@ async function loadEvolutionsGrid() {
     const hasEvolution = c => {
       const pc = playerCardMap[c.id];
       if (!pc) return false;
-      const evo = pc.evolutionLevel || 0;
-      if (heroIdSet.has(c.id)) return evo > (pc.maxEvolutionLevel || 0); // dual card
+      const evo    = pc.evolutionLevel    || 0;
+      const maxEvo = pc.maxEvolutionLevel || 0;
+      // Dual card: evolutionLevel tracks hero stages (1…maxEvo).
+      // Reaching maxEvo means the evolution form is also unlocked.
+      if (heroIdSet.has(c.id)) return maxEvo > 0 && evo >= maxEvo;
       return evo > 0; // evolution-only card
     };
 
     const ownedCount = evoCards.filter(hasEvolution).length;
 
-    // DEBUG: show raw API values for dual cards so we can confirm the right condition
-    const dualDebug = evoCards
-      .filter(c => heroIdSet.has(c.id))
-      .map(c => {
-        const pc = playerCardMap[c.id];
-        return `${c.name}: evoLvl=${pc ? pc.evolutionLevel : 'N/A'} maxEvoLvl=${pc ? pc.maxEvolutionLevel : 'N/A'} → ${hasEvolution(c) ? '✅' : '❌'}`;
-      }).join('<br>');
-
     grid.innerHTML = `
       <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
         ${ownedCount} / ${evoCards.length} evolutions unlocked
-      </div>
-      <div style="font-size:11px;color:var(--muted);background:var(--surface2);border-radius:6px;padding:8px;margin-bottom:10px;line-height:1.8">
-        <strong>DEBUG — dual cards:</strong><br>${dualDebug}
       </div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
         ${evoCards.map(c => {
