@@ -231,12 +231,8 @@
         <p id="api-key-status" class="text-muted" style="font-size:13px;margin-top:8px;text-align:center"></p>
         <p style="font-size:12px;color:var(--muted);margin-top:10px">
           Get a free key at <strong>developer.clashroyale.com</strong><br>
-          Use the IP shown below as the allowed IP when creating your key.
+          Use IP <code>45.79.218.79</code> as the allowed IP — works from any network.
         </p>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
-          <code id="proxy-ip-display" style="background:var(--surface3);padding:4px 10px;border-radius:6px;font-size:13px;flex:1">checking…</code>
-          <button class="btn btn-secondary btn-sm" onclick="detectProxyIp()">🔍 Check IP</button>
-        </div>
       </div>
 
       <div class="nav-cards">
@@ -533,19 +529,6 @@ function toggleApiKey() {
   else { inp.type = 'password'; btn.textContent = 'Show'; }
 }
 
-async function detectProxyIp() {
-  const el = document.getElementById('proxy-ip-display');
-  if (!el) return;
-  el.textContent = 'checking…';
-  try {
-    const res = await fetch('https://corsproxy.io/?url=' + encodeURIComponent('https://httpbin.org/ip'));
-    const data = await res.json();
-    el.textContent = '📍 ' + data.origin + ' — use this as allowed IP';
-  } catch(e) {
-    el.textContent = 'Could not detect — try again';
-  }
-}
-
 function initApiKey() {
   const key = getApiKey();
   if (key) {
@@ -555,7 +538,6 @@ function initApiKey() {
   }
   const savedTag = localStorage.getItem('cr_player_tag');
   if (savedTag) document.getElementById('player-tag').value = savedTag;
-  detectProxyIp();
 }
 
 // ═══════════════════════════════════════════════
@@ -565,7 +547,7 @@ async function apiGet(path) {
   const key = getApiKey();
   if (!key) throw new Error('No API key set. Go to Home and save your key first.');
   const tag = path.replace('#', '%23');
-  const url = `https://corsproxy.io/?url=${encodeURIComponent('https://api.clashroyale.com/v1' + tag)}`;
+  const url = `https://proxy.royaleapi.dev/v1${tag}`;
   const res = await fetch(url, { headers: { Authorization: `Bearer ${key}` } });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
