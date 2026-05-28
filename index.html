@@ -920,30 +920,35 @@ function renderCardsPane(data) {
       <button class="filter-btn" onclick="setCardFilter('canmax','status')">Can Max</button>
       <button class="filter-btn" onclick="setCardFilter('maxed','status')">Maxed</button>
     </div>
-    <div class="filter-bar" id="card-rarity-filter">
-      <button class="filter-btn active" onclick="setCardFilter('all','rarity')">All</button>
-      <button class="filter-btn" onclick="setCardFilter('common','rarity')">Common</button>
-      <button class="filter-btn" onclick="setCardFilter('rare','rarity')">Rare</button>
-      <button class="filter-btn" onclick="setCardFilter('epic','rarity')">Epic</button>
-      <button class="filter-btn" onclick="setCardFilter('legendary','rarity')">Legendary</button>
-      <button class="filter-btn" onclick="setCardFilter('champion','rarity')">Champion</button>
-    </div>
-    <div class="filter-bar" id="card-sort-filter">
-      <button class="filter-btn active" onclick="setCardFilter('level-desc','sort')">Level ↓</button>
-      <button class="filter-btn" onclick="setCardFilter('level-asc','sort')">Level ↑</button>
-      <button class="filter-btn" onclick="setCardFilter('rarity','sort')">Rarity</button>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <select id="card-rarity-select" onchange="setCardFilter(this.value,'rarity')"
+        style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
+        <option value="all">All Rarities</option>
+        <option value="common">Common</option>
+        <option value="rare">Rare</option>
+        <option value="epic">Epic</option>
+        <option value="legendary">Legendary</option>
+        <option value="champion">Champion</option>
+      </select>
+      <select id="card-sort-select" onchange="setCardFilter(this.value,'sort')"
+        style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
+        <option value="level-desc">Level ↓</option>
+        <option value="level-asc">Level ↑</option>
+        <option value="rarity">Rarity</option>
+      </select>
     </div>
     <div id="cards-grid"></div>`;
 }
 
 window.setCardFilter = function(val, type) {
-  const barId = { status:'card-status-filter', rarity:'card-rarity-filter', sort:'card-sort-filter' }[type];
-  if (type === 'status') _cardFilter = val;
+  if (type === 'status') {
+    _cardFilter = val;
+    document.querySelectorAll('#card-status-filter .filter-btn').forEach(b =>
+      b.classList.toggle('active', b.getAttribute('onclick').includes(`'${val}'`))
+    );
+  }
   if (type === 'rarity') _cardRarity = val;
   if (type === 'sort')   _cardSort   = val;
-  document.querySelectorAll(`#${barId} .filter-btn`).forEach(b =>
-    b.classList.toggle('active', b.getAttribute('onclick').includes(`'${val}'`))
-  );
   renderCards();
 };
 
