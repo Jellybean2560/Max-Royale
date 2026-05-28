@@ -686,17 +686,13 @@ function renderProfile(data, battles) {
   const _profileCL   = _cardCL + _evoCount * 5 + _heroCount * 5 + _troopCL;
 
   el.innerHTML = `
-    <div class="lookup-header" style="position:relative;overflow:hidden">
-      ${(data.badges||[]).length > 0 ? `
-        <img src="${data.badges[0].iconUrls?.large}" style="position:absolute;right:-24px;top:-24px;width:180px;height:180px;object-fit:contain;opacity:0.07;filter:blur(3px);pointer-events:none;z-index:0">
-        ${data.badges[1]?.iconUrls?.large ? `<img src="${data.badges[1].iconUrls.large}" style="position:absolute;left:-24px;bottom:0;width:130px;height:130px;object-fit:contain;opacity:0.05;filter:blur(2px);pointer-events:none;z-index:0">` : ''}
-      ` : ''}
-      <div style="position:relative;z-index:1">
+    <div class="lookup-header">
       <div class="flex-between" style="align-items:flex-start">
         <div>
           <div class="player-name">${esc(data.name)}</div>
           <div class="player-tag">${data.tag}</div>
           <div class="trophies">🏆 ${fmtNum(data.trophies)}</div>
+          ${data.currentPathOfLegendSeasonResult ? `<div style="font-size:13px;color:var(--muted);margin-top:2px">⚔️ PoL: <span style="color:var(--text)">${fmtNum(data.currentPathOfLegendSeasonResult.trophies)} trophies · Rank ${fmtNum(data.currentPathOfLegendSeasonResult.rank)}</span></div>` : ''}
         </div>
         <div style="text-align:right">
           <div style="font-size:13px;color:var(--muted)">King Level</div>
@@ -706,14 +702,7 @@ function renderProfile(data, battles) {
         </div>
       </div>
 
-      ${(data.badges||[]).length > 0 ? `
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
-          ${data.badges.slice(0,10).map(b => b.iconUrls?.large
-            ? `<img src="${b.iconUrls.large}" title="${b.name}" style="width:36px;height:36px;object-fit:contain;opacity:0.85">`
-            : '').join('')}
-        </div>` : ''}
       <button class="btn btn-secondary btn-sm mt8" onclick="loadPlayer(localStorage.getItem('cr_player_tag'))">🔄 Refresh</button>
-      </div>
     </div>
 
     <div class="tab-bar">
