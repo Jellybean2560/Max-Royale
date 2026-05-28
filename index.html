@@ -840,7 +840,7 @@ function renderOverview(data) {
     <div class="card">
       <h3 style="margin-bottom:12px">⚡ Upgrade Insights</h3>
       <div class="stat-row"><span class="stat-label">Total cards in collection</span><strong>${cards.length}</strong></div>
-      <div class="stat-row"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${maxedCount} / ${cards.length}</strong></div>
+      <div class="stat-row" style="border-bottom:none"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${maxedCount} / ${cards.length}</strong></div>
       <div class="progress-wrap mt8">
         <div class="progress-bar" style="width:${Math.round(maxedCount/Math.max(cards.length,1)*100)}%;background:var(--accent)"></div>
       </div>
@@ -853,7 +853,7 @@ function renderOverview(data) {
       <div style="margin-top:20px">
         <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">🗼 Tower Troops</div>
         <div class="stat-row"><span class="stat-label">Total troops in collection</span><strong>${troopEnriched.length}</strong></div>
-        <div class="stat-row"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${troopMaxed} / ${troopEnriched.length}</strong></div>
+        <div class="stat-row" style="border-bottom:none"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${troopMaxed} / ${troopEnriched.length}</strong></div>
         <div class="progress-wrap mt8">
           <div class="progress-bar" style="width:${Math.round(troopMaxed/troopEnriched.length*100)}%;background:var(--accent)"></div>
         </div>
