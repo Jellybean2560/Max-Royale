@@ -1386,6 +1386,31 @@ let _deckFilter = 'all';
 window._deckMapData = null;
 window._deckBattles = null;
 
+const DECK_MODE_LABELS = {
+  trail: 'Trophy Road',
+  PvP: 'Ladder',
+  pathOfLegend: 'Path of Legends',
+  boatBattle: 'Boat Battle',
+  riverRacePvP: 'Clan War',
+  riverRaceDuel: 'Clan War Duel',
+  riverRaceDuelColosseum: 'Colosseum Duel',
+  casual1v1: 'Friendly 1v1',
+  casual2v2: 'Friendly 2v2',
+  challenge: 'Challenge',
+  tournament: 'Tournament',
+  classicChallenge: 'Classic Challenge',
+  grandChallenge: 'Grand Challenge',
+  seasonalBattle: 'Event',
+  clanMate: 'Friendly',
+  clanMate2v2: 'Friendly 2v2',
+  practice: 'Practice'
+};
+function deckModeLabel(m) {
+  if (DECK_MODE_LABELS[m]) return DECK_MODE_LABELS[m];
+  // Fallback: split camelCase / capitalise unknown types
+  return (m || 'Unknown').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^\w/, c => c.toUpperCase());
+}
+
 function renderDeckBuilder(battles) {
   if (!battles || !battles.length) return '<div class="empty-msg">No battle data to build decks from.</div>';
   window._deckBattles = battles;
@@ -1426,7 +1451,7 @@ function _renderDeckList(deckMap, battles) {
 
   const modes = [...new Set(battles.map(b => b.type||'unknown'))];
   const modeButtons = ['all', ...modes].map(m =>
-    `<button class="filter-btn ${_deckFilter===m?'active':''}" onclick="setDeckFilter('${m}')">${m === 'all' ? 'All Modes' : m}</button>`
+    `<button class="filter-btn ${_deckFilter===m?'active':''}" onclick="setDeckFilter('${m}')">${m === 'all' ? 'All Modes' : deckModeLabel(m)}</button>`
   ).join('');
 
   if (!filtered.length) return `<div class="filter-bar">${modeButtons}</div><div class="empty-msg">No decks for this filter.</div>`;
