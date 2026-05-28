@@ -156,7 +156,9 @@
   .battle-mode { font-size: 12px; color: var(--muted); }
   .battle-crowns { font-size: 13px; }
   .deck-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-  .deck-card-chip { background: var(--surface3); border-radius: 4px; padding: 3px 7px; font-size: 11px; }
+  .deck-card-chip { display: inline-flex; align-items: center; justify-content: center; background: var(--surface3); border-radius: 4px; width: 38px; height: 46px; overflow: hidden; flex-shrink: 0; }
+  .deck-card-chip img { width: 100%; height: 100%; object-fit: contain; }
+  .deck-card-chip.text-chip { width: auto; height: auto; padding: 3px 7px; font-size: 10px; }
 
   /* ── Deck builder ── */
   .deck-item { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
@@ -556,7 +558,10 @@ function onCardSearch(query) {
   if (!matches.length) { dd.classList.remove('open'); return; }
   dd.innerHTML = matches.map(c =>
     `<div class="dropdown-item" onclick="selectCard(${c.id})">
-      <span>${c.name}</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="" style="width:28px;height:34px;object-fit:contain;flex-shrink:0">` : ''}
+        <span>${esc(c.name)}</span>
+      </div>
       <span class="rarity-tag">${c.rarity || ''}</span>
     </div>`
   ).join('');
@@ -743,7 +748,10 @@ function renderOverview(data) {
 
   const suggestedRows = suggested.map(c =>
     `<div class="stat-row">
-      <span class="stat-label">${esc(c.name)} <span style="color:var(--muted);font-size:11px">(Lv ${c.disp}→${c.disp+1})</span></span>
+      <span class="stat-label" style="display:flex;align-items:center;gap:6px">
+        ${c.iconUrls?.medium?`<img src="${c.iconUrls.medium}" alt="" style="width:22px;height:28px;object-fit:contain;flex-shrink:0">`:''}
+        <span>${esc(c.name)} <span style="color:var(--muted);font-size:11px">(Lv ${c.disp}→${c.disp+1})</span></span>
+      </span>
       <span class="stat-value text-accent">${fmtNum(c.nextStep?.gold)} 💰</span>
     </div>`
   ).join('');
@@ -757,7 +765,7 @@ function renderOverview(data) {
       <div class="stat-row"><span class="stat-label">Challenge Max Wins</span><span class="stat-value">${fmtNum(data.challengeMaxWins)}</span></div>
       <div class="stat-row"><span class="stat-label">Challenge Cards Won</span><span class="stat-value">${fmtNum(data.challengeCardsWon)}</span></div>
       <div class="stat-row"><span class="stat-label">Cards Donated</span><span class="stat-value">${fmtNum(data.totalDonations)}</span></div>
-      ${fav ? `<div class="stat-row"><span class="stat-label">Favourite Card</span><span class="stat-value">${esc(fav.name)}</span></div>` : ''}
+      ${fav ? `<div class="stat-row"><span class="stat-label">Favourite Card</span><span class="stat-value" style="display:flex;align-items:center;gap:6px">${fav.iconUrls?.medium?`<img src="${fav.iconUrls.medium}" alt="" style="width:26px;height:32px;object-fit:contain">`:''}${esc(fav.name)}</span></div>` : ''}
     </div>
 
     <div class="card">
@@ -877,9 +885,12 @@ function renderCards() {
 
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
       <div class="flex-between mb8">
-        <div>
-          <span style="font-weight:600;font-size:15px">${esc(c.name)}</span>
-          <span style="font-size:11px;color:${rarityColor[c.r]||'var(--muted)'};margin-left:6px">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
+        <div style="display:flex;align-items:center;gap:10px">
+          ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
+          <div>
+            <span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br>
+            <span style="font-size:11px;color:${rarityColor[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
+          </div>
         </div>
         <div style="display:flex;align-items:center;gap:6px">
           <span style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:var(--accent)">Lv ${c.disp}</span>
@@ -915,7 +926,9 @@ function renderBattles(battles) {
     if (tCrowns > oCrowns) { result = 'win'; resLabel = 'WIN'; }
     else if (tCrowns < oCrowns) { result = 'loss'; resLabel = 'LOSS'; }
     const trophyChange = b.team?.[0]?.trophyChange;
-    const cards = (team.cards||[]).map(c => `<span class="deck-card-chip">${esc(c.name)}</span>`).join('');
+    const cards = (team.cards||[]).map(c => c.iconUrls?.medium
+      ? `<div class="deck-card-chip" title="${esc(c.name)}"><img src="${c.iconUrls.medium}" alt="${esc(c.name)}" loading="lazy"></div>`
+      : `<span class="deck-card-chip text-chip">${esc(c.name)}</span>`).join('');
     return `
       <div class="battle-item">
         <div class="battle-header">
@@ -943,6 +956,15 @@ window._deckBattles = null;
 function renderDeckBuilder(battles) {
   if (!battles || !battles.length) return '<div class="empty-msg">No battle data to build decks from.</div>';
   window._deckBattles = battles;
+
+  // Build card name → icon URL map from all cards seen in battles
+  const iconMap = {};
+  battles.forEach(b => {
+    (b.team||[]).concat(b.opponent||[]).forEach(p => {
+      (p.cards||[]).forEach(c => { if (c.name && c.iconUrls?.medium) iconMap[c.name] = c.iconUrls.medium; });
+    });
+  });
+  window._cardIconMap = iconMap;
 
   const deckMap = {};
   battles.forEach(b => {
@@ -980,7 +1002,12 @@ function _renderDeckList(deckMap, battles) {
     const total = d.wins + d.losses + d.draws;
     const wr = total ? Math.round(d.wins / total * 100) : 0;
     const avgElixir = d.elixir.length ? (d.elixir.reduce((a,b)=>a+b,0)/d.elixir.length).toFixed(1) : '—';
-    const cardChips = d.cards.map(c => `<span class="deck-card-chip">${esc(c)}</span>`).join('');
+    const cardChips = d.cards.map(c => {
+      const icon = window._cardIconMap?.[c];
+      return icon
+        ? `<div class="deck-card-chip" title="${esc(c)}"><img src="${icon}" alt="${esc(c)}" loading="lazy"></div>`
+        : `<span class="deck-card-chip text-chip">${esc(c)}</span>`;
+    }).join('');
     const names = d.cards.join(', ');
     return `
       <div class="deck-item">
