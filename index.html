@@ -1532,7 +1532,7 @@ function renderBattles(battles) {
             <span style="color:var(--muted)"> 👑 </span>
             <span style="color:var(--red)">${oCrowns}</span>
           </span>
-          <span style="font-size:11px;color:var(--muted)">${esc(deckModeLabel(b.type||''))}</span>
+          <span style="font-size:11px;color:var(--muted)">${esc(battleModeLabel(b))}</span>
         </div>
         <div style="display:flex">
           <div style="flex:1;background:rgba(74,144,226,0.10);padding:10px 12px;min-width:0">${sideNames(teamPlayers, '#5b9bff', 'left')}</div>
@@ -1579,6 +1579,31 @@ function deckModeLabel(m) {
   return (m || 'Unknown').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^\w/, c => c.toUpperCase());
 }
 
+// The API `type` field is too coarse (often just "trail"). The real mode lives
+// in gameMode.name — map the common ones, with keyword heuristics as fallback.
+const GAME_MODE_LABELS = {
+  Ladder: 'Trophy Road',
+  TeamVsTeam: 'Classic 2v2',
+  ClanWar_BoatBattle: 'Boat Battle',
+  Showdown_Friendly: 'Showdown',
+};
+function battleModeLabel(b) {
+  const gm = b.gameMode?.name || '';
+  if (GAME_MODE_LABELS[gm]) return GAME_MODE_LABELS[gm];
+  if (/TeamVsTeam|2v2|Duo/i.test(gm)) return /Friendly/i.test(gm) ? 'Friendly 2v2' : 'Classic 2v2';
+  if (/BoatBattle/i.test(gm))          return 'Boat Battle';
+  if (/Duel/i.test(gm))                return 'Clan War Duel';
+  if (/RiverRace|ClanWar/i.test(gm))   return 'Clan War';
+  if (/Ranked|PathOfLegend/i.test(gm)) return 'Path of Legends';
+  if (/Ladder|TrophyRoad/i.test(gm))   return 'Trophy Road';
+  if (/Showdown/i.test(gm))            return 'Showdown';
+  if (/Tournament/i.test(gm))          return 'Tournament';
+  if (/Challenge/i.test(gm))           return 'Challenge';
+  if (/Friendly/i.test(gm))            return 'Friendly';
+  if (gm) return gm.replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
+  return deckModeLabel(b.type || '');  // last-resort fallback to the coarse type
+}
+
 function renderDeckBuilder(battles) {
   if (!battles || !battles.length) return '<div class="empty-msg">No battle data to build decks from.</div>';
   window._deckBattles = battles;
@@ -1602,7 +1627,7 @@ function renderDeckBuilder(battles) {
     const result = tC > oC ? 'win' : tC < oC ? 'loss' : 'draw';
     if (!deckMap[cards]) deckMap[cards] = { cards: cards.split('|'), wins:0, losses:0, draws:0, modes:[], elixir:[] };
     deckMap[cards][result + 's']++;
-    deckMap[cards].modes.push(b.type||'unknown');
+    deckMap[cards].modes.push(battleModeLabel(b));
     const avg = (team.cards||[]).reduce((s,c) => s + (c.elixirCost||0), 0) / Math.max((team.cards||[]).length,1);
     deckMap[cards].elixir.push(avg);
   });
@@ -1617,9 +1642,9 @@ function _renderDeckList(deckMap, battles) {
   if (_deckFilter !== 'all') filtered = entries.filter(d => d.modes.includes(_deckFilter));
   filtered.sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws));
 
-  const modes = [...new Set(battles.map(b => b.type||'unknown'))];
+  const modes = [...new Set(battles.map(b => battleModeLabel(b)))];
   const modeButtons = ['all', ...modes].map(m =>
-    `<button class="filter-btn ${_deckFilter===m?'active':''}" onclick="setDeckFilter('${m}')">${m === 'all' ? 'All Modes' : deckModeLabel(m)}</button>`
+    `<button class="filter-btn ${_deckFilter===m?'active':''}" onclick="setDeckFilter('${m}')">${m === 'all' ? 'All Modes' : m}</button>`
   ).join('');
 
   if (!filtered.length) return `<div class="filter-bar">${modeButtons}</div><div class="empty-msg">No decks for this filter.</div>`;
