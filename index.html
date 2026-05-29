@@ -558,28 +558,35 @@ function onCardSearch(query) {
   const dd = document.getElementById('card-dropdown');
   if (!query.trim()) { dd.classList.remove('open'); return; }
   const q = query.toLowerCase();
-  const matches = allCards.filter(c => c.name.toLowerCase().includes(q)).slice(0, 12);
+  // Regular cards from the catalog + tower troops from the loaded player (not in catalog)
+  const catalogIds = new Set(allCards.map(c => c.id));
+  const towerTroops = Object.values(_playerCardsById).filter(c => !catalogIds.has(c.id));
+  const pool = [...allCards, ...towerTroops];
+  const matches = pool.filter(c => (c.name||'').toLowerCase().includes(q)).slice(0, 12);
   if (!matches.length) { dd.classList.remove('open'); return; }
-  dd.innerHTML = matches.map(c =>
-    `<div class="dropdown-item" onclick="selectCard(${c.id})">
+  dd.innerHTML = matches.map(c => {
+    const icon = c.iconUrls?.medium || c.iconUrls?.towerProjectileMedium || '';
+    return `<div class="dropdown-item" onclick="selectCard(${c.id})">
       <div style="display:flex;align-items:center;gap:8px">
-        ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="" style="width:28px;height:34px;object-fit:contain;flex-shrink:0">` : ''}
+        ${icon ? `<img src="${icon}" alt="" style="width:28px;height:34px;object-fit:contain;flex-shrink:0">` : ''}
         <span>${esc(c.name)}</span>
       </div>
       <span class="rarity-tag">${c.rarity || ''}</span>
-    </div>`
-  ).join('');
+    </div>`;
+  }).join('');
   dd.classList.add('open');
 }
 
 function selectCard(id) {
-  const card = allCards.find(c => c.id === id);
+  // Regular card from catalog, or tower troop from the loaded player
+  const card = allCards.find(c => c.id === id) || _playerCardsById[id];
   if (!card) return;
   document.getElementById('card-search').value = card.name;
   document.getElementById('card-dropdown').classList.remove('open');
 
-  const r = (card.rarity || '').toLowerCase();
-  if (LEVEL_DATA[r]) document.getElementById('calc-rarity').value = r;
+  let r = (card.rarity || '').toLowerCase();
+  if (!LEVEL_DATA[r]) r = 'common';
+  document.getElementById('calc-rarity').value = r;
 
   // If we have this player's card data, auto-fill their actual level + card count
   const pc = _playerCardsById[id];
