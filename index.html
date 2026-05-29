@@ -854,82 +854,203 @@ function closeFriendModal() {
   document.body.style.overflow = '';
   _friendData = null;
 }
+// Friend modal filter state (self-contained so it never touches the main profile)
+let _fCardStatus = 'all', _fCardRarity = 'all', _fCardSort = 'level-desc', _fCardSearch = '';
+let _fEvoFilter = 'all', _fHeroFilter = 'all';
+
 function friendTab(name) {
   const d = _friendData; if (!d) return;
   document.querySelectorAll('#friend-modal-body .tab-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.ftab === name));
   const pane = document.getElementById('friend-pane');
   if (name === 'overview')    pane.innerHTML = renderOverview(d);
-  if (name === 'cards')       pane.innerHTML = renderFriendCardGrid(d);
-  if (name === 'evolutions')  pane.innerHTML = renderFriendCollectGrid(d, 'evolution');
-  if (name === 'heroes')      pane.innerHTML = renderFriendCollectGrid(d, 'hero');
-  if (name === 'towerTroops') pane.innerHTML = renderFriendTroopGrid(d);
+  if (name === 'cards')     { _fCardStatus='all'; _fCardRarity='all'; _fCardSort='level-desc'; _fCardSearch=''; pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
+  if (name === 'evolutions'){ _fEvoFilter='all';  pane.innerHTML = friendCollectShell('evolution'); friendRenderCollect('evolution'); }
+  if (name === 'heroes')    { _fHeroFilter='all'; pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
+  if (name === 'towerTroops') pane.innerHTML = friendTroopHTML(d);
   document.getElementById('friend-modal').scrollTop = 0;
 }
-function renderFriendCardGrid(data) {
-  const cards = (data.cards||[]).map(c => {
-    const r = (c.rarity||'common').toLowerCase();
-    return { ...c, r, disp: toDisplayLevel(r, c.level) };
-  }).sort((a,b) => b.disp - a.disp || (RARITY_ORDER[b.r]||0)-(RARITY_ORDER[a.r]||0));
-  if (!cards.length) return '<div class="empty-msg">No cards.</div>';
+
+// ── Friend Cards (mirrors main Cards tab) ──
+function friendCardsShell(data) {
+  const total = allCards.length || (data.cards||[]).length;
+  const sel = 'flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:\'Inter\',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center';
   return `
-    <div style="font-size:13px;color:var(--muted);margin-bottom:12px">${cards.length} / ${allCards.length||cards.length} cards unlocked</div>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
-      ${cards.map(c => `<div style="background:var(--surface2);border-radius:8px;padding:6px 4px;text-align:center">
-        ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:100%;max-width:56px;height:auto;display:block;margin:0 auto" loading="lazy">` : ''}
-        <div style="font-size:11px;font-weight:700;color:${c.disp>=MAX_LEVEL?'var(--accent)':'var(--text)'};margin-top:3px">Lv ${c.disp}</div>
-      </div>`).join('')}
-    </div>`;
+    <div style="font-size:13px;color:var(--muted);margin-bottom:12px">${(data.cards||[]).length} / ${total} cards unlocked</div>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <select onchange="friendSetCard(this.value,'rarity')" style="${sel}">
+        <option value="all">All Rarities</option><option value="common">Common</option><option value="rare">Rare</option><option value="epic">Epic</option><option value="legendary">Legendary</option><option value="champion">Champion</option>
+      </select>
+      <select onchange="friendSetCard(this.value,'sort')" style="${sel}">
+        <option value="level-desc">Level ↓</option><option value="level-asc">Level ↑</option><option value="rarity">Rarity</option>
+      </select>
+    </div>
+    <div class="filter-bar" id="f-card-status">
+      <button class="filter-btn active" onclick="friendSetCard('all','status')">All</button>
+      <button class="filter-btn" onclick="friendSetCard('upgradable','status')">Upgradable</button>
+      <button class="filter-btn" onclick="friendSetCard('canmax','status')">Can Max</button>
+      <button class="filter-btn" onclick="friendSetCard('maxed','status')">Maxed</button>
+    </div>
+    <input type="text" placeholder="🔍 Search card name…" oninput="friendSetCard(this.value,'search')" autocomplete="off"
+      style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:8px 14px;font-size:13px;font-family:'Inter',sans-serif;margin-bottom:10px">
+    <div id="f-cards-grid"></div>`;
 }
-function renderFriendCollectGrid(data, kind) {
+window.friendSetCard = function(val, type) {
+  if (type === 'status') { _fCardStatus = val;
+    document.querySelectorAll('#f-card-status .filter-btn').forEach(b => b.classList.toggle('active', b.getAttribute('onclick').includes(`'${val}'`)));
+  }
+  if (type === 'rarity') _fCardRarity = val;
+  if (type === 'sort')   _fCardSort = val;
+  if (type === 'search') _fCardSearch = (val||'').toLowerCase().trim();
+  friendRenderCards();
+};
+function friendRenderCards() {
+  const grid = document.getElementById('f-cards-grid');
+  if (!grid || !_friendData) return;
+  const catalogStarMax = {}; allCards.forEach(ac => { if (ac.maxStarLevel) catalogStarMax[ac.id] = ac.maxStarLevel; });
+  let cards = (_friendData.cards||[]).map(c => {
+    const r = (c.rarity||'common').toLowerCase();
+    const disp = toDisplayLevel(r, c.level);
+    const steps = LEVEL_DATA[r] || [], minL = MIN_LEVEL[r] || 1, idx = disp - minL;
+    const isMaxed = disp >= MAX_LEVEL || idx >= steps.length;
+    const nextStep = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
+    const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
+    const canMax = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
+    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep };
+  });
+  if (_fCardRarity !== 'all') cards = cards.filter(c => c.r === _fCardRarity);
+  if (_fCardSearch) cards = cards.filter(c => (c.name||'').toLowerCase().includes(_fCardSearch));
+  if (_fCardStatus === 'maxed') cards = cards.filter(c => c.isMaxed);
+  if (_fCardStatus === 'upgradable') cards = cards.filter(c => c.isUpgradable);
+  if (_fCardStatus === 'canmax') cards = cards.filter(c => c.canMax);
+  if (_fCardSort === 'level-desc') cards.sort((a,b) => b.disp - a.disp);
+  if (_fCardSort === 'level-asc')  cards.sort((a,b) => a.disp - b.disp);
+  if (_fCardSort === 'rarity')     cards.sort((a,b) => (RARITY_ORDER[b.r]||0)-(RARITY_ORDER[a.r]||0) || b.disp - a.disp);
+  if (!cards.length) { grid.innerHTML = '<div class="empty-msg">No cards match this filter.</div>'; return; }
+  const rarityColor = { common:'var(--text)', rare:'var(--blue)', epic:'var(--purple)', legendary:'var(--accent)', champion:'#e74c3c' };
+  grid.innerHTML = cards.map(c => {
+    const needed = c.nextStep ? c.nextStep.cards : 0, owned = c.count || 0;
+    const pct = c.isMaxed ? 100 : needed ? Math.min(100, Math.round(owned / needed * 100)) : 0;
+    const ms = c.maxStarLevel || catalogStarMax[c.id] || 0, sl = c.starLevel || 0;
+    const stars = (sl > 0 && ms > 0) ? `&nbsp;<span style="font-size:12px;letter-spacing:1px">${'<span style="color:#FFD700">★</span>'.repeat(Math.min(sl,ms))}${'<span style="color:#555577">★</span>'.repeat(Math.max(0,ms-Math.min(sl,ms)))}</span>` : '';
+    const statusLabel = c.isMaxed ? '<span class="badge badge-gold">MAX ★</span>' : c.isUpgradable ? '<span class="badge badge-green">Ready</span>' : c.canMax ? '<span class="badge badge-blue">Can Max</span>' : '';
+    const showMax = !c.isMaxed && c.disp <= 14;
+    const toMax = showMax ? computeUpgrade(c.r, c.disp, owned, MAX_LEVEL) : null;
+    const domId = `fcard-${c.id}`;
+    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
+      <div class="flex-between mb8">
+        <div style="display:flex;align-items:center;gap:10px">
+          ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
+          <div><span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br><span style="font-size:11px;color:${rarityColor[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>${stars}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+          <span style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:var(--accent)">Lv ${c.disp}</span>${statusLabel}
+        </div>
+      </div>
+      ${!c.isMaxed && c.nextStep ? `
+        <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px"><span>Cards: ${fmtNum(owned)} / ${fmtNum(needed)}</span><span>${fmtNum(c.nextStep.gold)} 💰 to Lv ${c.disp+1}</span></div>
+        <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;background:${c.isUpgradable?'var(--green)':'var(--blue)'}"></div></div>
+      ` : `<div style="font-size:12px;color:var(--muted)">Fully maxed! ✓</div>`}
+      ${showMax ? `
+        <div onclick="toggleCardMax('${domId}')" style="cursor:pointer;margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);text-align:center;user-select:none"><span id="${domId}-toggle">▼ Total to Lv 16</span></div>
+        <div id="${domId}-max" style="display:none;margin-top:6px">
+          <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px"><span>Cards still needed</span><span class="${toMax.totalCards > 0 ? 'text-red' : 'text-green'}">${toMax.totalCards > 0 ? '+'+fmtNum(toMax.totalCards) : '✓ Enough cards'}</span></div>
+          <div class="flex-between" style="font-size:12px;color:var(--muted)"><span>Total gold to Lv 16</span><span style="color:var(--accent)">${fmtNum(toMax.totalGold)} 💰</span></div>
+        </div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// ── Friend Evolutions / Heroes (mirrors main, with All/Unlocked/Locked chips) ──
+function friendCollectShell(kind) {
+  const setFn = kind === 'evolution' ? 'friendSetEvo' : 'friendSetHero';
+  const barId = kind === 'evolution' ? 'f-evo-filter' : 'f-hero-filter';
+  return `
+    <div id="f-collect-count" style="font-size:13px;color:var(--muted);margin-bottom:8px"></div>
+    <div class="filter-bar" id="${barId}">
+      <button class="filter-btn active" onclick="${setFn}('all')">All</button>
+      <button class="filter-btn" onclick="${setFn}('unlocked')">Unlocked</button>
+      <button class="filter-btn" onclick="${setFn}('locked')">Locked</button>
+    </div>
+    <div id="f-collect-grid"></div>`;
+}
+window.friendSetEvo = function(v) { _fEvoFilter = v;
+  document.querySelectorAll('#f-evo-filter .filter-btn').forEach(b => b.classList.toggle('active', b.getAttribute('onclick').includes(`'${v}'`)));
+  friendRenderCollect('evolution');
+};
+window.friendSetHero = function(v) { _fHeroFilter = v;
+  document.querySelectorAll('#f-hero-filter .filter-btn').forEach(b => b.classList.toggle('active', b.getAttribute('onclick').includes(`'${v}'`)));
+  friendRenderCollect('hero');
+};
+function friendRenderCollect(kind) {
+  const grid = document.getElementById('f-collect-grid'); if (!grid || !_friendData) return;
   const isEvo = kind === 'evolution';
   const catalog = allCards.filter(c => isEvo ? c.iconUrls?.evolutionMedium : c.iconUrls?.heroMedium);
-  if (!catalog.length) return '<div class="empty-msg">No data available.</div>';
   const heroIdSet = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
-  const pm = {}; (data.cards||[]).forEach(c => pm[c.id] = c);
-  const owns = c => {
-    const pc = pm[c.id]; if (!pc) return false;
-    const evo = pc.evolutionLevel||0, maxEvo = pc.maxEvolutionLevel||0;
-    if (isEvo) return heroIdSet.has(c.id) ? (maxEvo>0 && evo>=maxEvo) : evo>0;
-    return evo > 0; // hero
-  };
-  const color = isEvo ? 'var(--blue)' : 'var(--purple)';
-  const label = isEvo ? '⚡ Evolved' : '🦸 Hero';
-  const noun  = isEvo ? 'evolutions' : 'hero forms';
-  const ownedCount = catalog.filter(owns).length;
+  const pm = {}; (_friendData.cards||[]).forEach(c => pm[c.id] = c);
+  const owns = c => { const pc = pm[c.id]; if (!pc) return false; const evo = pc.evolutionLevel||0, me = pc.maxEvolutionLevel||0; return isEvo ? (heroIdSet.has(c.id) ? (me>0 && evo>=me) : evo>0) : evo>0; };
+  const color = isEvo ? 'var(--blue)' : 'var(--purple)', label = isEvo ? '⚡ Evolved' : '🦸 Hero', noun = isEvo ? 'evolutions' : 'hero forms';
   const imgOf = c => isEvo ? (typeof evoImg==='function' ? evoImg(c) : c.iconUrls.evolutionMedium) : c.iconUrls.heroMedium;
-  return `
-    <div style="font-size:13px;color:var(--muted);margin-bottom:12px">${ownedCount} / ${catalog.length} ${noun} unlocked</div>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
-      ${catalog.map(c => {
-        const has = owns(c);
-        return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;border:1px solid ${has?color:'transparent'};${has?'':'opacity:0.35;filter:grayscale(1)'}">
-          <img src="${imgOf(c)}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy">
-          <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(c.name)}</span>
-          <span style="font-size:9px;color:${color};font-weight:600;min-height:11px">${has?label:''}</span>
-        </div>`;
-      }).join('')}
-    </div>`;
+  const filter = isEvo ? _fEvoFilter : _fHeroFilter;
+  const ownedCount = catalog.filter(owns).length;
+  const countEl = document.getElementById('f-collect-count');
+  if (countEl) countEl.textContent = `${ownedCount} / ${catalog.length} ${noun} unlocked`;
+  let list = catalog;
+  if (filter === 'unlocked') list = catalog.filter(owns);
+  if (filter === 'locked')   list = catalog.filter(c => !owns(c));
+  if (!list.length) { grid.innerHTML = '<div class="empty-msg">No cards match this filter.</div>'; return; }
+  grid.innerHTML = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+    ${list.map(c => { const has = owns(c);
+      return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;border:1px solid ${has?color:'transparent'};${has?'':'opacity:0.35;filter:grayscale(1)'}">
+        <img src="${imgOf(c)}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy">
+        <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(c.name)}</span>
+        <span style="font-size:9px;color:${color};font-weight:600;min-height:11px">${has?label:''}</span>
+      </div>`; }).join('')}
+  </div>`;
 }
-function renderFriendTroopGrid(data) {
+
+// ── Friend Tower Troops (mirrors main tower layout) ──
+function friendTroopHTML(data) {
   const troops = data.supportCards || [];
   if (!troops.length) return '<div class="empty-msg">No tower troop data available.</div>';
   const catalogById = {}; allCards.forEach(c => catalogById[c.id] = c);
-  return `
-    <div style="font-size:13px;color:var(--muted);margin-bottom:12px">${troops.length} / ${troops.length} tower troops unlocked</div>
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
-      ${troops.map(c => {
-        const r = (c.rarity||'legendary').toLowerCase();
-        const disp = toDisplayLevel(r, c.level);
-        const cat = catalogById[c.id] || {};
-        const img = cat.iconUrls?.towerProjectileMedium || c.iconUrls?.towerProjectileMedium || cat.iconUrls?.medium || c.iconUrls?.medium || '';
-        return `<div style="background:var(--surface2);border-radius:8px;padding:6px 4px;text-align:center">
-          ${img ? `<img src="${img}" alt="${esc(c.name)}" style="width:100%;max-width:56px;height:auto;display:block;margin:0 auto" loading="lazy">` : ''}
-          <div style="font-size:10px;color:var(--text);margin-top:2px;line-height:1.2">${esc(c.name)}</div>
-          <div style="font-size:11px;font-weight:700;color:${disp>=MAX_LEVEL?'var(--accent)':'var(--text)'}">Lv ${disp}</div>
-        </div>`;
-      }).join('')}
+  const rows = troops.map(c => {
+    const r = (c.rarity || 'legendary').toLowerCase();
+    const disp = toDisplayLevel(r, c.level);
+    const steps = LEVEL_DATA[r] || [], minL = MIN_LEVEL[r] || 1, idx = disp - minL;
+    const isMaxed = disp >= MAX_LEVEL || idx >= steps.length;
+    const nextStep = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
+    const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
+    const canMax = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
+    const cat = catalogById[c.id] || {};
+    const img = cat.iconUrls?.towerProjectileMedium || c.iconUrls?.towerProjectileMedium || cat.iconUrls?.medium || c.iconUrls?.medium || '';
+    const owned = c.count || 0, needed = nextStep ? nextStep.cards : 0;
+    const pct = isMaxed ? 100 : needed ? Math.min(100, Math.round(owned / needed * 100)) : 0;
+    const statusLabel = isMaxed ? '<span class="badge badge-gold">MAX ★</span>' : isUpgradable ? '<span class="badge badge-green">Ready</span>' : canMax ? '<span class="badge badge-blue">Can Max</span>' : '';
+    const showMax = !isMaxed && disp <= 14;
+    const toMax = showMax ? computeUpgrade(r, disp, owned, MAX_LEVEL) : null;
+    const domId = `ftroop-${c.id}`;
+    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
+      <div class="flex-between mb8">
+        <div style="display:flex;align-items:center;gap:10px">
+          ${img ? `<img src="${img}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
+          <div><span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br><span style="font-size:11px;color:var(--muted)">${r.charAt(0).toUpperCase()+r.slice(1)}</span></div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px"><span style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:var(--accent)">Lv ${disp}</span>${statusLabel}</div>
+      </div>
+      ${!isMaxed && nextStep ? `
+        <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px"><span>Cards: ${fmtNum(owned)} / ${fmtNum(needed)}</span><span>${fmtNum(nextStep.gold)} 💰 to Lv ${disp+1}</span></div>
+        <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;background:${isUpgradable?'var(--green)':'var(--blue)'}"></div></div>
+      ` : `<div style="font-size:12px;color:var(--muted)">Fully maxed! ✓</div>`}
+      ${showMax ? `
+        <div onclick="toggleCardMax('${domId}')" style="cursor:pointer;margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);text-align:center;user-select:none"><span id="${domId}-toggle">▼ Total to Lv 16</span></div>
+        <div id="${domId}-max" style="display:none;margin-top:6px">
+          <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px"><span>Cards still needed</span><span class="${toMax.totalCards > 0 ? 'text-red' : 'text-green'}">${toMax.totalCards > 0 ? '+'+fmtNum(toMax.totalCards) : '✓ Enough cards'}</span></div>
+          <div class="flex-between" style="font-size:12px;color:var(--muted)"><span>Total gold to Lv 16</span><span style="color:var(--accent)">${fmtNum(toMax.totalGold)} 💰</span></div>
+        </div>` : ''}
     </div>`;
+  }).join('');
+  return `<div style="font-size:13px;color:var(--muted);margin-bottom:12px">${troops.length} / ${troops.length} tower troops unlocked</div>${rows}`;
 }
 function renderFriends() {
   const wrap = document.getElementById('friends-list');
