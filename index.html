@@ -1496,12 +1496,35 @@ async function loadTowerTroopsGrid() {
 }
 
 // ── Battles pane ──
+let _battleFilter = 'all';
 function renderBattles(battles) {
   if (!battles || !battles.length) return '<div class="empty-msg">No battles found.</div>';
+  window._battleData = battles;
+  _battleFilter = 'all';
+  return _renderBattleList(battles);
+}
+
+window.setBattleFilter = function(mode) {
+  _battleFilter = mode;
+  if (window._battleData) {
+    document.getElementById('tab-battles').innerHTML = _renderBattleList(window._battleData);
+  }
+};
+
+function _renderBattleList(battles) {
+  const modes = [...new Set(battles.map(b => battleModeLabel(b)))];
+  const modeButtons = ['all', ...modes].map(m =>
+    `<button class="filter-btn ${_battleFilter===m?'active':''}" onclick="setBattleFilter('${m}')">${m === 'all' ? 'All Modes' : m}</button>`
+  ).join('');
+  const bar = `<div class="filter-bar">${modeButtons}</div>`;
+
+  const filtered = _battleFilter === 'all' ? battles : battles.filter(b => battleModeLabel(b) === _battleFilter);
+  if (!filtered.length) return `${bar}<div class="empty-msg">No battles for this filter.</div>`;
+
   const deckRow = (p) => (p.cards||[]).map(c => c.iconUrls?.medium
     ? `<div class="deck-card-chip" title="${esc(c.name)}"><img src="${c.iconUrls.medium}" alt="${esc(c.name)}" loading="lazy"></div>`
     : `<span class="deck-card-chip text-chip">${esc(c.name)}</span>`).join('');
-  return battles.map(b => {
+  return bar + filtered.map(b => {
     const teamPlayers = b.team || [];
     const oppPlayers  = b.opponent || [];
     const team = teamPlayers[0] || {};
