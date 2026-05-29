@@ -1666,17 +1666,17 @@ function _renderDeckList(deckMap, battles) {
     const cardChips = d.cards.map(c => {
       const icon = window._cardIconMap?.[c];
       return icon
-        ? `<div class="deck-card-chip" title="${esc(c)}"><img src="${icon}" alt="${esc(c)}" loading="lazy"></div>`
-        : `<span class="deck-card-chip text-chip">${esc(c)}</span>`;
+        ? `<img src="${icon}" alt="${esc(c)}" title="${esc(c)}" style="width:100%;height:auto;display:block;border-radius:4px" loading="lazy">`
+        : `<span style="font-size:9px;color:var(--text);display:flex;align-items:center;justify-content:center;text-align:center">${esc(c)}</span>`;
     }).join('');
     const names = d.cards.join(', ');
     const statRow = (lbl, val, cls) =>
-      `<div style="display:flex;justify-content:space-between;font-size:12px;padding:1px 0"><span style="color:var(--muted)">${lbl}</span><span class="${cls}">${val}</span></div>`;
+      `<div style="margin-bottom:5px"><div class="${cls}" style="font-size:15px;font-weight:700;line-height:1.1">${val}</div><div style="font-size:10px;color:var(--muted)">${lbl}</div></div>`;
     return `
       <div class="deck-item">
         <div style="display:flex;gap:12px;align-items:flex-start">
-          <div style="flex-shrink:0">
-            <div style="display:grid;grid-template-columns:repeat(4,38px);gap:4px">${cardChips}</div>
+          <div style="flex:3;min-width:0">
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px">${cardChips}</div>
             <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%;font-size:11px;padding:4px 8px" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
           </div>
           <div style="flex:1;min-width:0">
@@ -1685,7 +1685,6 @@ function _renderDeckList(deckMap, battles) {
             ${statRow('Draws', d.draws, 'text-muted')}
             ${statRow('Win Rate', wr + '%', 'text-accent')}
             ${statRow('Avg Elixir', avgElixir, 'text-blue')}
-            <div class="progress-wrap" style="margin-top:6px"><div class="progress-bar" style="width:${wr}%;background:var(--green)"></div></div>
           </div>
         </div>
       </div>`;
