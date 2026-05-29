@@ -1053,7 +1053,7 @@ function friendTroopHTML(data) {
   return `<div style="font-size:13px;color:var(--muted);margin-bottom:12px">${troops.length} / ${troops.length} tower troops unlocked</div>${rows}`;
 }
 let _friendsEditMode = false;
-function toggleFriendsEdit() { _friendsEditMode = !_friendsEditMode; renderFriends(); }
+function toggleFriendsEdit() { _friendsEditMode = !_friendsEditMode; _renderFriendsList(); }
 function renderFriends() {
   const wrap = document.getElementById('friends-list');
   if (!wrap) return;
