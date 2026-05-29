@@ -1519,12 +1519,12 @@ function renderBattles(battles) {
       `<div style="color:${color};font-weight:600;font-size:14px;text-align:${align};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name||'?')}</div>`
     ).join('');
 
-    // One column per team member — name label (2v2 only), deck, copy button
+    // One column per team member — name label (2v2 only), deck (2 rows of 4), copy button
     const deckCols = teamPlayers.map(p => {
       const names = (p.cards||[]).map(c => c.name).join(', ');
-      return `<div style="flex:1;min-width:0">
+      return `<div style="flex:1;min-width:0;text-align:center">
         ${is2v2 ? `<div style="font-size:11px;color:#5b9bff;font-weight:600;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name||'?')}</div>` : ''}
-        <div class="deck-row">${deckRow(p)}</div>
+        <div style="display:grid;grid-template-columns:repeat(4,38px);gap:4px;justify-content:center;margin-top:4px">${deckRow(p)}</div>
         <button class="btn btn-secondary btn-sm" style="margin-top:6px;font-size:11px;padding:3px 9px" onclick="copyDeckLink('${esc(names)}',this)">📋 Copy</button>
       </div>`;
     }).join('');
@@ -1541,8 +1541,8 @@ function renderBattles(battles) {
           <span style="font-size:11px;color:var(--muted)">${esc(battleModeLabel(b))}</span>
         </div>
         <div style="display:flex">
-          <div style="flex:1;background:rgba(74,144,226,0.10);padding:10px 12px;min-width:0">${sideNames(teamPlayers, '#5b9bff', 'left')}</div>
-          <div style="flex:1;background:rgba(231,76,60,0.10);padding:10px 12px;min-width:0">${sideNames(oppPlayers, '#e9685c', 'right')}</div>
+          <div style="flex:1;background:rgba(74,144,226,0.10);padding:10px 12px;min-width:0">${sideNames(teamPlayers, '#5b9bff', 'center')}</div>
+          <div style="flex:1;background:rgba(231,76,60,0.10);padding:10px 12px;min-width:0">${sideNames(oppPlayers, '#e9685c', 'center')}</div>
         </div>
         <div style="padding:10px 12px">
           <div style="display:flex;gap:12px">${deckCols}</div>
