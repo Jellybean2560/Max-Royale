@@ -287,6 +287,22 @@
       <div id="clan-result"></div>
     </div>
 
+    <!-- ═══════════════ FRIENDS ═══════════════ -->
+    <div id="screen-friends" class="screen">
+      <h2 style="margin-bottom:16px">👥 Friends</h2>
+      <div class="card">
+        <div class="field" style="margin-bottom:0">
+          <label>Add Friend (Player Tag)</label>
+          <div class="flex-row">
+            <input type="text" id="friend-tag" placeholder="#ABC123" style="flex:1" onkeydown="if(event.key==='Enter')addFriend()">
+            <button class="btn btn-primary" onclick="addFriend()">Add</button>
+          </div>
+          <div id="friend-msg" style="display:none;font-size:12px;margin-top:6px"></div>
+        </div>
+      </div>
+      <div id="friends-list"></div>
+    </div>
+
   </div><!-- /content -->
 
   <!-- ═══════════════ BOTTOM NAV ═══════════════ -->
@@ -302,6 +318,10 @@
     <button class="nav-btn" id="nav-calc" onclick="goTo('calc')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="16" y2="10"/><line x1="8" y1="14" x2="12" y2="14"/></svg>
       Calculator
+    </button>
+    <button class="nav-btn" id="nav-friends" onclick="goTo('friends')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Friends
     </button>
   </nav>
 </div>
@@ -477,6 +497,7 @@ function goTo(name) {
   if (navBtn) navBtn.classList.add('active');
   currentScreen = name;
   if (name === 'calc') { maybeLoadCards(); calcUpdate(); }
+  if (name === 'friends') renderFriends();
 }
 
 function switchTab(name) {
@@ -747,6 +768,70 @@ document.addEventListener('click', e => {
     wrap.style.display = 'none';
   }
 });
+
+// ── Friends (up to 5, stored in localStorage) ──
+function getFriends() {
+  try { return JSON.parse(localStorage.getItem('cr_friends') || '[]'); }
+  catch(e) { return []; }
+}
+async function addFriend() {
+  const raw = document.getElementById('friend-tag').value.trim();
+  const msg = document.getElementById('friend-msg');
+  if (!raw) return;
+  const tag = raw.startsWith('#') ? raw : '#' + raw;
+  let list = getFriends();
+  if (list.length >= 5) { showFriendMsg('You can save up to 5 friends. Remove one first.', true); return; }
+  if (list.some(f => f.tag === tag)) { showFriendMsg('That friend is already saved.', true); return; }
+  showFriendMsg('Checking tag…', false);
+  try {
+    const p = await apiGet('/players/' + encodeURIComponent(tag));
+    list.push({ tag: p.tag, name: p.name });
+    localStorage.setItem('cr_friends', JSON.stringify(list));
+    document.getElementById('friend-tag').value = '';
+    showFriendMsg('', false);
+    renderFriends();
+  } catch(e) {
+    showFriendMsg('Could not find that player tag.', true);
+  }
+}
+function showFriendMsg(text, isError) {
+  const msg = document.getElementById('friend-msg');
+  if (!msg) return;
+  msg.textContent = text;
+  msg.style.display = text ? 'block' : 'none';
+  msg.style.color = isError ? 'var(--red)' : 'var(--muted)';
+}
+function removeFriend(tag, ev) {
+  if (ev) ev.stopPropagation();
+  const list = getFriends().filter(f => f.tag !== tag);
+  localStorage.setItem('cr_friends', JSON.stringify(list));
+  renderFriends();
+}
+function viewFriend(tag) {
+  goTo('lookup');
+  document.getElementById('player-tag').value = tag;
+  loadPlayer(tag);
+}
+function renderFriends() {
+  const wrap = document.getElementById('friends-list');
+  if (!wrap) return;
+  const list = getFriends();
+  if (!list.length) {
+    wrap.innerHTML = '<div class="empty-msg">No friends saved yet. Add a player tag above (up to 5).</div>';
+    return;
+  }
+  wrap.innerHTML = list.map(f => `
+    <div onclick="viewFriend('${f.tag}')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px;cursor:pointer">
+      <div style="min-width:0">
+        <div style="font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</div>
+        <div style="font-size:12px;color:var(--muted);font-family:monospace">${esc(f.tag)}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+        <span class="text-accent" style="font-size:13px;font-weight:600">View →</span>
+        <span onclick="removeFriend('${f.tag}',event)" style="color:var(--red);font-weight:700;padding:0 4px;cursor:pointer" title="Remove">×</span>
+      </div>
+    </div>`).join('');
+}
 
 async function loadPlayer(tagOverride) {
   const raw = (tagOverride || document.getElementById('player-tag').value).trim();
