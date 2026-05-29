@@ -1509,32 +1509,42 @@ function renderBattles(battles) {
     const opp  = oppPlayers[0] || {};
     const tCrowns = team.crowns || 0;
     const oCrowns = opp.crowns || 0;
-    let result = 'draw', resLabel = 'DRAW';
-    if (tCrowns > oCrowns) { result = 'win'; resLabel = 'WIN'; }
-    else if (tCrowns < oCrowns) { result = 'loss'; resLabel = 'LOSS'; }
+    let resLabel = 'DRAW', resColor = 'var(--muted)';
+    if (tCrowns > oCrowns) { resLabel = 'VICTORY'; resColor = '#4a90e2'; }
+    else if (tCrowns < oCrowns) { resLabel = 'DEFEAT'; resColor = 'var(--red)'; }
     const trophyChange = team.trophyChange;
     const is2v2 = teamPlayers.length > 1 || oppPlayers.length > 1;
-    const teamNames = teamPlayers.map(p => esc(p.name||'?')).join(' & ') || 'You';
-    const oppNames  = oppPlayers.map(p => esc(p.name||'?')).join(' & ') || 'Unknown';
-    // One deck row per team member (both teammates in 2v2)
+
+    const sideNames = (players, color, align) => players.map(p =>
+      `<div style="color:${color};font-weight:600;font-size:14px;text-align:${align};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name||'?')}</div>`
+    ).join('');
+
     const decks = teamPlayers.map(p =>
       `${is2v2 ? `<div style="font-size:11px;color:var(--muted);margin:6px 0 2px">${esc(p.name||'?')}</div>` : ''}<div class="deck-row">${deckRow(p)}</div>`
     ).join('');
+
     return `
-      <div class="battle-item">
-        <div class="battle-header">
-          <div>
-            <div class="battle-result ${result}">${resLabel}</div>
-            <div class="battle-mode">${esc(deckModeLabel(b.type||''))}</div>
-          </div>
-          <div style="text-align:right">
-            <div class="battle-crowns">${tCrowns} — ${oCrowns} 👑</div>
-            ${trophyChange != null ? `<div style="font-size:12px;color:${trophyChange>=0?'var(--green)':'var(--red)'}">${trophyChange>=0?'+':''}${trophyChange} 🏆</div>` : ''}
-            <div style="font-size:11px;color:var(--muted)">${formatBattleTime(b.battleTime)}</div>
+      <div class="battle-item" style="padding:0;overflow:hidden">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--surface2)">
+          <span style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:${resColor}">${resLabel}</span>
+          <span style="font-size:15px;font-weight:700">
+            <span style="color:#4a90e2">${tCrowns}</span>
+            <span style="color:var(--muted)"> 👑 </span>
+            <span style="color:var(--red)">${oCrowns}</span>
+          </span>
+          <span style="font-size:11px;color:var(--muted)">${esc(deckModeLabel(b.type||''))}</span>
+        </div>
+        <div style="display:flex">
+          <div style="flex:1;background:rgba(74,144,226,0.10);padding:10px 12px;min-width:0">${sideNames(teamPlayers, '#5b9bff', 'left')}</div>
+          <div style="flex:1;background:rgba(231,76,60,0.10);padding:10px 12px;min-width:0">${sideNames(oppPlayers, '#e9685c', 'right')}</div>
+        </div>
+        <div style="padding:10px 12px">
+          ${decks}
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:11px;color:var(--muted)">
+            <span>${formatBattleTime(b.battleTime)}</span>
+            ${trophyChange != null ? `<span style="color:${trophyChange>=0?'var(--green)':'var(--red)'}">${trophyChange>=0?'+':''}${trophyChange} 🏆</span>` : ''}
           </div>
         </div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:4px">${teamNames} <span style="opacity:0.6">vs</span> ${oppNames}</div>
-        ${decks}
       </div>`;
   }).join('');
 }
