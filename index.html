@@ -1670,19 +1670,23 @@ function _renderDeckList(deckMap, battles) {
         : `<span class="deck-card-chip text-chip">${esc(c)}</span>`;
     }).join('');
     const names = d.cards.join(', ');
+    const statRow = (lbl, val, cls) =>
+      `<div style="display:flex;justify-content:space-between;font-size:12px;padding:1px 0"><span style="color:var(--muted)">${lbl}</span><span class="${cls}">${val}</span></div>`;
     return `
       <div class="deck-item">
-        <div class="deck-stats">
-          <div class="deck-stat"><div class="val text-green">${d.wins}</div><div class="lbl">Wins</div></div>
-          <div class="deck-stat"><div class="val text-red">${d.losses}</div><div class="lbl">Losses</div></div>
-          <div class="deck-stat"><div class="val text-muted">${d.draws}</div><div class="lbl">Draws</div></div>
-          <div class="deck-stat"><div class="val text-accent">${wr}%</div><div class="lbl">Win Rate</div></div>
-          <div class="deck-stat"><div class="val text-blue">${avgElixir}</div><div class="lbl">Avg Elixir</div></div>
-        </div>
-        <div class="progress-wrap winrate-bar"><div class="progress-bar" style="width:${wr}%;background:var(--green)"></div></div>
-        <div class="deck-row">${cardChips}</div>
-        <div class="mt8">
-          <button class="btn btn-secondary btn-sm" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
+        <div style="display:flex;gap:12px;align-items:flex-start">
+          <div style="flex-shrink:0">
+            <div style="display:grid;grid-template-columns:repeat(4,38px);gap:4px">${cardChips}</div>
+            <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%;font-size:11px;padding:4px 8px" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
+          </div>
+          <div style="flex:1;min-width:0">
+            ${statRow('Wins', d.wins, 'text-green')}
+            ${statRow('Losses', d.losses, 'text-red')}
+            ${statRow('Draws', d.draws, 'text-muted')}
+            ${statRow('Win Rate', wr + '%', 'text-accent')}
+            ${statRow('Avg Elixir', avgElixir, 'text-blue')}
+            <div class="progress-wrap" style="margin-top:6px"><div class="progress-bar" style="width:${wr}%;background:var(--green)"></div></div>
+          </div>
         </div>
       </div>`;
   }).join('');
