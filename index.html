@@ -818,6 +818,7 @@ function removeFriend(tag, ev) {
   localStorage.setItem('cr_friends', JSON.stringify(list));
   renderFriends();
 }
+let _friendData = null;
 async function viewFriend(tag) {
   const modal = document.getElementById('friend-modal');
   const body  = document.getElementById('friend-modal-body');
@@ -826,8 +827,24 @@ async function viewFriend(tag) {
   body.innerHTML = '<div class="spinner"></div>';
   try {
     await maybeLoadCards();
-    const data = await apiGet('/players/' + encodeURIComponent(tag));
-    body.innerHTML = renderFriendOverview(data);
+    _friendData = await apiGet('/players/' + encodeURIComponent(tag));
+    body.innerHTML = `
+      <div class="lookup-header" style="margin-bottom:12px">
+        <div class="player-name">${esc(_friendData.name)}</div>
+        <div class="player-tag">${_friendData.tag}</div>
+        <div class="trophies">🏆 <span style="color:var(--accent);font-weight:700">${fmtNum(_friendData.trophies)}</span></div>
+        ${polHeaderLine(_friendData)}
+        ${_friendData.clan ? `<div style="font-size:13px;color:var(--muted);margin-top:4px">🛡 ${esc(_friendData.clan.name)}</div>` : ''}
+      </div>
+      <div class="tab-bar">
+        <button class="tab-btn active" data-ftab="overview" onclick="friendTab('overview')">Overview</button>
+        <button class="tab-btn" data-ftab="cards" onclick="friendTab('cards')">Cards</button>
+        <button class="tab-btn" data-ftab="evolutions" onclick="friendTab('evolutions')">Evolutions</button>
+        <button class="tab-btn" data-ftab="heroes" onclick="friendTab('heroes')">Heroes</button>
+        <button class="tab-btn" data-ftab="towerTroops" onclick="friendTab('towerTroops')">Tower Troops</button>
+      </div>
+      <div id="friend-pane"></div>`;
+    friendTab('overview');
   } catch(e) {
     body.innerHTML = `<div class="error-msg">${e.message}</div>`;
   }
@@ -835,17 +852,84 @@ async function viewFriend(tag) {
 function closeFriendModal() {
   document.getElementById('friend-modal').style.display = 'none';
   document.body.style.overflow = '';
+  _friendData = null;
 }
-function renderFriendOverview(data) {
+function friendTab(name) {
+  const d = _friendData; if (!d) return;
+  document.querySelectorAll('#friend-modal-body .tab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.ftab === name));
+  const pane = document.getElementById('friend-pane');
+  if (name === 'overview')    pane.innerHTML = renderOverview(d);
+  if (name === 'cards')       pane.innerHTML = renderFriendCardGrid(d);
+  if (name === 'evolutions')  pane.innerHTML = renderFriendCollectGrid(d, 'evolution');
+  if (name === 'heroes')      pane.innerHTML = renderFriendCollectGrid(d, 'hero');
+  if (name === 'towerTroops') pane.innerHTML = renderFriendTroopGrid(d);
+  document.getElementById('friend-modal').scrollTop = 0;
+}
+function renderFriendCardGrid(data) {
+  const cards = (data.cards||[]).map(c => {
+    const r = (c.rarity||'common').toLowerCase();
+    return { ...c, r, disp: toDisplayLevel(r, c.level) };
+  }).sort((a,b) => b.disp - a.disp || (RARITY_ORDER[b.r]||0)-(RARITY_ORDER[a.r]||0));
+  if (!cards.length) return '<div class="empty-msg">No cards.</div>';
   return `
-    <div class="lookup-header" style="margin-bottom:12px">
-      <div class="player-name">${esc(data.name)}</div>
-      <div class="player-tag">${data.tag}</div>
-      <div class="trophies">🏆 <span style="color:var(--accent);font-weight:700">${fmtNum(data.trophies)}</span></div>
-      ${polHeaderLine(data)}
-      ${data.clan ? `<div style="font-size:13px;color:var(--muted);margin-top:4px">🛡 ${esc(data.clan.name)}</div>` : ''}
-    </div>
-    ${renderOverview(data)}`;
+    <div style="font-size:13px;color:var(--muted);margin-bottom:12px">${cards.length} / ${allCards.length||cards.length} cards unlocked</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+      ${cards.map(c => `<div style="background:var(--surface2);border-radius:8px;padding:6px 4px;text-align:center">
+        ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:100%;max-width:56px;height:auto;display:block;margin:0 auto" loading="lazy">` : ''}
+        <div style="font-size:11px;font-weight:700;color:${c.disp>=MAX_LEVEL?'var(--accent)':'var(--text)'};margin-top:3px">Lv ${c.disp}</div>
+      </div>`).join('')}
+    </div>`;
+}
+function renderFriendCollectGrid(data, kind) {
+  const isEvo = kind === 'evolution';
+  const catalog = allCards.filter(c => isEvo ? c.iconUrls?.evolutionMedium : c.iconUrls?.heroMedium);
+  if (!catalog.length) return '<div class="empty-msg">No data available.</div>';
+  const heroIdSet = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
+  const pm = {}; (data.cards||[]).forEach(c => pm[c.id] = c);
+  const owns = c => {
+    const pc = pm[c.id]; if (!pc) return false;
+    const evo = pc.evolutionLevel||0, maxEvo = pc.maxEvolutionLevel||0;
+    if (isEvo) return heroIdSet.has(c.id) ? (maxEvo>0 && evo>=maxEvo) : evo>0;
+    return evo > 0; // hero
+  };
+  const color = isEvo ? 'var(--blue)' : 'var(--purple)';
+  const label = isEvo ? '⚡ Evolved' : '🦸 Hero';
+  const noun  = isEvo ? 'evolutions' : 'hero forms';
+  const ownedCount = catalog.filter(owns).length;
+  const imgOf = c => isEvo ? (typeof evoImg==='function' ? evoImg(c) : c.iconUrls.evolutionMedium) : c.iconUrls.heroMedium;
+  return `
+    <div style="font-size:13px;color:var(--muted);margin-bottom:12px">${ownedCount} / ${catalog.length} ${noun} unlocked</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+      ${catalog.map(c => {
+        const has = owns(c);
+        return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;border:1px solid ${has?color:'transparent'};${has?'':'opacity:0.35;filter:grayscale(1)'}">
+          <img src="${imgOf(c)}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy">
+          <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(c.name)}</span>
+          <span style="font-size:9px;color:${color};font-weight:600;min-height:11px">${has?label:''}</span>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+function renderFriendTroopGrid(data) {
+  const troops = data.supportCards || [];
+  if (!troops.length) return '<div class="empty-msg">No tower troop data available.</div>';
+  const catalogById = {}; allCards.forEach(c => catalogById[c.id] = c);
+  return `
+    <div style="font-size:13px;color:var(--muted);margin-bottom:12px">${troops.length} / ${troops.length} tower troops unlocked</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+      ${troops.map(c => {
+        const r = (c.rarity||'legendary').toLowerCase();
+        const disp = toDisplayLevel(r, c.level);
+        const cat = catalogById[c.id] || {};
+        const img = cat.iconUrls?.towerProjectileMedium || c.iconUrls?.towerProjectileMedium || cat.iconUrls?.medium || c.iconUrls?.medium || '';
+        return `<div style="background:var(--surface2);border-radius:8px;padding:6px 4px;text-align:center">
+          ${img ? `<img src="${img}" alt="${esc(c.name)}" style="width:100%;max-width:56px;height:auto;display:block;margin:0 auto" loading="lazy">` : ''}
+          <div style="font-size:10px;color:var(--text);margin-top:2px;line-height:1.2">${esc(c.name)}</div>
+          <div style="font-size:11px;font-weight:700;color:${disp>=MAX_LEVEL?'var(--accent)':'var(--text)'}">Lv ${disp}</div>
+        </div>`;
+      }).join('')}
+    </div>`;
 }
 function renderFriends() {
   const wrap = document.getElementById('friends-list');
