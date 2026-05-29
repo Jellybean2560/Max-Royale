@@ -781,6 +781,28 @@ async function loadPlayer(tagOverride) {
   }
 }
 
+// Path of Legends league names (leagueNumber 1-10)
+const POL_LEAGUES = {
+  1: 'Challenger I', 2: 'Challenger II', 3: 'Challenger III',
+  4: 'Master I', 5: 'Master II', 6: 'Master III',
+  7: 'Champion', 8: 'Grand Champion', 9: 'Royal Champion', 10: 'Ultimate Champion'
+};
+function polHeaderLine(data) {
+  // current is usually empty mid-season; fall back to last, then best
+  const r = data.currentPathOfLegendSeasonResult
+        || data.lastPathOfLegendSeasonResult
+        || data.bestPathOfLegendSeasonResult;
+  if (!r || !r.leagueNumber) return '';
+  const isCurrent = !!(data.currentPathOfLegendSeasonResult && data.currentPathOfLegendSeasonResult.leagueNumber);
+  const prefix = isCurrent ? 'PoL' : 'PoL (best)';
+  const league = POL_LEAGUES[r.leagueNumber] || `League ${r.leagueNumber}`;
+  // Ultimate Champion uses a global rank; lower leagues use trophy/step count
+  const detail = (r.leagueNumber === 10 && r.rank)
+    ? `#${fmtNum(r.rank)} · ${fmtNum(r.trophies)} 🏆`
+    : `${fmtNum(r.trophies)} 🏆`;
+  return `<div style="font-size:13px;color:var(--muted);margin-top:2px">⚔️ ${prefix}: <span style="color:var(--text)">${league} · ${detail}</span></div>`;
+}
+
 function renderProfile(data, battles) {
   const el = document.getElementById('player-result');
 
@@ -810,7 +832,7 @@ function renderProfile(data, battles) {
           <div class="player-name">${esc(data.name)}</div>
           <div class="player-tag">${data.tag}</div>
           <div class="trophies">🏆 <span style="color:var(--accent);font-weight:700">${fmtNum(data.trophies)}</span></div>
-          ${data.currentPathOfLegendSeasonResult ? `<div style="font-size:13px;color:var(--muted);margin-top:2px">⚔️ PoL: <span style="color:var(--text)">${fmtNum(data.currentPathOfLegendSeasonResult.trophies)} trophies · Rank ${fmtNum(data.currentPathOfLegendSeasonResult.rank)}</span></div>` : ''}
+          ${polHeaderLine(data)}
         </div>
         <div style="text-align:right">
           <div style="font-size:13px;color:var(--muted)">King Level</div>
