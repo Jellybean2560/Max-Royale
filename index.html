@@ -1671,10 +1671,10 @@ function _renderDeckList(deckMap, battles) {
     }).join('');
     const names = d.cards.join(', ');
     const statRow = (lbl, val, cls) =>
-      `<div style="margin-bottom:5px"><div class="${cls}" style="font-size:15px;font-weight:700;line-height:1.1">${val}</div><div style="font-size:10px;color:var(--muted)">${lbl}</div></div>`;
+      `<div style="margin-bottom:5px;text-align:center"><div class="${cls}" style="font-size:15px;font-weight:700;line-height:1.1">${val}</div><div style="font-size:10px;color:var(--muted)">${lbl}</div></div>`;
     return `
       <div class="deck-item">
-        <div style="display:flex;gap:12px;align-items:flex-start">
+        <div style="display:flex;gap:12px;align-items:center">
           <div style="flex:1;min-width:0">
             <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px">${cardChips}</div>
             <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%;font-size:11px;padding:4px 8px" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
