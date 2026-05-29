@@ -1518,11 +1518,15 @@ function renderBattles(battles) {
       `<div style="color:${color};font-weight:600;font-size:14px;text-align:${align};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name||'?')}</div>`
     ).join('');
 
-    // One column per team member — name label (2v2 only), deck (2 rows of 4), copy button
-    const deckCols = teamPlayers.map(p => {
+    // 1v1 → show your deck + opponent's deck side by side. 2v2 → both teammates.
+    const teamSet = new Set(teamPlayers);
+    const deckPlayers = is2v2 ? teamPlayers : [...teamPlayers, ...oppPlayers];
+    const showLabels = deckPlayers.length > 1;
+    const deckCols = deckPlayers.map(p => {
       const names = (p.cards||[]).map(c => c.name).join(', ');
+      const labelColor = teamSet.has(p) ? '#5b9bff' : '#e9685c';
       return `<div style="flex:1;min-width:0;text-align:center">
-        ${is2v2 ? `<div style="font-size:11px;color:#5b9bff;font-weight:600;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name||'?')}</div>` : ''}
+        ${showLabels ? `<div style="font-size:11px;color:${labelColor};font-weight:600;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name||'?')}</div>` : ''}
         <div style="display:grid;grid-template-columns:repeat(4,38px);gap:4px;justify-content:center;margin-top:4px">${deckRow(p)}</div>
         <button class="btn btn-secondary btn-sm" style="margin-top:6px;font-size:11px;padding:3px 9px" onclick="copyDeckLink('${esc(names)}',this)">📋 Copy</button>
       </div>`;
