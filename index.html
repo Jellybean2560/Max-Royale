@@ -1499,24 +1499,33 @@ async function loadTowerTroopsGrid() {
 // ── Battles pane ──
 function renderBattles(battles) {
   if (!battles || !battles.length) return '<div class="empty-msg">No battles found.</div>';
+  const deckRow = (p) => (p.cards||[]).map(c => c.iconUrls?.medium
+    ? `<div class="deck-card-chip" title="${esc(c.name)}"><img src="${c.iconUrls.medium}" alt="${esc(c.name)}" loading="lazy"></div>`
+    : `<span class="deck-card-chip text-chip">${esc(c.name)}</span>`).join('');
   return battles.map(b => {
-    const team = (b.team||[])[0] || {};
-    const opp = (b.opponent||[])[0] || {};
+    const teamPlayers = b.team || [];
+    const oppPlayers  = b.opponent || [];
+    const team = teamPlayers[0] || {};
+    const opp  = oppPlayers[0] || {};
     const tCrowns = team.crowns || 0;
     const oCrowns = opp.crowns || 0;
     let result = 'draw', resLabel = 'DRAW';
     if (tCrowns > oCrowns) { result = 'win'; resLabel = 'WIN'; }
     else if (tCrowns < oCrowns) { result = 'loss'; resLabel = 'LOSS'; }
-    const trophyChange = b.team?.[0]?.trophyChange;
-    const cards = (team.cards||[]).map(c => c.iconUrls?.medium
-      ? `<div class="deck-card-chip" title="${esc(c.name)}"><img src="${c.iconUrls.medium}" alt="${esc(c.name)}" loading="lazy"></div>`
-      : `<span class="deck-card-chip text-chip">${esc(c.name)}</span>`).join('');
+    const trophyChange = team.trophyChange;
+    const is2v2 = teamPlayers.length > 1 || oppPlayers.length > 1;
+    const teamNames = teamPlayers.map(p => esc(p.name||'?')).join(' & ') || 'You';
+    const oppNames  = oppPlayers.map(p => esc(p.name||'?')).join(' & ') || 'Unknown';
+    // One deck row per team member (both teammates in 2v2)
+    const decks = teamPlayers.map(p =>
+      `${is2v2 ? `<div style="font-size:11px;color:var(--muted);margin:6px 0 2px">${esc(p.name||'?')}</div>` : ''}<div class="deck-row">${deckRow(p)}</div>`
+    ).join('');
     return `
       <div class="battle-item">
         <div class="battle-header">
           <div>
             <div class="battle-result ${result}">${resLabel}</div>
-            <div class="battle-mode">${esc(b.type||'')}</div>
+            <div class="battle-mode">${esc(deckModeLabel(b.type||''))}</div>
           </div>
           <div style="text-align:right">
             <div class="battle-crowns">${tCrowns} — ${oCrowns} 👑</div>
@@ -1524,8 +1533,8 @@ function renderBattles(battles) {
             <div style="font-size:11px;color:var(--muted)">${formatBattleTime(b.battleTime)}</div>
           </div>
         </div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:4px">vs ${esc(opp.name||'Unknown')}</div>
-        <div class="deck-row">${cards}</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:4px">${teamNames} <span style="opacity:0.6">vs</span> ${oppNames}</div>
+        ${decks}
       </div>`;
   }).join('');
 }
