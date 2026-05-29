@@ -1304,7 +1304,7 @@ function _renderEvoCards() {
     ${cards.map(c => {
       const hasEvo = _evoHasEvolution(c);
       return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;${hasEvo ? 'border:1px solid var(--blue)' : 'opacity:0.35;filter:grayscale(1)'}">
-        <img src="${evoImg(c)}" alt="${esc(c.name)}" style="width:100%;max-width:64px;height:auto;object-fit:contain;display:block" loading="lazy">
+        <img src="${evoImg(c)}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy">
         <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
         ${hasEvo ? '<span style="font-size:9px;color:var(--blue);font-weight:600">⚡ Evolved</span>' : ''}
       </div>`;
@@ -1364,7 +1364,7 @@ function _renderHeroCards() {
     ${cards.map(c => {
       const hasHero = !!_heroMap[c.id];
       return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;${hasHero ? 'border:1px solid var(--purple)' : 'opacity:0.35;filter:grayscale(1)'}">
-        <img src="${c.iconUrls.heroMedium}" alt="${esc(c.name)}" style="width:100%;max-width:64px;height:auto;object-fit:contain;display:block" loading="lazy">
+        <img src="${c.iconUrls.heroMedium}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy">
         <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2">${esc(c.name)}</span>
         ${hasHero ? '<span style="font-size:9px;color:var(--purple);font-weight:600">🦸 Hero</span>' : ''}
       </div>`;
