@@ -794,7 +794,7 @@ function polHeaderLine(data) {
         || data.bestPathOfLegendSeasonResult;
   if (!r || !r.leagueNumber) return '';
   const isCurrent = !!(data.currentPathOfLegendSeasonResult && data.currentPathOfLegendSeasonResult.leagueNumber);
-  const prefix = isCurrent ? 'PoL' : 'PoL (best)';
+  const prefix = isCurrent ? 'Ranked' : 'Ranked (best)';
   const league = POL_LEAGUES[r.leagueNumber] || `League ${r.leagueNumber}`;
   // Ultimate Champion uses a global rank; lower leagues use trophy/step count
   const detail = (r.leagueNumber === 10 && r.rank)
