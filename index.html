@@ -780,7 +780,7 @@ document.addEventListener('click', e => {
   }
 });
 
-// ── Friends (up to 5, stored in localStorage) ──
+// ── Friends (up to 10, stored in localStorage) ──
 function getFriends() {
   try { return JSON.parse(localStorage.getItem('cr_friends') || '[]'); }
   catch(e) { return []; }
@@ -791,7 +791,7 @@ async function addFriend() {
   if (!raw) return;
   const tag = raw.startsWith('#') ? raw : '#' + raw;
   let list = getFriends();
-  if (list.length >= 5) { showFriendMsg('You can save up to 5 friends. Remove one first.', true); return; }
+  if (list.length >= 10) { showFriendMsg('You can save up to 10 friends. Remove one first.', true); return; }
   if (list.some(f => f.tag === tag)) { showFriendMsg('That friend is already saved.', true); return; }
   showFriendMsg('Checking tag…', false);
   try {
@@ -1057,7 +1057,7 @@ function renderFriends() {
   if (!wrap) return;
   const list = getFriends();
   if (!list.length) {
-    wrap.innerHTML = '<div class="empty-msg">No friends saved yet. Add a player tag above (up to 5).</div>';
+    wrap.innerHTML = '<div class="empty-msg">No friends saved yet. Add a player tag above (up to 10).</div>';
     return;
   }
   wrap.innerHTML = list.map(f => `
