@@ -1237,11 +1237,10 @@ function toggleCardMax(id) {
 }
 
 // ── Evolutions pane ──
-// Override for cards whose API evolutionMedium image is wrong/outdated.
-// Keyed by card name → corrected local image path.
-const EVO_IMG_OVERRIDE = {
-  'Skeleton Army': 'evo-skeleton-army.png'
-};
+// Override map for cards whose API evolutionMedium image is wrong/outdated.
+// Keyed by card name → corrected local image path. (Currently none — kept so
+// a fix can be added in one line if Supercell ships another bad image.)
+const EVO_IMG_OVERRIDE = {};
 function evoImg(c) {
   return EVO_IMG_OVERRIDE[c.name] || c.iconUrls.evolutionMedium;
 }
