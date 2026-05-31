@@ -842,6 +842,7 @@ async function viewFriend(tag) {
         <button class="tab-btn" data-ftab="evolutions" onclick="friendTab('evolutions')">Evolutions</button>
         <button class="tab-btn" data-ftab="heroes" onclick="friendTab('heroes')">Heroes</button>
         <button class="tab-btn" data-ftab="towerTroops" onclick="friendTab('towerTroops')">Tower Troops</button>
+        <button class="tab-btn" data-ftab="masteries" onclick="friendTab('masteries')">Masteries</button>
       </div>
       <div id="friend-pane"></div>`;
     friendTab('overview');
@@ -868,6 +869,7 @@ function friendTab(name) {
   if (name === 'evolutions'){ _fEvoFilter='all';  pane.innerHTML = friendCollectShell('evolution'); friendRenderCollect('evolution'); }
   if (name === 'heroes')    { _fHeroFilter='all'; pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
   if (name === 'towerTroops') pane.innerHTML = friendTroopHTML(d);
+  if (name === 'masteries')   pane.innerHTML = renderMasteries(d);
   document.getElementById('friend-modal').scrollTop = 0;
 }
 
@@ -1127,6 +1129,75 @@ const POL_LEAGUES = {
   4: 'Master I', 5: 'Master II', 6: 'Master III',
   7: 'Champion', 8: 'Grand Champion', 9: 'Royal Champion', 10: 'Ultimate Champion'
 };
+// ── Card Mastery helpers ──
+// Maps mastery badge internal names (Mastery<X>) to their display card name
+// where they differ from a simple normalize-and-match.
+const MASTERY_NAME_OVERRIDES = {
+  BlowdartGoblin: 'Dart Goblin',
+  DartBarrell:    'Goblin Barrel',
+  IceGolemite:    'Ice Golem',
+  MiniSparkys:    'Zappies',
+  Log:            'The Log',
+  BarbLog:        'Barbarian Barrel',
+  FirespiritHut:  'Furnace',
+  FireSpirits:    'Fire Spirit',
+  IceSpirits:     'Ice Spirit',
+  RageBarbarian:  'Berserker',
+  SkeletonBalloon:'Skeleton Barrel',
+  SkeletonWarriors:'Guards',
+  Xbow:           'X-Bow'
+};
+function _normName(s) { return (s||'').toLowerCase().replace(/[^a-z0-9]/g,''); }
+function buildMasteryMap(badges, cards) {
+  const normToCard = {};
+  (cards||[]).forEach(c => { normToCard[_normName(c.name)] = c.name; });
+  const map = {};
+  (badges||[]).filter(b => b.name && b.name.indexOf('Mastery') === 0).forEach(b => {
+    const internal = b.name.slice(7); // strip 'Mastery'
+    const cardName = MASTERY_NAME_OVERRIDES[internal] || normToCard[_normName(internal)];
+    if (cardName) {
+      map[cardName] = {
+        level: b.level || 0,
+        max: b.maxLevel || 10,
+        progress: b.progress || 0,
+        target: b.target,
+        iconUrl: b.iconUrls?.large
+      };
+    }
+  });
+  return map;
+}
+function renderMasteries(data) {
+  const cards = data.cards || [];
+  if (!cards.length) return '<div class="empty-msg">No cards.</div>';
+  const masteryMap = buildMasteryMap(data.badges, cards);
+  const items = cards.map(c => ({ ...c, m: masteryMap[c.name] }))
+    .sort((a,b) => (b.m?.level||0) - (a.m?.level||0));
+  const maxed = items.filter(c => c.m && c.m.level >= c.m.max).length;
+  const total = items.length;
+  const withMastery = items.filter(c => c.m).length;
+  const sumLevels = items.reduce((s,c) => s + (c.m?.level||0), 0);
+  return `
+    <div style="font-size:13px;color:var(--muted);margin-bottom:12px">${maxed} / ${total} maxed · ${withMastery} unlocked · total mastery levels ${fmtNum(sumLevels)}</div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
+      ${items.map(c => {
+        const m = c.m;
+        const lvl = m?.level || 0, max = m?.max || 10;
+        const isMax = m && lvl >= max;
+        const pct = m ? (m.target ? Math.min(100, Math.round(m.progress / m.target * 100)) : 100) : 0;
+        return `<div style="background:var(--surface2);border-radius:8px;padding:8px;display:flex;gap:8px;align-items:center;${m?'':'opacity:0.45'}">
+          ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:38px;height:46px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
+          <div style="flex:1;min-width:0">
+            <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)}</div>
+            <div style="font-size:11px;color:${isMax?'var(--accent)':'var(--muted)'};margin-top:2px">${isMax?'★ Maxed':`Level ${lvl} / ${max}`}</div>
+            <div class="progress-wrap" style="margin-top:4px;height:5px"><div class="progress-bar" style="width:${pct}%;background:${isMax?'var(--accent)':'var(--blue)'}"></div></div>
+            ${m && m.target ? `<div style="font-size:10px;color:var(--muted);margin-top:2px">${fmtNum(m.progress)} / ${fmtNum(m.target)}</div>` : ''}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
 function polHeaderLine(data) {
   // current is usually empty mid-season; fall back to last, then best
   const r = data.currentPathOfLegendSeasonResult
@@ -1193,6 +1264,7 @@ function renderProfile(data, battles) {
       <button class="tab-btn" data-tab="evolutions" onclick="switchTab('evolutions')">Evolutions</button>
       <button class="tab-btn" data-tab="heroes" onclick="switchTab('heroes')">Heroes</button>
       <button class="tab-btn" data-tab="towerTroops" onclick="switchTab('towerTroops')">Tower Troops</button>
+      <button class="tab-btn" data-tab="masteries" onclick="switchTab('masteries')">Masteries</button>
       <button class="tab-btn" data-tab="decks" onclick="switchTab('decks')">Decks</button>
       <button class="tab-btn" data-tab="battles" onclick="switchTab('battles')">Battles</button>
     </div>
@@ -1202,6 +1274,7 @@ function renderProfile(data, battles) {
     <div id="tab-evolutions" class="tab-pane" style="display:none">${renderEvolutionsPane(data.cards || [])}</div>
     <div id="tab-heroes" class="tab-pane" style="display:none">${renderHeroesPane(data.cards || [])}</div>
     <div id="tab-towerTroops" class="tab-pane" style="display:none">${renderTowerTroopsPane(data)}</div>
+    <div id="tab-masteries" class="tab-pane" style="display:none">${renderMasteries(data)}</div>
     <div id="tab-battles" class="tab-pane" style="display:none">${renderBattles(battles)}</div>
     <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles)}</div>
   `;
