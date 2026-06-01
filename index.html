@@ -1231,7 +1231,7 @@ function renderProfile(data, battles) {
       <button class="tab-btn" data-tab="battles" onclick="switchTab('battles')">Battles</button>
     </div>
 
-    <div id="tab-overview" class="tab-pane active">${renderOverview(data)}</div>
+    <div id="tab-overview" class="tab-pane active">${renderOverview(data, battles)}</div>
     <div id="tab-cards" class="tab-pane" style="display:none">${renderCardsPane(data)}</div>
     <div id="tab-evolutions" class="tab-pane" style="display:none">${renderEvolutionsPane(data.cards || [])}</div>
     <div id="tab-heroes" class="tab-pane" style="display:none">${renderHeroesPane(data.cards || [])}</div>
@@ -1253,7 +1253,117 @@ function esc(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-function renderOverview(data) {
+// ── Upgrade Planner ──
+const RARITY_DISPLAY_NAME = { common:'Common', rare:'Rare', epic:'Epic', legendary:'Legendary', champion:'Champion' };
+const RARITY_COLOR_MAP = { common:'var(--text)', rare:'var(--blue)', epic:'var(--purple)', legendary:'var(--accent)', champion:'#e74c3c' };
+const RARITY_ORDER_KEYS = ['common','rare','epic','legendary','champion'];
+let _planMode = 'account';
+let _planTarget = MAX_LEVEL;
+
+function cardsToMaxStats(c, target) {
+  const r = (c.rarity||'common').toLowerCase();
+  const disp = toDisplayLevel(r, c.level);
+  if (disp >= target) return { needed: 0, gold: 0, rarity: r };
+  const { totalCards, totalGold } = computeUpgrade(r, disp, c.count||0, target);
+  return { needed: totalCards, gold: totalGold, rarity: r };
+}
+function buildPlanSummary(cards, target) {
+  const byR = {};
+  RARITY_ORDER_KEYS.forEach(r => byR[r] = { needed: 0, gold: 0 });
+  let totalNeeded = 0, totalGold = 0;
+  cards.forEach(c => {
+    const s = cardsToMaxStats(c, target);
+    if (byR[s.rarity]) { byR[s.rarity].needed += s.needed; byR[s.rarity].gold += s.gold; }
+    totalNeeded += s.needed; totalGold += s.gold;
+  });
+  return { byR, totalNeeded, totalGold };
+}
+function buildDeckMapFromBattles(battles) {
+  const deckMap = {};
+  (battles||[]).forEach(b => {
+    const team = (b.team||[])[0] || {};
+    const cards = (team.cards||[]).map(c => c.name).sort().join('|');
+    if (!cards) return;
+    const tC = team.crowns||0, oC = ((b.opponent||[])[0]||{}).crowns||0;
+    const result = tC > oC ? 'win' : tC < oC ? 'loss' : 'draw';
+    if (!deckMap[cards]) deckMap[cards] = { cards: cards.split('|'), wins:0, losses:0, draws:0 };
+    deckMap[cards][result + 's']++;
+  });
+  return deckMap;
+}
+function getPlanDeckOptions() {
+  let dm = window._deckMapData;
+  if (!dm || !Object.keys(dm).length) dm = buildDeckMapFromBattles(window._planBattles || []);
+  return Object.values(dm || {}).sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws)).slice(0,8);
+}
+function renderUpgradePlanner(data, battles) {
+  window._planData = data;
+  window._planBattles = battles || [];
+  _planMode = 'account';
+  _planTarget = MAX_LEVEL;
+  const decks = getPlanDeckOptions();
+  const selStyle = "flex:1;min-width:0;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center";
+  return `
+    <div class="card">
+      <h3 style="margin-bottom:6px">📈 Upgrade Planner</h3>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Cards &amp; gold needed by rarity to reach your target level</p>
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <select onchange="setPlanMode(this.value)" style="${selStyle}">
+          <option value="account">Whole account</option>
+          ${decks.map((d,i) => `<option value="deck-${i}">Deck #${i+1} · ${d.wins}W ${d.losses}L (${d.cards.slice(0,3).map(esc).join(', ')}…)</option>`).join('')}
+        </select>
+        <select onchange="setPlanTarget(this.value)" style="${selStyle}">
+          <option value="16">to Lv 16</option>
+          <option value="15">to Lv 15</option>
+          <option value="14">to Lv 14</option>
+        </select>
+      </div>
+      <div id="plan-output">${buildPlanOutput()}</div>
+    </div>`;
+}
+window.setPlanMode = function(v) {
+  _planMode = v;
+  document.getElementById('plan-output').innerHTML = buildPlanOutput();
+};
+window.setPlanTarget = function(v) {
+  _planTarget = parseInt(v,10) || MAX_LEVEL;
+  document.getElementById('plan-output').innerHTML = buildPlanOutput();
+};
+function buildPlanOutput() {
+  const data = window._planData;
+  if (!data) return '';
+  let cards = data.cards || [];
+  let titleSuffix = '';
+  if (_planMode.startsWith('deck-')) {
+    const idx = parseInt(_planMode.slice(5),10);
+    const decks = getPlanDeckOptions();
+    const deck = decks[idx];
+    if (!deck) return '<div class="empty-msg">Deck not found.</div>';
+    const deckNames = new Set(deck.cards);
+    cards = cards.filter(c => deckNames.has(c.name));
+    titleSuffix = ` (deck)`;
+  }
+  const target = _planTarget;
+  const sum = buildPlanSummary(cards, target);
+  const rows = RARITY_ORDER_KEYS.map(r => {
+    const v = sum.byR[r];
+    if (v.needed === 0 && v.gold === 0) return '';
+    return `<div class="stat-row">
+      <span class="stat-label" style="color:${RARITY_COLOR_MAP[r]};font-weight:600">${RARITY_DISPLAY_NAME[r]}</span>
+      <span style="display:flex;gap:12px;align-items:center;font-size:13px"><span class="text-red">+${fmtNum(v.needed)}</span><span class="text-accent">${fmtNum(v.gold)} 💰</span></span>
+    </div>`;
+  }).filter(Boolean).join('');
+  if (sum.totalNeeded === 0 && sum.totalGold === 0) {
+    return `<div class="empty-msg">All cards already at Lv ${target}! 🎉</div>`;
+  }
+  return `${rows}
+    <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;justify-content:space-between;font-weight:700;font-size:14px">
+      <span>Total${titleSuffix}</span>
+      <span style="display:flex;gap:12px"><span class="text-red">+${fmtNum(sum.totalNeeded)}</span><span class="text-accent">${fmtNum(sum.totalGold)} 💰</span></span>
+    </div>`;
+}
+
+function renderOverview(data, battles) {
   const cards = data.cards || [];
 
   // Compute per-card enriched data
@@ -1407,6 +1517,8 @@ function renderOverview(data) {
       </div>
       <div style="font-size:12px;color:var(--muted);margin-top:4px">${collectionLevel - prevMilestone} / ${nextMilestone - prevMilestone} levels to next milestone</div>
     </div>
+
+    ${renderUpgradePlanner(data, battles)}
 
     ${suggested.length ? `
     <div class="card">
