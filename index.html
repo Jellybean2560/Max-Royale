@@ -1339,6 +1339,46 @@ window.setPlanTarget = function(v) {
   _planTarget = parseInt(v,10) || MAX_LEVEL;
   document.getElementById('plan-output').innerHTML = buildPlanOutput();
 };
+
+// ── Suggested Upgrades (scoped by account or deck) ──
+let _suggestMode = 'account';
+window.setSuggestMode = function(v) {
+  _suggestMode = v;
+  document.getElementById('suggested-output').innerHTML = buildSuggestedOutput();
+};
+function buildSuggestedOutput() {
+  const data = window._planData;
+  if (!data) return '';
+  const enriched = (data.cards||[]).map(c => {
+    const r = (c.rarity||'common').toLowerCase();
+    const disp = toDisplayLevel(r, c.level);
+    const steps = LEVEL_DATA[r] || [];
+    const minL  = MIN_LEVEL[r] || 1;
+    const idx   = disp - minL;
+    const isMaxed = disp >= MAX_LEVEL || idx >= steps.length;
+    const nextStep = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
+    const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
+    return { ...c, r, disp, isMaxed, nextStep, isUpgradable };
+  });
+  let upgradable = enriched.filter(c => c.isUpgradable);
+  if (_suggestMode.startsWith('deck-')) {
+    const idx = parseInt(_suggestMode.slice(5),10);
+    const decks = getPlanDeckOptions();
+    const deck = decks[idx];
+    if (!deck) return '<div class="empty-msg">Deck not found.</div>';
+    const deckNames = new Set(deck.cards);
+    upgradable = upgradable.filter(c => deckNames.has(c.name));
+  }
+  if (!upgradable.length) return '<div class="empty-msg">No upgrades ready right now in this scope.</div>';
+  const sorted = [...upgradable].sort((a,b) => (a.nextStep?.gold||0) - (b.nextStep?.gold||0)).slice(0,5);
+  return sorted.map(c => `<div class="stat-row">
+    <span class="stat-label" style="display:flex;align-items:center;gap:6px">
+      ${c.iconUrls?.medium?`<img src="${c.iconUrls.medium}" alt="" style="width:22px;height:28px;object-fit:contain;flex-shrink:0">`:''}
+      <span>${esc(c.name)} <span style="color:var(--muted);font-size:11px">(Lv ${c.disp}→${c.disp+1})</span></span>
+    </span>
+    <span class="stat-value text-accent">${fmtNum(c.nextStep?.gold)} 💰</span>
+  </div>`).join('');
+}
 function buildPlanOutput() {
   const data = window._planData;
   if (!data) return '';
@@ -1719,12 +1759,22 @@ function renderOverview(data, battles) {
 
     ${renderUpgradePlanner(data, battles)}
 
-    ${suggested.length ? `
-    <div class="card">
-      <h3 style="margin-bottom:12px">💡 Suggested Upgrades</h3>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Cheapest upgrades you can do right now</p>
-      ${suggestedRows}
-    </div>` : ''}`;
+    ${(() => {
+      // Suggested Upgrades — scoped to whole account or a specific recent deck
+      _suggestMode = 'account';
+      const decks = getPlanDeckOptions();
+      const selStyle = "width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center;margin-bottom:10px";
+      return `
+        <div class="card">
+          <h3 style="margin-bottom:6px">💡 Suggested Upgrades</h3>
+          <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Cheapest upgrades you can do right now</p>
+          <select onchange="setSuggestMode(this.value)" style="${selStyle}">
+            <option value="account">Whole account</option>
+            ${decks.map((d,i) => `<option value="deck-${i}">Deck #${i+1} · ${d.wins}W ${d.losses}L (${d.cards.slice(0,3).map(esc).join(', ')}…)</option>`).join('')}
+          </select>
+          <div id="suggested-output">${buildSuggestedOutput()}</div>
+        </div>`;
+    })()}`;
 }
 
 // ── Cards pane ──
