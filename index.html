@@ -1143,7 +1143,11 @@ function renderProfileFromCache(cached) {
   renderProfile(cached.data, cached.battles);
   _playerCardsById = {};
   [...(cached.data.cards || []), ...(cached.data.supportCards || [])].forEach(c => { _playerCardsById[c.id] = c; });
-  if (cached.data.clan?.tag) document.getElementById('clan-tag').value = cached.data.clan.tag;
+  if (cached.data.clan?.tag) {
+    document.getElementById('clan-tag').value = cached.data.clan.tag;
+    const clanCached = loadClanCache(cached.data.clan.tag);
+    if (clanCached) renderClan(clanCached.data);
+  }
 }
 
 // Path of Legends league names (leagueNumber 1-10)
@@ -2162,9 +2166,21 @@ async function loadClan() {
   try {
     const data = await apiGet('/clans/' + encodeURIComponent(tag));
     renderClan(data);
+    saveClanCache(tag, data);
   } catch(e) {
     el.innerHTML = `<div class="error-msg">${e.message}</div>`;
   }
+}
+
+// ── Clan cache (matches the profile cache pattern) ──
+function saveClanCache(tag, data) {
+  try { localStorage.setItem('cr_clan_cache', JSON.stringify({ tag, data, savedAt: Date.now() })); } catch(e) {}
+}
+function loadClanCache(tag) {
+  try {
+    const c = JSON.parse(localStorage.getItem('cr_clan_cache') || 'null');
+    return (c && c.tag === tag) ? c : null;
+  } catch(e) { return null; }
 }
 
 function renderClan(data) {
