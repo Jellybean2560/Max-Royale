@@ -940,9 +940,10 @@ function friendRenderCards() {
     const ms = c.maxStarLevel || catalogStarMax[c.id] || 0, sl = c.starLevel || 0;
     const stars = (sl > 0 && ms > 0) ? `&nbsp;<span style="font-size:12px;letter-spacing:1px">${'<span style="color:#FFD700">★</span>'.repeat(Math.min(sl,ms))}${'<span style="color:#555577">★</span>'.repeat(Math.max(0,ms-Math.min(sl,ms)))}</span>` : '';
     const statusLabel = c.isMaxed ? '<span class="badge badge-gold">MAX ★</span>' : c.isUpgradable ? '<span class="badge badge-green">Ready</span>' : c.canMax ? '<span class="badge badge-blue">Can Max</span>' : '';
-    const showMax = !c.isMaxed && c.disp <= 14;
-    const toMax = showMax ? computeUpgrade(c.r, c.disp, owned, MAX_LEVEL) : null;
-    const domId = `fcard-${c.id}`;
+    const showMax    = !c.isMaxed && c.disp <= 15;
+    const inlineMax  = !c.isMaxed && c.disp === 15;
+    const toMax      = showMax ? computeUpgrade(c.r, c.disp, owned, MAX_LEVEL) : null;
+    const domId      = `fcard-${c.id}`;
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
       <div class="flex-between mb8">
         <div style="display:flex;align-items:center;gap:10px">
@@ -957,12 +958,16 @@ function friendRenderCards() {
         <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px"><span>Cards: ${fmtNum(owned)} / ${fmtNum(needed)}</span><span>${fmtNum(c.nextStep.gold)} 💰 to Lv ${c.disp+1}</span></div>
         <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;background:${c.isUpgradable?'var(--green)':'var(--blue)'}"></div></div>
       ` : `<div style="font-size:12px;color:var(--muted)">Fully maxed! ✓</div>`}
-      ${showMax ? `
+      ${showMax ? (inlineMax ? `
+        <div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border)">
+          <div class="flex-between" style="font-size:12px;color:var(--muted)"><span>Cards still needed</span><span class="${toMax.totalCards > 0 ? 'text-red' : 'text-green'}">${toMax.totalCards > 0 ? '+'+fmtNum(toMax.totalCards) : '✓ Enough cards'}</span></div>
+        </div>
+      ` : `
         <div onclick="toggleCardMax('${domId}')" style="cursor:pointer;margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);text-align:center;user-select:none"><span id="${domId}-toggle">▼ Total to Lv 16</span></div>
         <div id="${domId}-max" style="display:none;margin-top:6px">
           <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px"><span>Cards still needed</span><span class="${toMax.totalCards > 0 ? 'text-red' : 'text-green'}">${toMax.totalCards > 0 ? '+'+fmtNum(toMax.totalCards) : '✓ Enough cards'}</span></div>
           <div class="flex-between" style="font-size:12px;color:var(--muted)"><span>Total gold to Lv 16</span><span style="color:var(--accent)">${fmtNum(toMax.totalGold)} 💰</span></div>
-        </div>` : ''}
+        </div>`) : ''}
     </div>`;
   }).join('');
 }
@@ -1528,10 +1533,11 @@ function renderCards() {
       : c.canMax       ? '<span class="badge badge-blue">Can Max</span>'
       : '';
 
-    // Full path to Lv 16 (shown on tap) for cards at Lv 14 or below
-    const showMax = !c.isMaxed && c.disp <= 14;
-    const toMax   = showMax ? computeUpgrade(c.r, c.disp, owned, MAX_LEVEL) : null;
-    const domId   = `card-${c.id}`;
+    // Lv 14 and below → tap-to-expand. Lv 15 → show "cards still needed" inline.
+    const showMax    = !c.isMaxed && c.disp <= 15;
+    const inlineMax  = !c.isMaxed && c.disp === 15;
+    const toMax      = showMax ? computeUpgrade(c.r, c.disp, owned, MAX_LEVEL) : null;
+    const domId      = `card-${c.id}`;
 
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
       <div class="flex-between mb8">
@@ -1557,7 +1563,15 @@ function renderCards() {
       ` : `
         <div style="font-size:12px;color:var(--muted)">Fully maxed! ✓</div>
       `}
-      ${showMax ? `
+      ${showMax ? (inlineMax ? `
+        <div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border)">
+          <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px">
+            <span>Cards still needed</span>
+            <span class="${toMax.totalCards > 0 ? 'text-red' : 'text-green'}">${toMax.totalCards > 0 ? '+'+fmtNum(toMax.totalCards) : '✓ Enough cards'}</span>
+          </div>
+          <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="openInCalculator(${c.id})">🧮 Open in Calculator</button>
+        </div>
+      ` : `
         <div onclick="toggleCardMax('${domId}')" style="cursor:pointer;margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);text-align:center;user-select:none">
           <span id="${domId}-toggle">▼ Total to Lv 16</span>
         </div>
@@ -1572,7 +1586,7 @@ function renderCards() {
           </div>
           <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="openInCalculator(${c.id})">🧮 Open in Calculator</button>
         </div>
-      ` : ''}
+      `) : ''}
     </div>`;
   }).join('');
 }
@@ -1832,9 +1846,10 @@ async function loadTowerTroopsGrid() {
         : c.isUpgradable ? '<span class="badge badge-green">Ready</span>'
         : c.canMax       ? '<span class="badge badge-blue">Can Max</span>'
         : '';
-      const showMax = !c.isMaxed && c.disp <= 14;
-      const toMax   = showMax ? computeUpgrade(c.r, c.disp, owned, MAX_LEVEL) : null;
-      const domId   = `troop-${c.id}`;
+      const showMax    = !c.isMaxed && c.disp <= 15;
+      const inlineMax  = !c.isMaxed && c.disp === 15;
+      const toMax      = showMax ? computeUpgrade(c.r, c.disp, owned, MAX_LEVEL) : null;
+      const domId      = `troop-${c.id}`;
       return `
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
           <div class="flex-between mb8">
@@ -1857,7 +1872,15 @@ async function loadTowerTroopsGrid() {
             </div>
             <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;background:${c.isUpgradable?'var(--green)':'var(--blue)'}"></div></div>
           ` : `<div style="font-size:12px;color:var(--muted)">Fully maxed! ✓</div>`}
-          ${showMax ? `
+          ${showMax ? (inlineMax ? `
+            <div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border)">
+              <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px">
+                <span>Cards still needed</span>
+                <span class="${toMax.totalCards > 0 ? 'text-red' : 'text-green'}">${toMax.totalCards > 0 ? '+'+fmtNum(toMax.totalCards) : '✓ Enough cards'}</span>
+              </div>
+              <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="openInCalculator(${c.id})">🧮 Open in Calculator</button>
+            </div>
+          ` : `
             <div onclick="toggleCardMax('${domId}')" style="cursor:pointer;margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);text-align:center;user-select:none">
               <span id="${domId}-toggle">▼ Total to Lv 16</span>
             </div>
@@ -1872,7 +1895,7 @@ async function loadTowerTroopsGrid() {
               </div>
               <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="openInCalculator(${c.id})">🧮 Open in Calculator</button>
             </div>
-          ` : ''}
+          `) : ''}
         </div>`;
     }).join('');
 
@@ -2121,12 +2144,28 @@ window.setDeckFilter = function(mode) {
   }
 };
 
+// Open the deck directly in Clash Royale (the "Copy Deck" dialog inside the game)
+// via Supercell's official deep-link. Falls back to clipboard if cards can't be resolved.
 window.copyDeckLink = function(names, btn) {
-  navigator.clipboard.writeText(names).then(() => {
-    const orig = btn.textContent;
-    btn.textContent = '✓ Copied!';
-    setTimeout(() => btn.textContent = orig, 1500);
-  });
+  const list = (names||'').split(',').map(s => s.trim()).filter(Boolean);
+  const ids = list.map(n => {
+    const c = allCards.find(c => c.name === n);
+    return c ? c.id : null;
+  }).filter(Boolean);
+  const origText = btn ? btn.textContent : '';
+  const showBriefly = (text) => {
+    if (!btn) return;
+    btn.textContent = text;
+    setTimeout(() => btn.textContent = origText, 1800);
+  };
+  if (ids.length >= list.length && ids.length > 0) {
+    const url = `https://link.clashroyale.com/deck/en?deck=${ids.join(';')}`;
+    window.open(url, '_blank');
+    showBriefly('✓ Opening…');
+  } else {
+    // Fallback: copy card names to clipboard if any IDs are unknown
+    navigator.clipboard.writeText(names).then(() => showBriefly('✓ Copied (fallback)'));
+  }
 };
 
 
