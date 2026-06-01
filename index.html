@@ -578,9 +578,15 @@ let _playerCardsById = {};  // populated after a player lookup; used by Card Loo
 
 async function maybeLoadCards() {
   if (allCards.length) return;
+  // Try the cached card list first (zero network)
+  try {
+    const cached = JSON.parse(localStorage.getItem('cr_cards_cache') || 'null');
+    if (cached && Array.isArray(cached) && cached.length) { allCards = cached; return; }
+  } catch(e) {}
   try {
     const data = await apiGet('/cards');
     allCards = (data.items || []).sort((a,b) => a.name.localeCompare(b.name));
+    try { localStorage.setItem('cr_cards_cache', JSON.stringify(allCards)); } catch(e) {}
   } catch(e) {
     // silent — card picker is optional
   }
@@ -1111,6 +1117,8 @@ async function loadPlayer(tagOverride) {
     [...(data.cards || []), ...(data.supportCards || [])].forEach(c => {
       _playerCardsById[c.id] = c;
     });
+    // Persist the full profile so we can render instantly on next app open
+    saveProfileCache(data.tag, data, battles);
     // Auto-fill and auto-load the clan from the player's clan tag
     if (data.clan?.tag) {
       document.getElementById('clan-tag').value = data.clan.tag;
@@ -1119,6 +1127,23 @@ async function loadPlayer(tagOverride) {
   } catch(e) {
     el.innerHTML = `<div class="error-msg">${e.message}</div>`;
   }
+}
+
+// ── Profile cache (per-tag, lets us render instantly on startup) ──
+function saveProfileCache(tag, data, battles) {
+  try { localStorage.setItem('cr_profile_cache', JSON.stringify({ tag, data, battles, savedAt: Date.now() })); } catch(e) {}
+}
+function loadProfileCache(tag) {
+  try {
+    const c = JSON.parse(localStorage.getItem('cr_profile_cache') || 'null');
+    return (c && c.tag === tag) ? c : null;
+  } catch(e) { return null; }
+}
+function renderProfileFromCache(cached) {
+  renderProfile(cached.data, cached.battles);
+  _playerCardsById = {};
+  [...(cached.data.cards || []), ...(cached.data.supportCards || [])].forEach(c => { _playerCardsById[c.id] = c; });
+  if (cached.data.clan?.tag) document.getElementById('clan-tag').value = cached.data.clan.tag;
 }
 
 // Path of Legends league names (leagueNumber 1-10)
@@ -2230,7 +2255,14 @@ initApiKey();
 calcUpdate();
 // Restore last-used player tag into the input
 const _savedTag = localStorage.getItem('cr_player_tag');
-if (_savedTag) document.getElementById('player-tag').value = _savedTag;
+if (_savedTag) {
+  document.getElementById('player-tag').value = _savedTag;
+  // Auto-render the saved profile from cache (no network). User taps Refresh for fresh data.
+  const _cachedProfile = loadProfileCache(_savedTag);
+  if (_cachedProfile) {
+    maybeLoadCards().then(() => renderProfileFromCache(_cachedProfile));
+  }
+}
 renderSavedAccounts();
 
 // Register service worker for PWA (standalone fullscreen install)
