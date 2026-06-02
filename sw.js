@@ -1,5 +1,6 @@
-const CACHE = 'max-royale-v1';
-const SHELL = ['./'];
+// Bumping this version forces the old cache to be evicted on activate.
+const CACHE = 'max-royale-v2';
+const SHELL = ['./', 'icon.png', 'manifest.json'];
 
 // Cache the app shell on install
 self.addEventListener('install', e => {
@@ -17,9 +18,23 @@ self.addEventListener('activate', e => {
   self.clients.claim();
 });
 
-// Serve from cache, fall back to network
+// Network-first for navigation / HTML so the user always gets the latest version
+// when online, with cache fallback for offline. Cache-first for other assets.
 self.addEventListener('fetch', e => {
-  e.respondWith(
-    caches.match(e.request).then(cached => cached || fetch(e.request))
-  );
+  const req = e.request;
+  const isNav = req.mode === 'navigate' ||
+                (req.method === 'GET' && req.headers.get('accept')?.includes('text/html'));
+  if (isNav) {
+    e.respondWith(
+      fetch(req).then(resp => {
+        // Update the cached shell with the fresh copy
+        const copy = resp.clone();
+        caches.open(CACHE).then(c => c.put(req, copy)).catch(() => {});
+        return resp;
+      }).catch(() => caches.match(req).then(r => r || caches.match('./')))
+    );
+    return;
+  }
+  // Other assets: cache-first, fallback to network
+  e.respondWith(caches.match(req).then(cached => cached || fetch(req)));
 });
