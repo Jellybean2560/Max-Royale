@@ -590,14 +590,16 @@ let _playerCardsById = {};  // populated after a player lookup; used by Card Loo
 async function maybeLoadCards() {
   if (allCards.length) return;
   // Try the cached card list first (zero network)
+  // Version 2: increment when new evolution/hero are released (forces refresh)
   try {
-    const cached = JSON.parse(localStorage.getItem('cr_cards_cache') || 'null');
+    const cacheKey = 'cr_cards_cache_v2';
+    const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
     if (cached && Array.isArray(cached) && cached.length) { allCards = cached; return; }
   } catch(e) {}
   try {
     const data = await apiGet('/cards');
     allCards = (data.items || []).sort((a,b) => a.name.localeCompare(b.name));
-    try { localStorage.setItem('cr_cards_cache', JSON.stringify(allCards)); } catch(e) {}
+    try { localStorage.setItem('cr_cards_cache_v2', JSON.stringify(allCards)); } catch(e) {}
   } catch(e) {
     // silent — card picker is optional
   }
