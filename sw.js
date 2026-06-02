@@ -1,5 +1,5 @@
 // Bumping this version forces the old cache to be evicted on activate.
-const CACHE = 'max-royale-v2';
+const CACHE = 'max-royale-v3';
 const SHELL = ['./', 'icon.png', 'manifest.json'];
 
 // Cache the app shell on install
