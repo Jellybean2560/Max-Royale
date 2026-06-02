@@ -1362,7 +1362,11 @@ function buildSuggestedOutput() {
     const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
     return { ...c, r, disp, isMaxed, nextStep, isUpgradable };
   });
-  let upgradable = enriched.filter(c => c.isUpgradable);
+  // Any non-maxed card with a defined next step is a candidate — even if the
+  // player doesn't yet have enough cards. We rank by next-step gold cost and
+  // show up to 5 cheapest. A ✓ vs +X cards still needed label tells the user
+  // whether it's actually doable right now.
+  let upgradable = enriched.filter(c => !c.isMaxed && c.nextStep);
   if (_suggestMode.startsWith('deck-')) {
     const idx = parseInt(_suggestMode.slice(5),10);
     const decks = getPlanDeckOptions();
@@ -1371,15 +1375,24 @@ function buildSuggestedOutput() {
     const deckNames = new Set(deck.cards);
     upgradable = upgradable.filter(c => deckNames.has(c.name));
   }
-  if (!upgradable.length) return '<div class="empty-msg">No upgrades ready right now in this scope.</div>';
+  if (!upgradable.length) return '<div class="empty-msg">No upgrades available in this scope.</div>';
   const sorted = [...upgradable].sort((a,b) => (a.nextStep?.gold||0) - (b.nextStep?.gold||0)).slice(0,5);
-  return sorted.map(c => `<div class="stat-row">
-    <span class="stat-label" style="display:flex;align-items:center;gap:6px">
-      ${c.iconUrls?.medium?`<img src="${c.iconUrls.medium}" alt="" style="width:22px;height:28px;object-fit:contain;flex-shrink:0">`:''}
-      <span>${esc(c.name)} <span style="color:var(--muted);font-size:11px">(Lv ${c.disp}→${c.disp+1})</span></span>
-    </span>
-    <span class="stat-value text-accent">${fmtNum(c.nextStep?.gold)} 💰</span>
-  </div>`).join('');
+  return sorted.map(c => {
+    const deficit = Math.max(0, (c.nextStep?.cards||0) - (c.count||0));
+    const readyLbl = deficit > 0
+      ? `<span class="text-red" style="font-size:11px">+${fmtNum(deficit)} cards</span>`
+      : `<span class="text-green" style="font-size:11px">✓ Ready</span>`;
+    return `<div class="stat-row">
+      <span class="stat-label" style="display:flex;align-items:center;gap:6px">
+        ${c.iconUrls?.medium?`<img src="${c.iconUrls.medium}" alt="" style="width:22px;height:28px;object-fit:contain;flex-shrink:0">`:''}
+        <span>${esc(c.name)} <span style="color:var(--muted);font-size:11px">(Lv ${c.disp}→${c.disp+1})</span></span>
+      </span>
+      <span style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
+        <span class="stat-value text-accent">${fmtNum(c.nextStep?.gold)} 💰</span>
+        ${readyLbl}
+      </span>
+    </div>`;
+  }).join('');
 }
 function buildPlanOutput() {
   const data = window._planData;
