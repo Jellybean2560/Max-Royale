@@ -47,6 +47,9 @@
   .nav-btn { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; background: none; border: none; color: var(--muted); font-family: 'Inter', sans-serif; font-size: 11px; cursor: pointer; transition: color .2s; padding: 0; }
   .nav-btn.active { color: var(--accent); }
   .nav-btn svg { width: 22px; height: 22px; }
+  .nav-btn.icon-box { gap: 6px; }
+  .nav-btn.icon-box .icon-wrapper { width: 26px; height: 26px; border: 1px solid var(--border); border-radius: 4px; display: flex; align-items: center; justify-content: center; background: var(--surface2); transition: background .2s, border-color .2s; }
+  .nav-btn.active.icon-box .icon-wrapper { background: var(--accent); border-color: var(--accent); }
 
   /* ── Typography ── */
   h1, h2, h3 { font-family: 'Rajdhani', sans-serif; font-weight: 700; }
@@ -318,8 +321,8 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="16" y2="10"/><line x1="8" y1="14" x2="12" y2="14"/></svg>
       Calculator
     </button>
-    <button class="nav-btn" id="nav-deckup" onclick="goTo('deckup')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 7 8 12 3 17"/><polyline points="21 7 16 12 21 17"/><line x1="10" y1="5" x2="14" y2="19"/></svg>
+    <button class="nav-btn icon-box" id="nav-deckup" onclick="goTo('deckup')">
+      <div class="icon-wrapper"><img src="cards-icon.webp" style="width:16px;height:13px;object-fit:contain;filter:brightness(0) invert(1)"></div>
       Deck Upgrade
     </button>
     <button class="nav-btn" id="nav-clan" onclick="goTo('clan')">
