@@ -1484,70 +1484,94 @@ function renderDeckUpgradeScreen() {
 window.setDeckUpMode = function(m) { _deckUpMode = m; renderDeckUpgradeScreen(); };
 window.setDeckUpRecent = function(idx) { _deckUpSelectedDeckIdx = parseInt(idx,10) || 0; renderDeckUpgradeScreen(); };
 window.setDeckUpTarget = function(v) { _deckUpTarget = parseInt(v,10) || MAX_LEVEL; renderDeckUpgradeScreen(); };
-window.setDeckUpSearch = function(v) { _deckUpSearch = (v||'').toLowerCase().trim(); renderDeckUpgradeScreen(); };
+
+// Search only refreshes the suggestions area so the input keeps focus
+window.setDeckUpSearch = function(v) {
+  _deckUpSearch = (v||'').toLowerCase().trim();
+  const data = (window._currentProfile||{}).data;
+  const box = document.getElementById('deckup-suggestions');
+  if (data && box) box.innerHTML = buildDeckUpSuggestions(data);
+};
 window.addDeckUpCard = function(id) {
   id = parseInt(id, 10);
   if (_deckUpCustomIds.includes(id) || _deckUpCustomIds.length >= 8) return;
   _deckUpCustomIds.push(id);
   _deckUpSearch = '';
-  renderDeckUpgradeScreen();
+  refreshCustomDeckSections();
 };
 window.removeDeckUpCard = function(id) {
   _deckUpCustomIds = _deckUpCustomIds.filter(x => x !== parseInt(id, 10));
-  renderDeckUpgradeScreen();
+  refreshCustomDeckSections();
 };
 window.clearDeckUp = function() {
   _deckUpCustomIds = [];
   _deckUpSearch = '';
-  renderDeckUpgradeScreen();
+  refreshCustomDeckSections();
 };
+
+// Refresh slots, suggestions, breakdown, count, clear-button & search input value
+// in place — without re-rendering the whole screen (which loses focus).
+function refreshCustomDeckSections() {
+  const data = (window._currentProfile||{}).data;
+  if (!data) return;
+  const slotsEl  = document.getElementById('deckup-slots');
+  const sugEl    = document.getElementById('deckup-suggestions');
+  const brkEl    = document.getElementById('deckup-breakdown');
+  const countEl  = document.getElementById('deckup-count');
+  const clearEl  = document.getElementById('deckup-clear');
+  const input    = document.getElementById('deckup-search-input');
+  const selectedCards = _deckUpCustomIds.map(id => data.cards.find(c => c.id === id)).filter(Boolean);
+  if (slotsEl) slotsEl.innerHTML = buildDeckUpSlots(selectedCards);
+  if (sugEl)   sugEl.innerHTML   = buildDeckUpSuggestions(data);
+  if (brkEl)   brkEl.innerHTML   = selectedCards.length ? renderDeckBreakdown(selectedCards) : '<div class="empty-msg">Pick cards above to see upgrade requirements.</div>';
+  if (countEl) countEl.textContent = `${_deckUpCustomIds.length} / 8 cards selected`;
+  if (clearEl) clearEl.style.display = _deckUpCustomIds.length ? 'inline-flex' : 'none';
+  if (input)   input.value = _deckUpSearch;
+}
+
+function buildDeckUpSlots(selectedCards) {
+  return Array.from({length:8}, (_,i) => {
+    const c = selectedCards[i];
+    if (!c) return `<div style="background:var(--surface2);border:1px dashed var(--border);border-radius:8px;aspect-ratio:0.83;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px">Slot ${i+1}</div>`;
+    const r = (c.rarity||'common').toLowerCase();
+    const disp = toDisplayLevel(r, c.level);
+    return `<div onclick="removeDeckUpCard(${c.id})" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:4px;text-align:center;cursor:pointer;position:relative">
+      ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:100%;height:auto;display:block;margin:0 auto" loading="lazy">` : ''}
+      <div style="font-size:10px;font-weight:700;color:var(--accent)">Lv ${disp}</div>
+      <span style="position:absolute;top:2px;right:4px;color:var(--red);font-size:14px;font-weight:700">×</span>
+    </div>`;
+  }).join('');
+}
+
+function buildDeckUpSuggestions(data) {
+  if (!_deckUpSearch || _deckUpCustomIds.length >= 8) return '';
+  const matches = data.cards
+    .filter(c => !_deckUpCustomIds.includes(c.id) && (c.name||'').toLowerCase().includes(_deckUpSearch))
+    .slice(0,10);
+  if (!matches.length) return '<div style="font-size:12px;color:var(--muted);margin-bottom:12px">No matching cards in your collection.</div>';
+  return `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;margin-bottom:12px;max-height:280px;overflow-y:auto">
+    ${matches.map(c => {
+      const r = (c.rarity||'common').toLowerCase();
+      const disp = toDisplayLevel(r, c.level);
+      return `<div onclick="addDeckUpCard(${c.id})" style="display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border)">
+        ${c.iconUrls?.medium?`<img src="${c.iconUrls.medium}" alt="" style="width:28px;height:34px;object-fit:contain;flex-shrink:0">`:''}
+        <span style="flex:1">${esc(c.name)}</span>
+        <span style="font-size:11px;color:var(--muted)">Lv ${disp}</span>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
 
 function renderCustomDeckBuilder(data) {
   const selectedCards = _deckUpCustomIds.map(id => data.cards.find(c => c.id === id)).filter(Boolean);
-  const slots = `
-    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px">
-      ${Array.from({length:8}, (_,i) => {
-        const c = selectedCards[i];
-        if (!c) return `<div style="background:var(--surface2);border:1px dashed var(--border);border-radius:8px;aspect-ratio:0.83;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px">Slot ${i+1}</div>`;
-        const r = (c.rarity||'common').toLowerCase();
-        const disp = toDisplayLevel(r, c.level);
-        return `<div onclick="removeDeckUpCard(${c.id})" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:4px;text-align:center;cursor:pointer;position:relative">
-          ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:100%;height:auto;display:block;margin:0 auto" loading="lazy">` : ''}
-          <div style="font-size:10px;font-weight:700;color:var(--accent)">Lv ${disp}</div>
-          <span style="position:absolute;top:2px;right:4px;color:var(--red);font-size:14px;font-weight:700">×</span>
-        </div>`;
-      }).join('')}
-    </div>`;
-  const searchHtml = _deckUpCustomIds.length < 8 ? `
-    <input type="text" placeholder="🔍 Add card to deck…" value="${esc(_deckUpSearch)}" oninput="setDeckUpSearch(this.value)" autocomplete="off"
-      style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:8px 14px;font-size:13px;margin-bottom:8px">` : '';
-  let suggestions = '';
-  if (_deckUpSearch && _deckUpCustomIds.length < 8) {
-    const matches = data.cards
-      .filter(c => !_deckUpCustomIds.includes(c.id) && (c.name||'').toLowerCase().includes(_deckUpSearch))
-      .slice(0,10);
-    if (matches.length) {
-      suggestions = `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;margin-bottom:12px;max-height:280px;overflow-y:auto">
-        ${matches.map(c => {
-          const r = (c.rarity||'common').toLowerCase();
-          const disp = toDisplayLevel(r, c.level);
-          return `<div onclick="addDeckUpCard(${c.id})" style="display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;border-bottom:1px solid var(--border)">
-            ${c.iconUrls?.medium?`<img src="${c.iconUrls.medium}" alt="" style="width:28px;height:34px;object-fit:contain;flex-shrink:0">`:''}
-            <span style="flex:1">${esc(c.name)}</span>
-            <span style="font-size:11px;color:var(--muted)">Lv ${disp}</span>
-          </div>`;
-        }).join('')}
-      </div>`;
-    }
-  }
-  const clearBtn = _deckUpCustomIds.length ? `<button class="btn btn-secondary btn-sm" style="margin-bottom:12px" onclick="clearDeckUp()">↺ Clear deck</button>` : '';
   return `
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${_deckUpCustomIds.length} / 8 cards selected</div>
-    ${slots}
-    ${clearBtn}
-    ${searchHtml}
-    ${suggestions}
-    ${selectedCards.length ? renderDeckBreakdown(selectedCards) : '<div class="empty-msg">Pick cards above to see upgrade requirements.</div>'}`;
+    <div id="deckup-count" style="font-size:12px;color:var(--muted);margin-bottom:8px">${_deckUpCustomIds.length} / 8 cards selected</div>
+    <div id="deckup-slots" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px">${buildDeckUpSlots(selectedCards)}</div>
+    <button id="deckup-clear" class="btn btn-secondary btn-sm" style="margin-bottom:12px;display:${_deckUpCustomIds.length?'inline-flex':'none'}" onclick="clearDeckUp()">↺ Clear deck</button>
+    <input type="text" id="deckup-search-input" placeholder="🔍 Add card to deck…" value="${esc(_deckUpSearch)}" oninput="setDeckUpSearch(this.value)" autocomplete="off"
+      style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:8px 14px;font-size:13px;margin-bottom:8px">
+    <div id="deckup-suggestions">${buildDeckUpSuggestions(data)}</div>
+    <div id="deckup-breakdown">${selectedCards.length ? renderDeckBreakdown(selectedCards) : '<div class="empty-msg">Pick cards above to see upgrade requirements.</div>'}</div>`;
 }
 
 function renderDeckBreakdown(cards) {
