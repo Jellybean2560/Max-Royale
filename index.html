@@ -1784,7 +1784,12 @@ function renderOverview(data, battles) {
     </div>
 
     ${(() => {
-      // Suggested Upgrades — scoped to whole account or a specific recent deck
+      // Suggested Upgrades — scoped to whole account or a specific recent deck.
+      // Prime the shared plan state so getPlanDeckOptions() / buildSuggestedOutput()
+      // can see the current profile + battles (renderUpgradePlanner runs after us
+      // and would otherwise be the only thing setting these).
+      window._planData = data;
+      window._planBattles = battles || [];
       _suggestMode = 'account';
       const decks = getPlanDeckOptions();
       const selStyle = "width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center;margin-bottom:10px";
