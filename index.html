@@ -1535,9 +1535,9 @@ function buildDeckUpSlots(selectedCards) {
     if (!c) return `<div style="background:var(--surface2);border:1px dashed var(--border);border-radius:8px;aspect-ratio:0.83;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11px">Slot ${i+1}</div>`;
     const r = (c.rarity||'common').toLowerCase();
     const disp = toDisplayLevel(r, c.level);
-    return `<div onclick="removeDeckUpCard(${c.id})" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:4px;text-align:center;cursor:pointer;position:relative">
-      ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:100%;height:auto;display:block;margin:0 auto" loading="lazy">` : ''}
-      <div style="font-size:10px;font-weight:700;color:var(--accent)">Lv ${disp}</div>
+    return `<div onclick="removeDeckUpCard(${c.id})" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:4px;cursor:pointer;position:relative;aspect-ratio:0.83;display:flex;flex-direction:column;align-items:center;justify-content:space-between;overflow:hidden">
+      ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="max-width:100%;max-height:calc(100% - 16px);width:auto;height:auto;object-fit:contain;display:block" loading="lazy">` : '<div></div>'}
+      <div style="font-size:10px;font-weight:700;color:var(--accent);text-align:center;width:100%">Lv ${disp}</div>
       <span style="position:absolute;top:2px;right:4px;color:var(--red);font-size:14px;font-weight:700">×</span>
     </div>`;
   }).join('');
