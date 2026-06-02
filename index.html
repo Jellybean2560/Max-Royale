@@ -1783,8 +1783,6 @@ function renderOverview(data, battles) {
       <div style="font-size:12px;color:var(--muted);margin-top:4px">${collectionLevel - prevMilestone} / ${nextMilestone - prevMilestone} levels to next milestone</div>
     </div>
 
-    ${renderUpgradePlanner(data, battles)}
-
     ${(() => {
       // Suggested Upgrades — scoped to whole account or a specific recent deck
       _suggestMode = 'account';
@@ -1800,7 +1798,9 @@ function renderOverview(data, battles) {
           </select>
           <div id="suggested-output">${buildSuggestedOutput()}</div>
         </div>`;
-    })()}`;
+    })()}
+
+    ${renderUpgradePlanner(data, battles)}`;
 }
 
 // ── Cards pane ──
