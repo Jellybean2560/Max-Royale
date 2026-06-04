@@ -1319,6 +1319,13 @@ function renderUpgradePlanner(data, battles) {
   _planMode = 'account';
   _planTarget = MAX_LEVEL;
   const decks = getPlanDeckOptions();
+
+  // Detect the lowest display level across all cards; if it's below 13,
+  // expose a "bring stragglers up" target one level above the minimum.
+  const allDisp = (data.cards||[]).map(c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level));
+  const minDisp = allDisp.length ? Math.min(...allDisp) : 0;
+  const dynamicTarget = (minDisp > 0 && minDisp + 1 < 14) ? minDisp + 1 : null;
+
   const selStyle = "flex:1;min-width:0;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center";
   return `
     <div class="card">
@@ -1333,6 +1340,7 @@ function renderUpgradePlanner(data, battles) {
           <option value="16">to Lv 16</option>
           <option value="15">to Lv 15</option>
           <option value="14">to Lv 14</option>
+          ${dynamicTarget ? `<option value="${dynamicTarget}">to Lv ${dynamicTarget} ★</option>` : ''}
         </select>
       </div>
       <div id="plan-output">${buildPlanOutput()}</div>
