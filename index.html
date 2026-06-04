@@ -1320,6 +1320,11 @@ function renderUpgradePlanner(data, battles) {
   _planTarget = MAX_LEVEL;
   const decks = getPlanDeckOptions();
 
+  // Detect the lowest display level so the dropdown only shows meaningful targets
+  const allDisp = (data.cards||[]).map(c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level));
+  const minDisp = allDisp.length ? Math.min(...allDisp) : 1;
+  const lowestTarget = Math.min(minDisp + 1, MAX_LEVEL);
+
   const selStyle = "flex:1;min-width:0;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center";
   return `
     <div class="card">
@@ -1331,7 +1336,7 @@ function renderUpgradePlanner(data, battles) {
           ${decks.map((d,i) => `<option value="deck-${i}">Deck #${i+1} · ${d.wins}W ${d.losses}L (${d.cards.slice(0,3).map(esc).join(', ')}…)</option>`).join('')}
         </select>
         <select onchange="setPlanTarget(this.value)" style="${selStyle}">
-          ${Array.from({length: 15}, (_,i) => 16 - i)
+          ${Array.from({length: MAX_LEVEL - lowestTarget + 1}, (_,i) => MAX_LEVEL - i)
             .map(lv => `<option value="${lv}">to Lv ${lv}</option>`).join('')}
         </select>
       </div>
