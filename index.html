@@ -1337,10 +1337,8 @@ function renderUpgradePlanner(data, battles) {
           ${decks.map((d,i) => `<option value="deck-${i}">Deck #${i+1} · ${d.wins}W ${d.losses}L (${d.cards.slice(0,3).map(esc).join(', ')}…)</option>`).join('')}
         </select>
         <select onchange="setPlanTarget(this.value)" style="${selStyle}">
-          <option value="16">to Lv 16</option>
-          <option value="15">to Lv 15</option>
-          <option value="14">to Lv 14</option>
-          ${dynamicTarget ? `<option value="${dynamicTarget}">to Lv ${dynamicTarget} ★</option>` : ''}
+          ${Array.from({length: 16 - (dynamicTarget || 14) + 1}, (_,i) => 16 - i)
+            .map(lv => `<option value="${lv}">to Lv ${lv}</option>`).join('')}
         </select>
       </div>
       <div id="plan-output">${buildPlanOutput()}</div>
