@@ -1194,6 +1194,35 @@ function polHeaderLine(data) {
   return `<div style="font-size:13px;color:var(--muted);margin-top:2px">⚔️ ${prefix}: <span style="color:var(--text)">${league} · ${detail}</span></div>`;
 }
 
+const MT_LEAGUES = {
+  1:'Bronze III', 2:'Bronze II', 3:'Bronze I',
+  4:'Silver III', 5:'Silver II', 6:'Silver I',
+  7:'Gold III',   8:'Gold II',   9:'Gold I',
+  10:'Platinum III',11:'Platinum II',12:'Platinum I',
+  13:'Diamond III', 14:'Diamond II', 15:'Diamond I',
+  16:'Master III',  17:'Master II',  18:'Master I',
+  19:'Grandmaster'
+};
+function mergeTacticsHeaderLine(data) {
+  // Log raw merge tactics fields once so we can verify the API field names
+  const mtKeys = Object.keys(data).filter(k => /merge|tactic/i.test(k));
+  if (mtKeys.length) console.log('[MT fields]', mtKeys, mtKeys.map(k => data[k]));
+
+  const r = data.currentMergeTacticsSeasonResult
+        || data.lastMergeTacticsSeasonResult
+        || data.bestMergeTacticsSeasonResult;
+  if (!r) return '';
+  const isCurrent = !!data.currentMergeTacticsSeasonResult;
+  const prefix = isCurrent ? 'Merge Tactics' : 'Merge Tactics (best)';
+  // Stars are the progression currency in Merge Tactics
+  const league = MT_LEAGUES[r.leagueNumber] || (r.leagueNumber ? `League ${r.leagueNumber}` : '');
+  const stars = r.trophies != null ? `${fmtNum(r.trophies)} ⭐` : '';
+  const rank  = r.rank ? `#${fmtNum(r.rank)}` : '';
+  const detail = [league, rank, stars].filter(Boolean).join(' · ');
+  if (!detail) return '';
+  return `<div style="font-size:13px;color:var(--muted);margin-top:2px">🧩 ${prefix}: <span style="color:var(--text)">${detail}</span></div>`;
+}
+
 function renderProfile(data, battles) {
   const el = document.getElementById('player-result');
 
@@ -1224,6 +1253,7 @@ function renderProfile(data, battles) {
           <div class="player-tag">${data.tag}</div>
           <div class="trophies">🏆 <span style="color:var(--accent);font-weight:700">${fmtNum(data.trophies)}</span></div>
           ${polHeaderLine(data)}
+          ${mergeTacticsHeaderLine(data)}
         </div>
         <div style="text-align:right">
           <div style="font-size:13px;color:var(--muted)">King Level</div>
