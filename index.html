@@ -1204,10 +1204,6 @@ const MT_LEAGUES = {
   19:'Grandmaster'
 };
 function mergeTacticsHeaderLine(data) {
-  // Log raw merge tactics fields once so we can verify the API field names
-  const mtKeys = Object.keys(data).filter(k => /merge|tactic/i.test(k));
-  if (mtKeys.length) console.log('[MT fields]', mtKeys, mtKeys.map(k => data[k]));
-
   const r = data.currentMergeTacticsSeasonResult
         || data.lastMergeTacticsSeasonResult
         || data.bestMergeTacticsSeasonResult;
