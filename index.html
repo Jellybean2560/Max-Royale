@@ -810,7 +810,7 @@ async function addFriend() {
   if (!raw) return;
   const tag = raw.startsWith('#') ? raw : '#' + raw;
   let list = getFriends();
-  if (list.length >= 10) { showFriendMsg('You can save up to 10 friends. Remove one first.', true); return; }
+  if (list.length >= 50) { showFriendMsg('You can save up to 50 friends. Remove one first.', true); return; }
   if (list.some(f => f.tag === tag)) { showFriendMsg('That friend is already saved.', true); return; }
   showFriendMsg('Checking tag…', false);
   try {
@@ -1254,7 +1254,7 @@ function renderProfile(data, battles) {
     <div id="tab-heroes" class="tab-pane" style="display:none">${renderHeroesPane(data.cards || [])}</div>
     <div id="tab-towerTroops" class="tab-pane" style="display:none">${renderTowerTroopsPane(data)}</div>
     <div id="tab-battles" class="tab-pane" style="display:none">${renderBattles(battles)}</div>
-    <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles)}</div>
+    <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles, data.tag)}</div>
   `;
 
   // wire up tab switching to show/hide panes properly
@@ -1295,10 +1295,10 @@ function buildPlanSummary(cards, target) {
   });
   return { byR, totalNeeded, totalGold };
 }
-function buildDeckMapFromBattles(battles) {
+function buildDeckMapFromBattles(battles, playerTag) {
   const deckMap = {};
   (battles||[]).forEach(b => {
-    const team = (b.team||[])[0] || {};
+    const team = (playerTag && (b.team||[]).find(p => p.tag === playerTag)) || (b.team||[])[0] || {};
     const cards = (team.cards||[]).map(c => c.name).sort().join('|');
     if (!cards) return;
     const tC = team.crowns||0, oC = ((b.opponent||[])[0]||{}).crowns||0;
@@ -1310,7 +1310,7 @@ function buildDeckMapFromBattles(battles) {
 }
 function getPlanDeckOptions() {
   let dm = window._deckMapData;
-  if (!dm || !Object.keys(dm).length) dm = buildDeckMapFromBattles(window._planBattles || []);
+  if (!dm || !Object.keys(dm).length) dm = buildDeckMapFromBattles(window._planBattles || [], window._planData?.tag);
   return Object.values(dm || {}).sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws)).slice(0,8);
 }
 function renderUpgradePlanner(data, battles) {
@@ -1459,7 +1459,7 @@ function renderDeckUpgradeScreen() {
   }
   const data = profile.data;
   const battles = profile.battles || [];
-  const decks = Object.values(buildDeckMapFromBattles(battles))
+  const decks = Object.values(buildDeckMapFromBattles(battles, data.tag))
     .sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws))
     .slice(0,10);
 
@@ -2482,7 +2482,7 @@ function battleModeLabel(b) {
   return deckModeLabel(b.type || '');  // last-resort fallback to the coarse type
 }
 
-function renderDeckBuilder(battles) {
+function renderDeckBuilder(battles, playerTag) {
   if (!battles || !battles.length) return '<div class="empty-msg">No battle data to build decks from.</div>';
   window._deckBattles = battles;
 
@@ -2497,7 +2497,8 @@ function renderDeckBuilder(battles) {
 
   const deckMap = {};
   battles.forEach(b => {
-    const team = (b.team||[])[0] || {};
+    // In 2v2, b.team has 2 players — find the one matching the logged-in player
+    const team = (playerTag && (b.team||[]).find(p => p.tag === playerTag)) || (b.team||[])[0] || {};
     const opp = (b.opponent||[])[0] || {};
     const cards = (team.cards||[]).map(c => c.name).sort().join('|');
     if (!cards) return;
@@ -2714,7 +2715,7 @@ function renderMembers(members) {
     else move = '<span style="color:var(--muted)">–</span>';
     const seen = formatBattleTime(m.lastSeen);
     return `
-    <div class="member-item">
+    <div class="member-item" onclick="viewFriend('${esc(m.tag)}')" style="cursor:pointer">
       <div>
         <div class="member-name"><span style="color:var(--muted);font-size:12px">#${cur}</span> ${move} ${esc(m.name)}</div>
         <div class="member-role">${roleLabel[m.role]||m.role} · ${m.tag}</div>
@@ -2723,6 +2724,7 @@ function renderMembers(members) {
       <div class="member-stats">
         <div>🏆 ${fmtNum(m.trophies)}</div>
         <div style="color:var(--muted);font-size:12px">${fmtNum(m.donations)} donations</div>
+        <div style="color:var(--blue);font-size:11px;margin-top:2px">View profile →</div>
       </div>
     </div>`;
   }).join('');
