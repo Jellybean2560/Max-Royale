@@ -2522,6 +2522,10 @@ function renderDeckBuilder(battles, playerTag) {
   window._cardIconMap = iconMap;
 
   const deckMap = {};
+  if (playerTag && battles.length) {
+    const sample = battles[0];
+    console.log('[deck2v2] playerTag:', playerTag, '| team tags:', (sample.team||[]).map(p=>p.tag));
+  }
   battles.forEach(b => {
     // In 2v2, b.team has 2 players — find the one matching the logged-in player
     const team = (playerTag && (b.team||[]).find(p => p.tag === playerTag)) || (b.team||[])[0] || {};
