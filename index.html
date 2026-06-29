@@ -426,6 +426,13 @@ const XP_DATA = {
 const MIN_LEVEL = { common:1, rare:3, epic:6, legendary:9, champion:11 };
 const MAX_LEVEL = 16;
 
+// Normalize card counts across rarities so 1 legendary card = its fair share of
+// common-card effort. Weight = (total common cards to max) / (total cards of rarity to max).
+const _COMMON_TOTAL = LEVEL_DATA.common.reduce((s,x) => s + x.cards, 0);
+const RARITY_WEIGHT = Object.fromEntries(
+  Object.entries(LEVEL_DATA).map(([r,steps]) => [r, _COMMON_TOTAL / steps.reduce((s,x) => s + x.cards, 0)])
+);
+
 // King Tower Level requirements (May 2026 update)
 const KTL_REQ = [
   {lvl:2, need:9, min:1},{lvl:3, need:9, min:2},{lvl:4, need:10, min:3},
@@ -901,7 +908,7 @@ function friendCardsShell(data) {
         <option value="all">All Rarities</option><option value="common">Common</option><option value="rare">Rare</option><option value="epic">Epic</option><option value="legendary">Legendary</option><option value="champion">Champion</option>
       </select>
       <select onchange="friendSetCard(this.value,'sort')" style="${sel}">
-        <option value="level-desc">Level ↓</option><option value="level-asc">Level ↑</option><option value="rarity">Rarity</option><option value="potential-desc">Potential ↓</option><option value="potential-asc">Potential ↑</option>
+        <option value="level-desc">Level ↓</option><option value="level-asc">Level ↑</option><option value="rarity">Rarity</option>
       </select>
     </div>
     <div class="filter-bar" id="f-card-status">
@@ -934,20 +941,20 @@ function friendRenderCards() {
     const isMaxed = disp >= MAX_LEVEL || idx >= steps.length;
     const nextStep = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
     const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
-    const canMax = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
-    const totalCardsNeeded = isMaxed ? 0 : cardsNeededToMax(r, disp, c.count||0);
-    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, totalCardsNeeded };
+    const canMax              = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
+    const totalCardsNeeded    = isMaxed ? 0 : cardsNeededToMax(r, disp, c.count||0);
+    const normalizedPotential = totalCardsNeeded * (RARITY_WEIGHT[r] || 1);
+    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, totalCardsNeeded, normalizedPotential };
   });
   if (_fCardRarity !== 'all') cards = cards.filter(c => c.r === _fCardRarity);
   if (_fCardSearch) cards = cards.filter(c => (c.name||'').toLowerCase().includes(_fCardSearch));
   if (_fCardStatus === 'maxed') cards = cards.filter(c => c.isMaxed);
   if (_fCardStatus === 'upgradable') cards = cards.filter(c => c.isUpgradable);
   if (_fCardStatus === 'canmax') cards = cards.filter(c => c.canMax);
-  if (_fCardSort === 'level-desc')     cards.sort((a,b) => b.disp - a.disp);
-  if (_fCardSort === 'level-asc')      cards.sort((a,b) => a.disp - b.disp);
-  if (_fCardSort === 'rarity')         cards.sort((a,b) => (RARITY_ORDER[b.r]||0)-(RARITY_ORDER[a.r]||0) || b.disp - a.disp);
-  if (_fCardSort === 'potential-desc') cards.sort((a,b) => b.totalCardsNeeded - a.totalCardsNeeded);
-  if (_fCardSort === 'potential-asc')  cards.sort((a,b) => a.totalCardsNeeded - b.totalCardsNeeded);
+  if (_fCardSort === 'level-desc') cards.sort((a,b) => b.disp - a.disp);
+  if (_fCardSort === 'level-asc')  cards.sort((a,b) => a.disp - b.disp);
+  if (_fCardSort === 'rarity')     cards.sort((a,b) => (RARITY_ORDER[b.r]||0)-(RARITY_ORDER[a.r]||0) || b.disp - a.disp);
+  if (_fCardStatus === 'upgradable') cards.sort((a,b) => a.normalizedPotential - b.normalizedPotential);
   if (!cards.length) { grid.innerHTML = '<div class="empty-msg">No cards match this filter.</div>'; return; }
   const rarityColor = { common:'var(--text)', rare:'var(--blue)', epic:'var(--purple)', legendary:'var(--accent)', champion:'#e74c3c' };
   grid.innerHTML = cards.map(c => {
@@ -1893,8 +1900,6 @@ function renderCardsPane(data) {
         <option value="level-desc">Level ↓</option>
         <option value="level-asc">Level ↑</option>
         <option value="rarity">Rarity</option>
-        <option value="potential-desc">Potential ↓</option>
-        <option value="potential-asc">Potential ↑</option>
       </select>
     </div>
     <div class="filter-bar" id="card-status-filter">
@@ -1949,9 +1954,10 @@ function renderCards() {
     const isMaxed     = disp >= MAX_LEVEL || idx >= steps.length;
     const nextStep    = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
     const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
-    const canMax          = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
-    const totalCardsNeeded = isMaxed ? 0 : cardsNeededToMax(r, disp, c.count||0);
-    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, totalCardsNeeded };
+    const canMax             = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
+    const totalCardsNeeded   = isMaxed ? 0 : cardsNeededToMax(r, disp, c.count||0);
+    const normalizedPotential = totalCardsNeeded * (RARITY_WEIGHT[r] || 1);
+    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, totalCardsNeeded, normalizedPotential };
   });
 
   if (_cardFilter === 'maxed')     cards = cards.filter(c => c.isMaxed);
@@ -1960,11 +1966,11 @@ function renderCards() {
   if (_cardFilter === 'canmax')    cards = cards.filter(c => c.canMax);
 
   // Sort
-  if (_cardSort === 'level-desc')     cards.sort((a,b) => b.disp - a.disp);
-  if (_cardSort === 'level-asc')      cards.sort((a,b) => a.disp - b.disp);
-  if (_cardSort === 'rarity')         cards.sort((a,b) => (RARITY_ORDER[b.r]||0) - (RARITY_ORDER[a.r]||0) || b.disp - a.disp);
-  if (_cardSort === 'potential-desc') cards.sort((a,b) => b.totalCardsNeeded - a.totalCardsNeeded);
-  if (_cardSort === 'potential-asc')  cards.sort((a,b) => a.totalCardsNeeded - b.totalCardsNeeded);
+  if (_cardSort === 'level-desc') cards.sort((a,b) => b.disp - a.disp);
+  if (_cardSort === 'level-asc')  cards.sort((a,b) => a.disp - b.disp);
+  if (_cardSort === 'rarity')     cards.sort((a,b) => (RARITY_ORDER[b.r]||0) - (RARITY_ORDER[a.r]||0) || b.disp - a.disp);
+  // Upgradable tab always sorts by normalized potential (fewest common-equivalent cards needed first)
+  if (_cardFilter === 'upgradable') cards.sort((a,b) => a.normalizedPotential - b.normalizedPotential);
 
   if (!cards.length) {
     grid.innerHTML = '<div class="empty-msg">No cards match this filter.</div>';
