@@ -1339,6 +1339,7 @@ function buildDeckMapFromBattles(battles, playerTag) {
     if (!cards) return;
     const tC = (b.team||[])[0]?.crowns||0, oC = (b.opponent||[])[0]?.crowns||0;
     const result = tC > oC ? 'win' : tC < oC ? 'loss' : 'draw';
+    console.log('[deck2v2dbg][build]', b.type, 'tC='+tC, 'oC='+oC, 'result='+result, 'team[0]crowns='+(b.team?.[0]?.crowns), 'opp[0]crowns='+(b.opponent?.[0]?.crowns));
     if (!deckMap[cards]) deckMap[cards] = { cards: cards.split('|'), wins:0, losses:0, draws:0 };
     deckMap[cards][result + 's']++;
   });
@@ -2544,6 +2545,7 @@ function renderDeckBuilder(battles, playerTag) {
     if (!cards) return;
     const tC = (b.team||[])[0]?.crowns||0, oC = (b.opponent||[])[0]?.crowns||0;
     const result = tC > oC ? 'win' : tC < oC ? 'loss' : 'draw';
+    console.log('[deck2v2dbg][render]', b.type, 'tC='+tC, 'oC='+oC, 'result='+result, 'team[0]crowns='+(b.team?.[0]?.crowns), 'opp[0]crowns='+(b.opponent?.[0]?.crowns));
     if (!deckMap[cards]) deckMap[cards] = { cards: cards.split('|'), wins:0, losses:0, draws:0, modes:[], elixir:[] };
     deckMap[cards][result + 's']++;
     deckMap[cards].modes.push(battleModeLabel(b));
