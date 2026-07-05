@@ -2544,6 +2544,9 @@ function renderDeckBuilder(battles, playerTag) {
     if (!cards) return;
     const tC = (b.team||[])[0]?.crowns||0, oC = (b.opponent||[])[0]?.crowns||0;
     const result = tC > oC ? 'win' : tC < oC ? 'loss' : 'draw';
+    if ((b.team||[]).length > 1 || (b.opponent||[]).length > 1) {
+      console.log('[deck2v2dbg]', 'mode='+battleModeLabel(b), 'type='+b.type, 'gameMode='+b.gameMode?.name, 'teamLen='+(b.team||[]).length, 'oppLen='+(b.opponent||[]).length, 'tC='+tC, 'oC='+oC, 'result='+result, 'tagMatched='+!!(playerTag && (b.team||[]).find(p=>p.tag===playerTag)));
+    }
     if (!deckMap[cards]) deckMap[cards] = { cards: cards.split('|'), wins:0, losses:0, draws:0, modes:[], elixir:[] };
     deckMap[cards][result + 's']++;
     deckMap[cards].modes.push(battleModeLabel(b));
