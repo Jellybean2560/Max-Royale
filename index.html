@@ -1727,8 +1727,6 @@ function renderOverview(data, battles) {
   const heroCount       = heroIds.size > 0
     ? cards.filter(c => heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length
     : 0;
-  const evoNotFound     = Math.max(evoIds.size - evolvedCount, 0);
-  const heroNotFound    = Math.max(heroIds.size - heroCount, 0);
   const supportCards    = data.supportCards || [];
   // Enrich tower troops for Upgrade Insights
   const troopEnriched   = supportCards.map(c => {
@@ -1826,11 +1824,9 @@ function renderOverview(data, battles) {
         <div class="stat-row" style="border-bottom:none"><span class="stat-label">Evolutions unlocked</span><strong class="text-blue">${evolvedCount} / ${evoIds.size}</strong></div>
         <div class="progress-wrap mt8"><div class="progress-bar" style="width:${Math.round(evolvedCount/Math.max(evoIds.size,1)*100)}%;background:var(--blue)"></div></div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px;margin-bottom:8px">${Math.round(evolvedCount/Math.max(evoIds.size,1)*100)}% unlocked</div>
-        ${evoNotFound > 0 ? `<div class="stat-row"><span class="stat-label">Not Found</span><strong class="text-red">${evoNotFound}</strong></div>` : ''}
         <div class="stat-row" style="border-bottom:none"><span class="stat-label">Heroes unlocked</span><strong class="text-purple">${heroCount} / ${heroIds.size}</strong></div>
         <div class="progress-wrap mt8"><div class="progress-bar" style="width:${Math.round(heroCount/Math.max(heroIds.size,1)*100)}%;background:var(--purple)"></div></div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px">${Math.round(heroCount/Math.max(heroIds.size,1)*100)}% unlocked</div>
-        ${heroNotFound > 0 ? `<div class="stat-row" style="border-bottom:none"><span class="stat-label">Not Found</span><strong class="text-red">${heroNotFound}</strong></div>` : ''}
       </div>
     </div>
 
