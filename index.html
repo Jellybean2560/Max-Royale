@@ -1708,6 +1708,8 @@ function renderOverview(data, battles) {
   const upgradableNow   = enriched.filter(c => c.isUpgradable);
   const canMaxCards     = enriched.filter(c => c.canMax);
   const totalGoldReady  = upgradableNow.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
+  const cardsTotal      = allCards.length || cards.length;
+  const cardsNotFound   = Math.max(cardsTotal - cards.length, 0);
   const evoIds          = new Set(allCards.filter(c => c.iconUrls?.evolutionMedium).map(c => c.id));
   const heroIds         = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
   // For dual cards (both evolutionMedium AND heroMedium), evolutionLevel tracks
@@ -1725,6 +1727,8 @@ function renderOverview(data, battles) {
   const heroCount       = heroIds.size > 0
     ? cards.filter(c => heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length
     : 0;
+  const evoNotFound     = Math.max(evoIds.size - evolvedCount, 0);
+  const heroNotFound    = Math.max(heroIds.size - heroCount, 0);
   const supportCards    = data.supportCards || [];
   // Enrich tower troops for Upgrade Insights
   const troopEnriched   = supportCards.map(c => {
@@ -1742,6 +1746,8 @@ function renderOverview(data, battles) {
   const troopUpgradable = troopEnriched.filter(c => c.isUpgradable);
   const troopCanMax     = troopEnriched.filter(c => !c.isMaxed && cardsNeededToMax(c.r, c.disp, c.count||0) === 0).length;
   const troopGoldReady  = troopUpgradable.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
+  const troopsTotal     = allCards.filter(c => c.iconUrls?.towerProjectileMedium).length || troopEnriched.length;
+  const troopsNotFound  = Math.max(troopsTotal - troopEnriched.length, 0);
   const towerTroopCL    = supportCards.reduce((s, c) => {
     const r = (c.rarity||'common').toLowerCase();
     return s + toDisplayLevel(r, c.level);
@@ -1796,6 +1802,7 @@ function renderOverview(data, battles) {
         <div class="progress-bar" style="width:${Math.round(maxedCount/Math.max(cards.length,1)*100)}%;background:var(--accent)"></div>
       </div>
       <div style="font-size:12px;color:var(--muted);margin-top:4px;margin-bottom:8px">${Math.round(maxedCount/Math.max(cards.length,1)*100)}% maxed</div>
+      ${cardsNotFound > 0 ? `<div class="stat-row"><span class="stat-label">Not Found</span><strong class="text-red">${cardsNotFound}</strong></div>` : ''}
       <div class="stat-row"><span class="stat-label">Upgradable now</span><strong class="text-green">${upgradableNow.length}</strong></div>
       <div class="stat-row"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${canMaxCards.length}</strong></div>
       <div class="stat-row"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(totalGoldReady)} 💰</strong></div>
@@ -1808,6 +1815,7 @@ function renderOverview(data, battles) {
           <div class="progress-bar" style="width:${Math.round(troopMaxed/troopEnriched.length*100)}%;background:var(--accent)"></div>
         </div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px;margin-bottom:8px">${Math.round(troopMaxed/troopEnriched.length*100)}% maxed</div>
+        ${troopsNotFound > 0 ? `<div class="stat-row"><span class="stat-label">Not Found</span><strong class="text-red">${troopsNotFound}</strong></div>` : ''}
         <div class="stat-row"><span class="stat-label">Upgradable now</span><strong class="text-green">${troopUpgradable.length}</strong></div>
         <div class="stat-row"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${troopCanMax}</strong></div>
         ${troopGoldReady > 0 ? `<div class="stat-row"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(troopGoldReady)} 💰</strong></div>` : ''}
@@ -1818,9 +1826,11 @@ function renderOverview(data, battles) {
         <div class="stat-row" style="border-bottom:none"><span class="stat-label">Evolutions unlocked</span><strong class="text-blue">${evolvedCount} / ${evoIds.size}</strong></div>
         <div class="progress-wrap mt8"><div class="progress-bar" style="width:${Math.round(evolvedCount/Math.max(evoIds.size,1)*100)}%;background:var(--blue)"></div></div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px;margin-bottom:8px">${Math.round(evolvedCount/Math.max(evoIds.size,1)*100)}% unlocked</div>
+        ${evoNotFound > 0 ? `<div class="stat-row"><span class="stat-label">Not Found</span><strong class="text-red">${evoNotFound}</strong></div>` : ''}
         <div class="stat-row" style="border-bottom:none"><span class="stat-label">Heroes unlocked</span><strong class="text-purple">${heroCount} / ${heroIds.size}</strong></div>
         <div class="progress-wrap mt8"><div class="progress-bar" style="width:${Math.round(heroCount/Math.max(heroIds.size,1)*100)}%;background:var(--purple)"></div></div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px">${Math.round(heroCount/Math.max(heroIds.size,1)*100)}% unlocked</div>
+        ${heroNotFound > 0 ? `<div class="stat-row" style="border-bottom:none"><span class="stat-label">Not Found</span><strong class="text-red">${heroNotFound}</strong></div>` : ''}
       </div>
     </div>
 
