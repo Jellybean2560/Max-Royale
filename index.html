@@ -1331,16 +1331,65 @@ function buildPlanSummary(cards, target) {
   });
   return { byR, totalNeeded, totalGold };
 }
+// ── Deck history persistence ──
+// The battle log only returns the ~25-30 most recent games, so deck win/loss
+// totals would otherwise reset every time older battles scroll out of that
+// window. We keep a running tally per player tag in localStorage, deduped by
+// each battle's battleTime (unique per battle) so re-fetching the same
+// overlapping battles on every load never double-counts.
+function loadDeckHistory(tag) {
+  try {
+    const all = JSON.parse(localStorage.getItem('cr_deck_history_v1') || '{}');
+    return all[tag] || { decks: {}, seen: [] };
+  } catch(e) { return { decks: {}, seen: [] }; }
+}
+function saveDeckHistory(tag, history) {
+  try {
+    const all = JSON.parse(localStorage.getItem('cr_deck_history_v1') || '{}');
+    all[tag] = history;
+    localStorage.setItem('cr_deck_history_v1', JSON.stringify(all));
+  } catch(e) {}
+}
+
 function buildDeckMapFromBattles(battles, playerTag) {
-  const deckMap = {};
+  const history = loadDeckHistory(playerTag);
+  const seen = new Set(history.seen);
+  let changed = false;
+
   (battles||[]).forEach(b => {
+    const key = b.battleTime;
+    if (!key || seen.has(key)) return;
+
     const team = (playerTag && (b.team||[]).find(p => p.tag === playerTag)) || (b.team||[])[0] || {};
     const cards = (team.cards||[]).map(c => c.name).sort().join('|');
     if (!cards) return;
     const tC = (b.team||[])[0]?.crowns||0, oC = (b.opponent||[])[0]?.crowns||0;
     const result = tC > oC ? 'win' : tC < oC ? 'loss' : 'draw';
-    if (!deckMap[cards]) deckMap[cards] = { cards: cards.split('|'), wins:0, losses:0, draws:0 };
-    deckMap[cards][result === 'loss' ? 'losses' : result + 's']++;
+
+    if (!history.decks[cards]) history.decks[cards] = { cards: cards.split('|'), wins:0, losses:0, draws:0, modes:[], elixirSum:0, elixirCount:0 };
+    const d = history.decks[cards];
+    d[result === 'loss' ? 'losses' : result + 's']++;
+    const modeLabel = battleModeLabel(b);
+    if (!d.modes.includes(modeLabel)) d.modes.push(modeLabel);
+    const avg = (team.cards||[]).reduce((s,c) => s + (c.elixirCost||0), 0) / Math.max((team.cards||[]).length,1);
+    d.elixirSum += avg;
+    d.elixirCount++;
+
+    seen.add(key);
+    changed = true;
+  });
+
+  if (changed) {
+    history.seen = [...seen].slice(-300); // bound growth; far more than one battle log window
+    saveDeckHistory(playerTag, history);
+  }
+
+  const deckMap = {};
+  Object.entries(history.decks).forEach(([key, d]) => {
+    deckMap[key] = {
+      cards: d.cards, wins: d.wins, losses: d.losses, draws: d.draws, modes: d.modes,
+      elixir: d.elixirCount ? [d.elixirSum / d.elixirCount] : []
+    };
   });
   return deckMap;
 }
@@ -2541,22 +2590,7 @@ function renderDeckBuilder(battles, playerTag) {
   });
   window._cardIconMap = iconMap;
 
-  const deckMap = {};
-  battles.forEach(b => {
-    // In 2v2, b.team has 2 players — find the one matching the logged-in player
-    const team = (playerTag && (b.team||[]).find(p => p.tag === playerTag)) || (b.team||[])[0] || {};
-    const opp = (b.opponent||[])[0] || {};
-    const cards = (team.cards||[]).map(c => c.name).sort().join('|');
-    if (!cards) return;
-    const tC = (b.team||[])[0]?.crowns||0, oC = (b.opponent||[])[0]?.crowns||0;
-    const result = tC > oC ? 'win' : tC < oC ? 'loss' : 'draw';
-    if (!deckMap[cards]) deckMap[cards] = { cards: cards.split('|'), wins:0, losses:0, draws:0, modes:[], elixir:[] };
-    deckMap[cards][result === 'loss' ? 'losses' : result + 's']++;
-    deckMap[cards].modes.push(battleModeLabel(b));
-    const avg = (team.cards||[]).reduce((s,c) => s + (c.elixirCost||0), 0) / Math.max((team.cards||[]).length,1);
-    deckMap[cards].elixir.push(avg);
-  });
-
+  const deckMap = buildDeckMapFromBattles(battles, playerTag);
   window._deckMapData = deckMap;
   return _renderDeckList(deckMap, battles);
 }
