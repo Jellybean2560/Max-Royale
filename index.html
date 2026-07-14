@@ -594,19 +594,41 @@ function formatBattleTime(ts) {
 let allCards = [];
 let _playerCardsById = {};  // populated after a player lookup; used by Card Lookup
 
+// Clash Royale content updates typically land the first Monday of the month.
+// Treat the card catalog cache as stale once the first Tuesday of the month
+// (the day after) has passed, so new cards/icons picked up automatically
+// without needing a manual cache-version bump every release.
+function _firstTuesdayOfMonth(year, month) {
+  const d = new Date(year, month, 1);
+  const offset = (2 - d.getDay() + 7) % 7; // days from the 1st to the first Tuesday
+  d.setDate(d.getDate() + offset);
+  return d.getTime();
+}
+function _mostRecentMonthlyCacheCutoff() {
+  const now = new Date();
+  const thisMonthCutoff = _firstTuesdayOfMonth(now.getFullYear(), now.getMonth());
+  if (now.getTime() >= thisMonthCutoff) return thisMonthCutoff;
+  // Before this month's first Tuesday — the last real cutoff was last month's.
+  const prevMonth = now.getMonth() - 1;
+  const y = prevMonth < 0 ? now.getFullYear() - 1 : now.getFullYear();
+  return _firstTuesdayOfMonth(y, (prevMonth + 12) % 12);
+}
+
 async function maybeLoadCards() {
   if (allCards.length) return;
   // Try the cached card list first (zero network)
-  // Version 2: increment when new evolution/hero are released (forces refresh)
-  const cacheKey = 'cr_cards_cache_v5';
+  const cacheKey = 'cr_cards_cache_v6';
   try {
     const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
-    if (cached && Array.isArray(cached) && cached.length) { allCards = cached; return; }
+    if (cached && Array.isArray(cached.items) && cached.items.length && cached.savedAt >= _mostRecentMonthlyCacheCutoff()) {
+      allCards = cached.items;
+      return;
+    }
   } catch(e) {}
   try {
     const data = await apiGet('/cards');
     allCards = (data.items || []).sort((a,b) => a.name.localeCompare(b.name));
-    try { localStorage.setItem(cacheKey, JSON.stringify(allCards)); } catch(e) {}
+    try { localStorage.setItem(cacheKey, JSON.stringify({ items: allCards, savedAt: Date.now() })); } catch(e) {}
   } catch(e) {
     // silent — card picker is optional
   }
