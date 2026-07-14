@@ -598,15 +598,15 @@ async function maybeLoadCards() {
   if (allCards.length) return;
   // Try the cached card list first (zero network)
   // Version 2: increment when new evolution/hero are released (forces refresh)
+  const cacheKey = 'cr_cards_cache_v5';
   try {
-    const cacheKey = 'cr_cards_cache_v4';
     const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
     if (cached && Array.isArray(cached) && cached.length) { allCards = cached; return; }
   } catch(e) {}
   try {
     const data = await apiGet('/cards');
     allCards = (data.items || []).sort((a,b) => a.name.localeCompare(b.name));
-    try { localStorage.setItem('cr_cards_cache_v3', JSON.stringify(allCards)); } catch(e) {}
+    try { localStorage.setItem(cacheKey, JSON.stringify(allCards)); } catch(e) {}
   } catch(e) {
     // silent — card picker is optional
   }
