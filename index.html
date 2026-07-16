@@ -1383,6 +1383,7 @@ function buildDeckMapFromBattles(battles, playerTag) {
     if (!key || seen.has(key)) return;
 
     const team = (playerTag && (b.team||[]).find(p => p.tag === playerTag)) || (b.team||[])[0] || {};
+    if ((team.cards||[]).length !== 8) return; // a real deck is always 8 cards — anything else is a bad/mismatched record (e.g. tag-match fallback picking up the wrong entry)
     const cards = (team.cards||[]).map(c => c.name).sort().join('|');
     if (!cards) return;
     const tC = (b.team||[])[0]?.crowns||0, oC = (b.opponent||[])[0]?.crowns||0;
@@ -1408,6 +1409,7 @@ function buildDeckMapFromBattles(battles, playerTag) {
 
   const deckMap = {};
   Object.entries(history.decks).forEach(([key, d]) => {
+    if ((d.cards||[]).length !== 8) return; // drop any bad entry saved before the 8-card guard existed
     deckMap[key] = {
       cards: d.cards, wins: d.wins, losses: d.losses, draws: d.draws, modes: d.modes,
       elixir: d.elixirCount ? [d.elixirSum / d.elixirCount] : []
