@@ -2606,11 +2606,14 @@ function renderDeckBuilder(battles, playerTag) {
   window._deckBattles = battles;
   window._deckPlayerTag = playerTag;
 
-  // Build card name → icon URL map from all cards seen in battles
+  // Build card name → icon URL map. Prefer the full card catalog (always complete)
+  // over icons embedded in individual battle-log records, which are sometimes
+  // missing iconUrls for specific cards even though the catalog has them.
   const iconMap = {};
+  allCards.forEach(c => { if (c.name && c.iconUrls?.medium) iconMap[c.name] = c.iconUrls.medium; });
   battles.forEach(b => {
     (b.team||[]).concat(b.opponent||[]).forEach(p => {
-      (p.cards||[]).forEach(c => { if (c.name && c.iconUrls?.medium) iconMap[c.name] = c.iconUrls.medium; });
+      (p.cards||[]).forEach(c => { if (c.name && c.iconUrls?.medium && !iconMap[c.name]) iconMap[c.name] = c.iconUrls.medium; });
     });
   });
   window._cardIconMap = iconMap;
