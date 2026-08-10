@@ -2604,6 +2604,7 @@ function battleModeLabel(b) {
 function renderDeckBuilder(battles, playerTag) {
   if (!battles || !battles.length) return '<div class="empty-msg">No battle data to build decks from.</div>';
   window._deckBattles = battles;
+  window._deckPlayerTag = playerTag;
 
   // Build card name → icon URL map from all cards seen in battles
   const iconMap = {};
@@ -2647,6 +2648,9 @@ function _renderDeckList(deckMap, battles) {
       `<div style="margin-bottom:5px;text-align:center"><div class="${cls}" style="font-size:15px;font-weight:700;line-height:1.1">${val}</div><div style="font-size:10px;color:var(--muted)">${lbl}</div></div>`;
     return `
       <div class="deck-item">
+        <div style="display:flex;justify-content:flex-end">
+          <button class="btn btn-secondary btn-sm" title="Delete this deck's history" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="deleteDeck('${esc(d.cards.join('|'))}')">🗑️</button>
+        </div>
         <div style="display:flex;gap:12px;align-items:center">
           <div style="flex:1;min-width:0">
             <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px">${cardChips}</div>
@@ -2674,6 +2678,20 @@ window.setDeckFilter = function(mode) {
   if (window._deckMapData && window._deckBattles) {
     document.getElementById('tab-decks').innerHTML = _renderDeckList(window._deckMapData, window._deckBattles);
   }
+};
+
+// Manually remove a deck (and its accumulated win/loss history) from local storage.
+// Battles already counted toward it stay marked "seen", so it won't reappear just
+// from re-fetching the same recent battle log — only if it's actually played again.
+window.deleteDeck = function(key) {
+  if (!confirm('Delete this deck and its win/loss history? This can\'t be undone.')) return;
+  const tag = window._deckPlayerTag;
+  const history = loadDeckHistory(tag);
+  delete history.decks[key];
+  saveDeckHistory(tag, history);
+
+  if (window._deckMapData) delete window._deckMapData[key];
+  document.getElementById('tab-decks').innerHTML = _renderDeckList(window._deckMapData || {}, window._deckBattles || []);
 };
 
 // Open the deck directly in Clash Royale (the "Copy Deck" dialog inside the game)
