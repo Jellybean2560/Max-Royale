@@ -540,6 +540,7 @@ function switchTab(name) {
   if (name === 'evolutions') loadEvolutionsGrid();
   if (name === 'heroes') loadHeroesGrid();
   if (name === 'towerTroops') loadTowerTroopsGrid();
+  if (name === 'badges') loadBadgesGrid();
 }
 
 // ═══════════════════════════════════════════════
@@ -1304,6 +1305,7 @@ function renderProfile(data, battles) {
       <button class="tab-btn" data-tab="towerTroops" onclick="switchTab('towerTroops')">Tower Troops</button>
       <button class="tab-btn" data-tab="decks" onclick="switchTab('decks')">Decks</button>
       <button class="tab-btn" data-tab="battles" onclick="switchTab('battles')">Battles</button>
+      <button class="tab-btn" data-tab="badges" onclick="switchTab('badges')">Badges</button>
     </div>
 
     <div id="tab-overview" class="tab-pane active">${renderOverview(data, battles)}</div>
@@ -1312,6 +1314,7 @@ function renderProfile(data, battles) {
     <div id="tab-heroes" class="tab-pane" style="display:none">${renderHeroesPane(data.cards || [])}</div>
     <div id="tab-towerTroops" class="tab-pane" style="display:none">${renderTowerTroopsPane(data)}</div>
     <div id="tab-battles" class="tab-pane" style="display:none">${renderBattles(battles)}</div>
+    <div id="tab-badges" class="tab-pane" style="display:none">${renderBadgesPane(data)}</div>
     <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles, data.tag)}</div>
   `;
 
@@ -2453,6 +2456,49 @@ async function loadTowerTroopsGrid() {
   } catch(e) {
     grid.innerHTML = `<div class="error-msg">${e.message}</div>`;
   }
+}
+
+// ── Badges pane ──
+// data.badges: [{ name, level, maxLevel, progress, target, iconUrls:{ large } }]
+let _badgesData = [];
+
+function humanizeBadgeName(name) {
+  return (name || 'Badge')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([A-Za-z])(\d)/g, '$1 $2')
+    .replace(/(\d)([A-Za-z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .trim();
+}
+
+function renderBadgesPane(data) {
+  _badgesData = data.badges || [];
+  return `<div id="badges-grid"><div class="spinner"></div></div>`;
+}
+
+function loadBadgesGrid() {
+  const grid = document.getElementById('badges-grid');
+  if (!grid || !grid.querySelector('.spinner')) return;
+  if (!_badgesData.length) { grid.innerHTML = '<div class="empty-msg">No badge data available from the API.</div>'; return; }
+
+  const sorted = [..._badgesData].sort((a,b) => (b.level||0) - (a.level||0));
+  grid.innerHTML = `
+    <div style="font-size:13px;color:var(--muted);margin-bottom:12px">${sorted.length} badges</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+      ${sorted.map(b => {
+        const hasLevel = (b.level||0) > 0;
+        const pct = b.target ? Math.min(Math.round((b.progress||0)/b.target*100), 100) : (hasLevel ? 100 : 0);
+        return `
+          <div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:10px 6px;${hasLevel ? '' : 'opacity:0.4;filter:grayscale(1)'}">
+            ${b.iconUrls?.large
+              ? `<img src="${b.iconUrls.large}" alt="${esc(b.name)}" style="width:56px;height:56px;object-fit:contain" loading="lazy" onerror="cardImgFallback(this)">`
+              : `<div style="width:56px;height:56px"></div>`}
+            <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(humanizeBadgeName(b.name))}</span>
+            ${hasLevel ? `<span style="font-size:9px;color:var(--accent);font-weight:600">Lvl ${b.level}${b.maxLevel ? '/' + b.maxLevel : ''}</span>` : ''}
+            ${b.target ? `<div class="progress-wrap" style="width:100%;margin-top:2px"><div class="progress-bar" style="width:${pct}%;background:var(--accent)"></div></div>` : ''}
+          </div>`;
+      }).join('')}
+    </div>`;
 }
 
 // ── Battles pane ──
