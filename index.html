@@ -2477,17 +2477,39 @@ function renderBadgesPane(data) {
   return `<div id="badges-grid"><div class="spinner"></div></div>`;
 }
 
-// Card mastery badges are per-card, but the API's exact naming isn't documented
-// (it varies between plain card names and Mastery-prefixed forms). Rather than
-// hardcode a prefix, match the badge name against the card catalog: normalize
-// both sides and treat a badge as a mastery if what remains after stripping any
-// "mastery" wording is a known card name.
+// Card mastery badges are always named `Mastery<InternalName>`, where the internal
+// name is Supercell's code name for the card. Most match the display name, but 27
+// don't (MasteryAxeMan is Executioner, MasteryRageBarbarian is Lumberjack, …).
+// This map covers every current mismatch; it was derived by cross-referencing live
+// badge data against Supercell's internal `sc_key` values published in
+// RoyaleAPI/cr-api-data. Anything not listed falls through to a display-name match,
+// so newly released cards keep working as long as their internal name matches.
+const MASTERY_NAME_OVERRIDES = {
+  angrybarbarians: 'Elite Barbarians', archer: 'Archers',        assassin: 'Bandit',
+  axeman:          'Executioner',      barblog: 'Barbarian Barrel',
+  blowdartgoblin:  'Dart Goblin',      darkmagic: 'Void',        darkwitch: 'Night Witch',
+  dartbarrell:     'Flying Machine',   elitearcher: 'Magic Archer',
+  firespirits:     'Fire Spirit',      firespirithut: 'Furnace', ghost: 'Royal Ghost',
+  giantbuffer:     'Rune Giant',       heal: 'Heal Spirit',      icegolemite: 'Ice Golem',
+  icespirits:      'Ice Spirit',       log: 'The Log',           mergemaiden: 'Spirit Empress',
+  minisparkys:     'Zappies',          movingcannon: 'Cannon Cart',
+  ragebarbarian:   'Lumberjack',       skeletonballoon: 'Skeleton Barrel',
+  skeletonwarriors:'Guards',           snowball: 'Giant Snowball',
+  witchmother:     'Mother Witch',     zapmachine: 'Sparky'
+};
 const _normBadgeKey = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+function _isMasteryBadge(badgeName) { return /^Mastery/.test(badgeName || ''); }
+
+// Returns the catalog card a mastery badge belongs to, or null if it can't be
+// resolved (e.g. a brand-new card with an internal name we don't know yet).
 function _masteryCardFor(badgeName) {
-  const raw = _normBadgeKey(badgeName);
-  const stripped = raw.replace(/mastery/g, '');
-  if (!stripped) return null;
-  return allCards.find(c => _normBadgeKey(c.name) === stripped) || null;
+  if (!_isMasteryBadge(badgeName)) return null;
+  const key = _normBadgeKey(String(badgeName).slice('Mastery'.length));
+  if (!key) return null;
+  const override = MASTERY_NAME_OVERRIDES[key];
+  if (override) return allCards.find(c => c.name === override) || null;
+  return allCards.find(c => _normBadgeKey(c.name) === key) || null;
 }
 
 let _badgeFilter = 'all';
@@ -2514,13 +2536,15 @@ async function loadBadgesGrid() {
       level: b.level||0, maxLevel: b.maxLevel||0,
       progress: b.progress||0, target: b.target||0,
       icon: b.iconUrls?.large || '',
-      isMastery: !!card, cardId: card?.id ?? null, earned: true
+      // Classify by the badge name, not by whether the card resolved — an
+      // unrecognised new card still belongs under the Card Mastery filter.
+      isMastery: _isMasteryBadge(b.name), cardId: card?.id ?? null, earned: true
     };
   });
 
   // Card masteries not yet started don't appear in the API response at all,
   // so synthesise a locked entry for every catalog card without an earned badge.
-  const masteredIds = new Set(earned.filter(e => e.isMastery).map(e => e.cardId));
+  const masteredIds = new Set(earned.filter(e => e.cardId != null).map(e => e.cardId));
   const locked = allCards
     .filter(c => !masteredIds.has(c.id))
     .map(c => ({
