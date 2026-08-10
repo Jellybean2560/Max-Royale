@@ -184,10 +184,12 @@ Open the Pages URL in Chrome → ⋮ → "Add to Home Screen". Launches fullscre
 
 ---
 
-## ⚠️ Security note — exposed API token
-`index.html` (~line 549) contains a hardcoded Clash Royale API JWT in `const _API_KEY`, left over from before the Cloudflare Worker existed. It is **dead code** — `getApiKey()` is never called and `apiGet()` doesn't use it — but the file is served publicly from GitHub Pages and committed to a public repo, so the token is readable by anyone.
+## ⚠️ Security note — API token exposed in git history
+`index.html` used to hardcode a Clash Royale API JWT in `const _API_KEY`, left over from before the Cloudflare Worker existed. It was dead code (`apiGet()` never used it) and was **removed from the working tree** in `57f8332`.
 
-It is IP-locked to `45.79.218.79` (RoyaleAPI's proxy), which limits but does not eliminate abuse, since that proxy is public. **Recommended:** revoke the key at developer.clashroyale.com, then delete `_API_KEY` and `getApiKey()`. Removing it from the current file does not purge it from git history.
+It is **still present in git history** and was served publicly from GitHub Pages for as long as it was committed, so treat the token as compromised. It is IP-locked to `45.79.218.79` (RoyaleAPI's public proxy), which limits but does not eliminate abuse.
+
+**Before revoking it, check whether the Cloudflare Worker uses the same key** — the Worker almost certainly calls the CR API through RoyaleAPI's proxy, which is exactly the IP this key is locked to. If it's the same key, revoking it takes the app down for every user until the Worker is given a new one. Correct order: mint a new key → update the Worker's secret → confirm the app still loads → revoke the old key.
 
 ---
 
