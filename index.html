@@ -543,13 +543,8 @@ function switchTab(name) {
   if (name === 'badges') loadBadgesGrid();
 }
 
-// ═══════════════════════════════════════════════
-//  API KEY — hardcoded for personal use
-// ═══════════════════════════════════════════════
-const _API_KEY = 'eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiIsImtpZCI6IjI4YTMxOGY3LTAwMDAtYTFlYi03ZmExLTJjNzQzM2M2Y2NhNSJ9.eyJpc3MiOiJzdXBlcmNlbGwiLCJhdWQiOiJzdXBlcmNlbGw6Z2FtZWFwaSIsImp0aSI6Ijc1MGYxMjA3LTFkMjMtNGZiZC05ODQ0LWU4MGMyNGUwZTM5ZCIsImlhdCI6MTc3OTk4MjIxNywic3ViIjoiZGV2ZWxvcGVyL2Q3ODc5ZjEyLTA3ZDUtYTM1NC1lNTkyLTZiZWRjYjBjZWIzYyIsInNjb3BlcyI6WyJyb3lhbGUiXSwibGltaXRzIjpbeyJ0aWVyIjoiZGV2ZWxvcGVyL3NpbHZlciIsInR5cGUiOiJ0aHJvdHRsaW5nIn0seyJjaWRycyI6WyI0NS43OS4yMTguNzkiXSwidHlwZSI6ImNsaWVudCJ9XX0.ysolBehT_45IxmZRuKAxWNOjLhY44s_6zh4mEujuUD6cdvQaAvhc202GpA8pw7v5nija5pgQ5Ct46MMxrPAk9g';
-function getApiKey() { return _API_KEY; }
-
-function initApiKey() {
+// The API key lives in the Cloudflare Worker that apiGet() calls, not here.
+function restoreSavedTag() {
   const savedTag = localStorage.getItem('cr_player_tag');
   if (savedTag) document.getElementById('player-tag').value = savedTag;
 }
@@ -3009,7 +3004,7 @@ function renderMembers(members) {
 // ═══════════════════════════════════════════════
 //  INIT
 // ═══════════════════════════════════════════════
-initApiKey();
+restoreSavedTag();
 calcUpdate();
 // Restore last-used player tag into the input
 const _savedTag = localStorage.getItem('cr_player_tag');
