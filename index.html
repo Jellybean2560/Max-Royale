@@ -886,6 +886,7 @@ async function viewFriend(tag) {
         <button class="tab-btn" data-ftab="evolutions" onclick="friendTab('evolutions')">Evolutions</button>
         <button class="tab-btn" data-ftab="heroes" onclick="friendTab('heroes')">Heroes</button>
         <button class="tab-btn" data-ftab="towerTroops" onclick="friendTab('towerTroops')">Tower Troops</button>
+        <button class="tab-btn" data-ftab="badges" onclick="friendTab('badges')">Badges</button>
       </div>
       <div id="friend-pane"></div>`;
     friendTab('overview');
@@ -901,6 +902,7 @@ function closeFriendModal() {
 // Friend modal filter state (self-contained so it never touches the main profile)
 let _fCardStatus = 'all', _fCardRarity = 'all', _fCardSort = 'level-desc', _fCardSearch = '';
 let _fEvoFilter = 'all', _fHeroFilter = 'all';
+let _fBadgeFilter = 'all', _fBadgeEntries = [];
 
 function friendTab(name) {
   const d = _friendData; if (!d) return;
@@ -912,7 +914,32 @@ function friendTab(name) {
   if (name === 'evolutions'){ _fEvoFilter='all';  pane.innerHTML = friendCollectShell('evolution'); friendRenderCollect('evolution'); }
   if (name === 'heroes')    { _fHeroFilter='all'; pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
   if (name === 'towerTroops') pane.innerHTML = friendTroopHTML(d);
+  if (name === 'badges')    { _fBadgeFilter='all'; pane.innerHTML = friendBadgesShell(d); friendRenderBadges(); }
   document.getElementById('friend-modal').scrollTop = 0;
+}
+
+// ── Friend Badges (mirrors the profile Badges tab, own ids so the two never clash) ──
+function friendBadgesShell(data) {
+  _fBadgeEntries = buildBadgeEntries(data.badges);
+  if (!_fBadgeEntries.length) return '<div class="empty-msg">No badge data available from the API.</div>';
+  return `
+    ${badgeFilterBarHTML('f-badge-filter', 'friendSetBadge', _fBadgeFilter)}
+    <div id="f-badge-count" style="font-size:13px;color:var(--muted);margin-bottom:12px"></div>
+    <div id="f-badge-grid"></div>`;
+}
+window.friendSetBadge = function(val) {
+  _fBadgeFilter = val;
+  document.querySelectorAll('#f-badge-filter .filter-btn').forEach(b =>
+    b.classList.toggle('active', b.getAttribute('onclick').includes(`'${val}'`)));
+  friendRenderBadges();
+};
+function friendRenderBadges() {
+  const container = document.getElementById('f-badge-grid');
+  if (!container) return;
+  const list = filterSortBadges(_fBadgeEntries, _fBadgeFilter);
+  const countEl = document.getElementById('f-badge-count');
+  if (countEl) countEl.textContent = badgeCountText(list, _fBadgeFilter);
+  container.innerHTML = badgeTilesHTML(list);
 }
 
 // ── Friend Cards (mirrors main Cards tab) ──
@@ -2543,14 +2570,12 @@ function setBadgeFilter(val) {
   _renderBadgeCards();
 }
 
-async function loadBadgesGrid() {
-  const grid = document.getElementById('badges-grid');
-  if (!grid || !grid.querySelector('.spinner')) return;
-
-  await maybeLoadCards(); // needed to identify which badges are card masteries
-
+// Builds the full badge list for a player: their earned badges plus a locked entry
+// for every card mastery not yet started. Shared by the profile tab and the friend
+// modal, which each keep their own filter state and container ids.
+function buildBadgeEntries(badges) {
   // Earned badges, tagged with the card they belong to (if any)
-  const earned = _badgesData.map(b => {
+  const earned = (badges||[]).map(b => {
     const card = _masteryCardFor(b.name);
     const isMastery = _isMasteryBadge(b.name);
     // Null when a mastery's card can't be resolved (a new card we don't know yet),
@@ -2584,16 +2609,49 @@ async function loadBadgesGrid() {
       isMastery: true, cardId: c.id, earned: false
     }));
 
-  _badgeEntries = [...earned, ...locked];
+  return [...earned, ...locked];
+}
+
+// Fully mastered first, then most mastery levels achieved, then earned before
+// locked, then alphabetical. Non-mastery badges fall back to their badge level.
+function _badgeCompare(a, b) {
+  const progress = x => x.isMastery ? (x.masteryDone||0) : (x.level||0);
+  return (b.atMax - a.atMax)
+      || (progress(b) - progress(a))
+      || (b.earned - a.earned)
+      || a.name.localeCompare(b.name);
+}
+
+function filterSortBadges(entries, filter) {
+  let list = entries;
+  if (filter === 'mastery') list = list.filter(b => b.isMastery);
+  if (filter === 'other')   list = list.filter(b => !b.isMastery);
+  return [...list].sort(_badgeCompare);
+}
+
+function badgeCountText(list, filter) {
+  const earnedCount = list.filter(b => b.earned).length;
+  return filter === 'other' ? `${earnedCount} badges` : `${earnedCount} / ${list.length} unlocked`;
+}
+
+function badgeFilterBarHTML(barId, setter, active) {
+  return `<div class="filter-bar" id="${barId}" style="margin-bottom:12px">
+      ${[['all','All'],['mastery','Card Mastery'],['other','Other']].map(([v,label]) =>
+        `<button class="filter-btn ${active===v?'active':''}" onclick="${setter}('${v}')">${label}</button>`).join('')}
+    </div>`;
+}
+
+async function loadBadgesGrid() {
+  const grid = document.getElementById('badges-grid');
+  if (!grid || !grid.querySelector('.spinner')) return;
+
+  await maybeLoadCards(); // needed to identify which badges are card masteries
+  _badgeEntries = buildBadgeEntries(_badgesData);
 
   if (!_badgeEntries.length) { grid.innerHTML = '<div class="empty-msg">No badge data available from the API.</div>'; return; }
 
   grid.innerHTML = `
-    <div class="filter-bar" id="badge-filter-bar" style="margin-bottom:12px">
-      <button class="filter-btn active" onclick="setBadgeFilter('all')">All</button>
-      <button class="filter-btn" onclick="setBadgeFilter('mastery')">Card Mastery</button>
-      <button class="filter-btn" onclick="setBadgeFilter('other')">Other</button>
-    </div>
+    ${badgeFilterBarHTML('badge-filter-bar', 'setBadgeFilter', _badgeFilter)}
     <div id="badge-count" style="font-size:13px;color:var(--muted);margin-bottom:12px"></div>
     <div id="badge-cards-grid"></div>`;
   _renderBadgeCards();
@@ -2602,24 +2660,15 @@ async function loadBadgesGrid() {
 function _renderBadgeCards() {
   const container = document.getElementById('badge-cards-grid');
   if (!container) return;
-
-  let list = _badgeEntries;
-  if (_badgeFilter === 'mastery') list = list.filter(b => b.isMastery);
-  if (_badgeFilter === 'other')   list = list.filter(b => !b.isMastery);
-  // Earned first (highest level first), locked masteries last
-  list = [...list].sort((a,b) => (b.earned - a.earned) || (b.level - a.level) || a.name.localeCompare(b.name));
-
+  const list = filterSortBadges(_badgeEntries, _badgeFilter);
   const countEl = document.getElementById('badge-count');
-  if (countEl) {
-    const earnedCount = list.filter(b => b.earned).length;
-    countEl.textContent = _badgeFilter === 'other'
-      ? `${earnedCount} badges`
-      : `${earnedCount} / ${list.length} unlocked`;
-  }
+  if (countEl) countEl.textContent = badgeCountText(list, _badgeFilter);
+  container.innerHTML = badgeTilesHTML(list);
+}
 
-  if (!list.length) { container.innerHTML = '<div class="empty-msg">No badges match this filter.</div>'; return; }
-
-  container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+function badgeTilesHTML(list) {
+  if (!list.length) return '<div class="empty-msg">No badges match this filter.</div>';
+  return `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
     ${list.map(b => {
       // Masteries show levels completed out of the card's real total (6 or 9),
       // matching the in-game mastery screen. Other badges keep the API's own
