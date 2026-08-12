@@ -1,0 +1,41 @@
+name: Check card mastery list
+
+# Cards with a 3rd mastery task set have 9 mastery levels instead of 6, and the
+# Clash Royale API doesn't expose which is which — the list is hardcoded in
+# index.html. The wiki is usually updated a few weeks after a new card ships, so
+# check monthly and open an issue when it drifts. Never edits the app itself.
+
+on:
+  schedule:
+    - cron: '0 6 1 * *'   # 06:00 UTC, 1st of each month
+  workflow_dispatch:       # lets you run it on demand from the Actions tab
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - id: check
+        run: node .github/scripts/check-mastery-list.mjs
+
+      - name: Open or update an issue
+        if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: Card mastery 3rd task set list changed
+        run: |
+          existing=$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "Updating existing issue #$existing"
+            gh issue comment "$existing" --body-file issue-body.md
+          else
+            gh issue create --title "$TITLE" --body-file issue-body.md
+          fi
