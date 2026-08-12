@@ -2501,6 +2501,12 @@ const MASTERY_NAME_OVERRIDES = {
 };
 const _normBadgeKey = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g, '');
 
+// The API reports maxLevel 10 for every mastery badge regardless of card, and every
+// completed mastery observed sits at level 10 — so 10 is the ladder the badge data
+// uses. It isn't shown as a "/10" denominator because the in-game mastery screen
+// counts tasks (6 or 9 per card) rather than these levels; it only scales the bar.
+const MASTERY_LADDER_LEVELS = 10;
+
 function _isMasteryBadge(badgeName) { return /^Mastery/.test(badgeName || ''); }
 
 // Returns the catalog card a mastery badge belongs to, or null if it can't be
@@ -2595,20 +2601,26 @@ function _renderBadgeCards() {
 
   container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
     ${list.map(b => {
-      const pct = b.target ? Math.min(Math.round(b.progress/b.target*100), 100) : (b.level > 0 ? 100 : 0);
+      // Masteries climb a 10-level ladder in the API (every completed one observed
+      // sits at level 10), so the bar tracks position along that ladder. It can't
+      // use progress/target the way other badges do — for masteries those are just
+      // level and level+1, so the bar would sit near-full at every level.
+      const pct = b.isMastery
+        ? Math.min(Math.round((b.level||0) / MASTERY_LADDER_LEVELS * 100), 100)
+        : (b.target ? Math.min(Math.round(b.progress/b.target*100), 100) : (b.level > 0 ? 100 : 0));
+      const levelLabel = b.isMastery
+        ? (b.atMax ? 'MAX' : (b.level > 0 ? `Lvl ${b.level}` : ''))
+        : (b.level > 0 ? `Lvl ${b.level}${b.maxLevel ? '/' + b.maxLevel : ''}` : '');
+      // Bar for any mastery still climbing, and for other badges with real progress.
+      const showBar = b.isMastery ? !b.atMax : !!b.target;
       return `
         <div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:10px 6px;${b.earned ? '' : 'opacity:0.35;filter:grayscale(1)'}">
           ${b.icon
             ? `<img src="${b.icon}" alt="${esc(b.name)}" style="width:56px;height:56px;object-fit:contain" loading="lazy" onerror="cardImgFallback(this)">`
             : `<div style="width:56px;height:56px"></div>`}
           <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(humanizeBadgeName(b.name))}</span>
-          ${b.level > 0 ? `<span style="font-size:9px;color:var(--accent);font-weight:600">Lvl ${b.level}${
-            // Masteries report maxLevel 10 for every card regardless of how many
-            // mastery steps that card actually has, so showing "/10" would be wrong.
-            // Other badges have genuine per-badge maxLevels worth showing.
-            b.isMastery ? (b.atMax ? ' · MAX' : '') : (b.maxLevel ? '/' + b.maxLevel : '')
-          }</span>` : ''}
-          ${!b.isMastery && b.target ? `<div class="progress-wrap" style="width:100%;margin-top:2px"><div class="progress-bar" style="width:${pct}%;background:var(--accent)"></div></div>` : ''}
+          ${levelLabel ? `<span style="font-size:9px;color:var(--accent);font-weight:600">${levelLabel}</span>` : ''}
+          ${showBar ? `<div class="progress-wrap" style="width:100%;margin-top:2px"><div class="progress-bar" style="width:${pct}%;background:var(--accent)"></div></div>` : ''}
         </div>`;
     }).join('')}
   </div>`;
