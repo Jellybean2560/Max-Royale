@@ -2590,7 +2590,11 @@ function buildBadgeEntries(badges) {
       atMax: isMastery
         ? (masteryTotal != null && masteryDone >= masteryTotal)
         : (b.target == null && (b.level||0) > 0),
-      icon: b.iconUrls?.large || '',
+      // Supercell sometimes returns a badge icon URL whose asset 404s — new cards
+      // especially (MasteryRonin, Aug 2026). A mastery badge can fall back to the
+      // card's own catalog art, which ships with the card itself.
+      icon: b.iconUrls?.large || card?.iconUrls?.medium || '',
+      fallbackIcon: card?.iconUrls?.medium || '',
       // Classify by the badge name, not by whether the card resolved — an
       // unrecognised new card still belongs under the Card Mastery filter.
       isMastery, cardId: card?.id ?? null, earned: true
@@ -2605,7 +2609,7 @@ function buildBadgeEntries(badges) {
     .map(c => ({
       name: c.name, level: 0, maxLevel: 0, progress: 0, target: 0, atMax: false,
       masteryTotal: _masteryLevelsFor(c.name), masteryDone: 0,
-      icon: c.iconUrls?.medium || '',
+      icon: c.iconUrls?.medium || '', fallbackIcon: '',
       isMastery: true, cardId: c.id, earned: false
     }));
 
@@ -2666,6 +2670,17 @@ function _renderBadgeCards() {
   container.innerHTML = badgeTilesHTML(list);
 }
 
+// Badge icons whose asset is missing from Supercell's CDN: try the card art we
+// stashed in data-fallback, and failing that leave an empty slot the same size as
+// an icon so the grid stays aligned.
+window.badgeImgFallback = function(el) {
+  const alt = el.getAttribute('data-fallback');
+  if (alt) { el.removeAttribute('data-fallback'); el.src = alt; return; }
+  const d = document.createElement('div');
+  d.style.cssText = 'width:56px;height:56px;border-radius:8px;background:var(--surface)';
+  el.replaceWith(d);
+};
+
 function badgeTilesHTML(list) {
   if (!list.length) return '<div class="empty-msg">No badges match this filter.</div>';
   return `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
@@ -2686,7 +2701,7 @@ function badgeTilesHTML(list) {
       return `
         <div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:10px 6px;${b.earned ? '' : 'opacity:0.35;filter:grayscale(1)'}">
           ${b.icon
-            ? `<img src="${b.icon}" alt="${esc(b.name)}" style="width:56px;height:56px;object-fit:contain" loading="lazy" onerror="cardImgFallback(this)">`
+            ? `<img src="${b.icon}" ${b.fallbackIcon ? `data-fallback="${esc(b.fallbackIcon)}"` : ''} alt="${esc(b.name)}" style="width:56px;height:56px;object-fit:contain" loading="lazy" onerror="badgeImgFallback(this)">`
             : `<div style="width:56px;height:56px"></div>`}
           <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(humanizeBadgeName(b.name))}</span>
           ${levelLabel ? `<span style="font-size:9px;color:var(--accent);font-weight:600">${levelLabel}</span>` : ''}
