@@ -2501,11 +2501,24 @@ const MASTERY_NAME_OVERRIDES = {
 };
 const _normBadgeKey = s => String(s||'').toLowerCase().replace(/[^a-z0-9]/g, '');
 
-// The API reports maxLevel 10 for every mastery badge regardless of card, and every
-// completed mastery observed sits at level 10 — so 10 is the ladder the badge data
-// uses. It isn't shown as a "/10" denominator because the in-game mastery screen
-// counts tasks (6 or 9 per card) rather than these levels; it only scales the bar.
-const MASTERY_LADDER_LEVELS = 10;
+// Mastery is 3 levels per task set. Most cards have 2 task sets (6 levels); the
+// cards below have a 3rd set (9 levels). List from the Card Mastery wiki page,
+// verified against 447 live mastery badges: no 2-set card was ever seen above API
+// level 7 and no 3-set card above 10 — i.e. the API level runs 1..(levels+1), so
+// levels actually completed is level-1. The badge's own maxLevel is a useless
+// constant 10 for every card, and `target` never clears for 2-set cards, so neither
+// can be used to tell when a mastery is finished.
+const MASTERY_THIRD_SET = new Set([
+  'Arrows', 'Electro Spirit', 'Fire Spirit', 'Firecracker', 'Mortar', 'Royal Giant',
+  'Battle Healer', 'Battle Ram', 'Dart Goblin', 'Earthquake', 'Flying Machine',
+  'Hog Rider', 'Mini P.E.K.K.A', 'Musketeer', 'Valkyrie', 'Wizard',
+  'Baby Dragon', 'Balloon', 'Bowler', 'P.E.K.K.A', 'Wall Breakers',
+  'Electro Wizard', 'Graveyard', 'Mega Knight', 'Princess', 'The Log'
+].map(_normBadgeKey));
+
+function _masteryLevelsFor(cardName) {
+  return MASTERY_THIRD_SET.has(_normBadgeKey(cardName)) ? 9 : 6;
+}
 
 function _isMasteryBadge(badgeName) { return /^Mastery/.test(badgeName || ''); }
 
@@ -2539,17 +2552,23 @@ async function loadBadgesGrid() {
   // Earned badges, tagged with the card they belong to (if any)
   const earned = _badgesData.map(b => {
     const card = _masteryCardFor(b.name);
+    const isMastery = _isMasteryBadge(b.name);
+    // Null when a mastery's card can't be resolved (a new card we don't know yet),
+    // in which case we can't say how many levels it has.
+    const masteryTotal = isMastery && card ? _masteryLevelsFor(card.name) : null;
+    const masteryDone  = masteryTotal != null ? Math.max((b.level||0) - 1, 0) : 0;
     return {
       name: card ? card.name : b.name, // mastery badges read as the plain card name
       level: b.level||0, maxLevel: b.maxLevel||0,
       progress: b.progress||0, target: b.target||0,
-      // The API drops `target` once there is no further level to reach, which is
-      // the only trustworthy "fully complete" signal it gives for masteries.
-      atMax: b.target == null && (b.level||0) > 0,
+      masteryTotal, masteryDone,
+      atMax: isMastery
+        ? (masteryTotal != null && masteryDone >= masteryTotal)
+        : (b.target == null && (b.level||0) > 0),
       icon: b.iconUrls?.large || '',
       // Classify by the badge name, not by whether the card resolved — an
       // unrecognised new card still belongs under the Card Mastery filter.
-      isMastery: _isMasteryBadge(b.name), cardId: card?.id ?? null, earned: true
+      isMastery, cardId: card?.id ?? null, earned: true
     };
   });
 
@@ -2560,6 +2579,7 @@ async function loadBadgesGrid() {
     .filter(c => !masteredIds.has(c.id))
     .map(c => ({
       name: c.name, level: 0, maxLevel: 0, progress: 0, target: 0, atMax: false,
+      masteryTotal: _masteryLevelsFor(c.name), masteryDone: 0,
       icon: c.iconUrls?.medium || '',
       isMastery: true, cardId: c.id, earned: false
     }));
@@ -2601,15 +2621,16 @@ function _renderBadgeCards() {
 
   container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
     ${list.map(b => {
-      // Masteries climb a 10-level ladder in the API (every completed one observed
-      // sits at level 10), so the bar tracks position along that ladder. It can't
-      // use progress/target the way other badges do — for masteries those are just
-      // level and level+1, so the bar would sit near-full at every level.
+      // Masteries show levels completed out of the card's real total (6 or 9),
+      // matching the in-game mastery screen. Other badges keep the API's own
+      // progress/target, which are genuine counts for them.
       const pct = b.isMastery
-        ? Math.min(Math.round((b.level||0) / MASTERY_LADDER_LEVELS * 100), 100)
+        ? (b.masteryTotal ? Math.min(Math.round(b.masteryDone / b.masteryTotal * 100), 100) : 0)
         : (b.target ? Math.min(Math.round(b.progress/b.target*100), 100) : (b.level > 0 ? 100 : 0));
       const levelLabel = b.isMastery
-        ? (b.atMax ? 'MAX' : (b.level > 0 ? `Lvl ${b.level}` : ''))
+        ? (b.atMax ? 'MAX'
+          : b.earned ? (b.masteryTotal ? `Lvl ${b.masteryDone}/${b.masteryTotal}` : `Lvl ${b.level}`)
+          : '')
         : (b.level > 0 ? `Lvl ${b.level}${b.maxLevel ? '/' + b.maxLevel : ''}` : '');
       // Bar for any mastery still climbing, and for other badges with real progress.
       const showBar = b.isMastery ? !b.atMax : !!b.target;
