@@ -1948,14 +1948,14 @@ function renderOverview(data, battles) {
 let _cardData = [];
 let _cardFilter = 'all';
 let _cardRarity = 'all';
-let _cardSort   = 'level-desc';
+let _cardSort   = 'closest-max';
 let _cardSearch = '';
 
 function renderCardsPane(data) {
   _cardData  = data.cards || [];
   _cardFilter = 'all';
   _cardRarity = 'all';
-  _cardSort   = 'level-desc';
+  _cardSort   = 'closest-max';
   _cardSearch = '';
   const totalCards = allCards.length || _cardData.length;
   return `
@@ -1974,6 +1974,7 @@ function renderCardsPane(data) {
       </select>
       <select id="card-sort-select" onchange="setCardFilter(this.value,'sort')"
         style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
+        <option value="closest-max">Closest to Max</option>
         <option value="level-desc">Level ↓</option>
         <option value="level-asc">Level ↑</option>
         <option value="rarity">Rarity</option>
@@ -2043,6 +2044,12 @@ function renderCards() {
   if (_cardFilter === 'canmax')    cards = cards.filter(c => c.canMax);
 
   // Sort
+  // "Closest to Max": already-maxed cards first, then everything else in the same
+  // order the Upgradable tab uses — fewest rarity-weighted cards still needed to
+  // reach level 16. Cards with enough cards banked to max right now score 0, so
+  // they land directly behind the maxed ones.
+  if (_cardSort === 'closest-max') cards.sort((a,b) =>
+    (b.isMaxed - a.isMaxed) || (a.normalizedPotential - b.normalizedPotential) || a.name.localeCompare(b.name));
   if (_cardSort === 'level-desc') cards.sort((a,b) => b.disp - a.disp);
   if (_cardSort === 'level-asc')  cards.sort((a,b) => a.disp - b.disp);
   if (_cardSort === 'rarity')     cards.sort((a,b) => (RARITY_ORDER[b.r]||0) - (RARITY_ORDER[a.r]||0) || b.disp - a.disp);
@@ -2530,6 +2537,9 @@ async function loadBadgesGrid() {
       name: card ? card.name : b.name, // mastery badges read as the plain card name
       level: b.level||0, maxLevel: b.maxLevel||0,
       progress: b.progress||0, target: b.target||0,
+      // The API drops `target` once there is no further level to reach, which is
+      // the only trustworthy "fully complete" signal it gives for masteries.
+      atMax: b.target == null && (b.level||0) > 0,
       icon: b.iconUrls?.large || '',
       // Classify by the badge name, not by whether the card resolved — an
       // unrecognised new card still belongs under the Card Mastery filter.
@@ -2543,7 +2553,7 @@ async function loadBadgesGrid() {
   const locked = allCards
     .filter(c => !masteredIds.has(c.id))
     .map(c => ({
-      name: c.name, level: 0, maxLevel: 0, progress: 0, target: 0,
+      name: c.name, level: 0, maxLevel: 0, progress: 0, target: 0, atMax: false,
       icon: c.iconUrls?.medium || '',
       isMastery: true, cardId: c.id, earned: false
     }));
@@ -2592,8 +2602,13 @@ function _renderBadgeCards() {
             ? `<img src="${b.icon}" alt="${esc(b.name)}" style="width:56px;height:56px;object-fit:contain" loading="lazy" onerror="cardImgFallback(this)">`
             : `<div style="width:56px;height:56px"></div>`}
           <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(humanizeBadgeName(b.name))}</span>
-          ${b.level > 0 ? `<span style="font-size:9px;color:var(--accent);font-weight:600">Lvl ${b.level}${b.maxLevel ? '/' + b.maxLevel : ''}</span>` : ''}
-          ${b.target ? `<div class="progress-wrap" style="width:100%;margin-top:2px"><div class="progress-bar" style="width:${pct}%;background:var(--accent)"></div></div>` : ''}
+          ${b.level > 0 ? `<span style="font-size:9px;color:var(--accent);font-weight:600">Lvl ${b.level}${
+            // Masteries report maxLevel 10 for every card regardless of how many
+            // mastery steps that card actually has, so showing "/10" would be wrong.
+            // Other badges have genuine per-badge maxLevels worth showing.
+            b.isMastery ? (b.atMax ? ' · MAX' : '') : (b.maxLevel ? '/' + b.maxLevel : '')
+          }</span>` : ''}
+          ${!b.isMastery && b.target ? `<div class="progress-wrap" style="width:100%;margin-top:2px"><div class="progress-bar" style="width:${pct}%;background:var(--accent)"></div></div>` : ''}
         </div>`;
     }).join('')}
   </div>`;
