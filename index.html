@@ -900,7 +900,7 @@ function closeFriendModal() {
   _friendData = null;
 }
 // Friend modal filter state (self-contained so it never touches the main profile)
-let _fCardStatus = 'all', _fCardRarity = 'all', _fCardSort = 'level-desc', _fCardSearch = '';
+let _fCardStatus = 'all', _fCardRarity = 'all', _fCardSort = 'closest-max', _fCardSearch = '';
 let _fEvoFilter = 'all', _fHeroFilter = 'all';
 let _fBadgeFilter = 'all', _fBadgeEntries = [];
 
@@ -910,7 +910,7 @@ function friendTab(name) {
     b.classList.toggle('active', b.dataset.ftab === name));
   const pane = document.getElementById('friend-pane');
   if (name === 'overview')    pane.innerHTML = renderOverview(d);
-  if (name === 'cards')     { _fCardStatus='all'; _fCardRarity='all'; _fCardSort='level-desc'; _fCardSearch=''; pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
+  if (name === 'cards')     { _fCardStatus='all'; _fCardRarity='all'; _fCardSort='closest-max'; _fCardSearch=''; pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
   if (name === 'evolutions'){ _fEvoFilter='all';  pane.innerHTML = friendCollectShell('evolution'); friendRenderCollect('evolution'); }
   if (name === 'heroes')    { _fHeroFilter='all'; pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
   if (name === 'towerTroops') pane.innerHTML = friendTroopHTML(d);
@@ -953,7 +953,7 @@ function friendCardsShell(data) {
         <option value="all">All Rarities</option><option value="common">Common</option><option value="rare">Rare</option><option value="epic">Epic</option><option value="legendary">Legendary</option><option value="champion">Champion</option>
       </select>
       <select onchange="friendSetCard(this.value,'sort')" style="${sel}">
-        <option value="level-desc">Level ↓</option><option value="level-asc">Level ↑</option><option value="rarity">Rarity</option>
+        <option value="closest-max">Closest to Max</option><option value="level-desc">Level ↓</option><option value="level-asc">Level ↑</option><option value="rarity">Rarity</option>
       </select>
     </div>
     <div class="filter-bar" id="f-card-status">
@@ -996,6 +996,10 @@ function friendRenderCards() {
   if (_fCardStatus === 'maxed') cards = cards.filter(c => c.isMaxed);
   if (_fCardStatus === 'upgradable') cards = cards.filter(c => c.isUpgradable);
   if (_fCardStatus === 'canmax') cards = cards.filter(c => c.canMax);
+  // Same "Closest to Max" order as the main Cards tab: maxed first, then fewest
+  // rarity-weighted cards still needed to reach level 16.
+  if (_fCardSort === 'closest-max') cards.sort((a,b) =>
+    (b.isMaxed - a.isMaxed) || (a.normalizedPotential - b.normalizedPotential) || a.name.localeCompare(b.name));
   if (_fCardSort === 'level-desc') cards.sort((a,b) => b.disp - a.disp);
   if (_fCardSort === 'level-asc')  cards.sort((a,b) => a.disp - b.disp);
   if (_fCardSort === 'rarity')     cards.sort((a,b) => (RARITY_ORDER[b.r]||0)-(RARITY_ORDER[a.r]||0) || b.disp - a.disp);
