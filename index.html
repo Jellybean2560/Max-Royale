@@ -492,6 +492,86 @@ function cardsNeededToMax(rarity, dispLevel, ownedCount) {
   return needed; // 0 = can max right now
 }
 
+// ── Shared card list pipeline ──
+// The main Cards tab and the friend Cards pane show the same collection with the
+// same filters and sorts, so the option lists and the decorate/filter/sort logic
+// live here. Each pane keeps its own state and passes it in; adding a sort or a
+// filter here reaches both panes at once.
+const RARITY_ORDER = { common:0, rare:1, epic:2, legendary:3, champion:4 };
+
+const CARD_SORT_OPTIONS = [
+  ['closest-max', 'Closest to Max'], ['level-desc', 'Level ↓'],
+  ['level-asc',   'Level ↑'],       ['rarity',     'Rarity']
+];
+const CARD_RARITY_OPTIONS = [
+  ['all','All Rarities'], ['common','Common'], ['rare','Rare'],
+  ['epic','Epic'], ['legendary','Legendary'], ['champion','Champion']
+];
+const DEFAULT_CARD_SORT = CARD_SORT_OPTIONS[0][0];
+
+const _optionsHTML = opts => opts.map(([v,label]) => `<option value="${v}">${label}</option>`).join('');
+const cardSortOptionsHTML   = () => _optionsHTML(CARD_SORT_OPTIONS);
+const cardRarityOptionsHTML = () => _optionsHTML(CARD_RARITY_OPTIONS);
+
+const CARD_STATUS_FILTERS = {
+  maxed:      c => c.isMaxed,
+  upgradable: c => c.isUpgradable,
+  locked:     c => !c.isMaxed && !c.isUpgradable,
+  canmax:     c => c.canMax
+};
+
+const CARD_SORTS = {
+  // "Closest to Max": already-maxed cards first, then everything else in the same
+  // order the Upgradable filter uses — fewest rarity-weighted cards still needed
+  // to reach level 16. Cards with enough banked to max right now score 0, so they
+  // land directly behind the maxed ones.
+  'closest-max': (a,b) => (b.isMaxed - a.isMaxed) || (a.normalizedPotential - b.normalizedPotential) || a.name.localeCompare(b.name),
+  'level-desc':  (a,b) => b.disp - a.disp,
+  'level-asc':   (a,b) => a.disp - b.disp,
+  'rarity':      (a,b) => (RARITY_ORDER[b.r]||0) - (RARITY_ORDER[a.r]||0) || b.disp - a.disp
+};
+
+// Adds the derived fields the card rows and every sort need: display level, maxed
+// /upgradable state, and normalizedPotential (cards still needed to reach level 16,
+// weighted so rarities are comparable).
+function decorateCard(c) {
+  const r = (c.rarity||'common').toLowerCase();
+  const disp = toDisplayLevel(r, c.level);
+  const steps = LEVEL_DATA[r] || [];
+  const idx = disp - (MIN_LEVEL[r] || 1);
+  const isMaxed = disp >= MAX_LEVEL || idx >= steps.length;
+  const nextStep = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
+  const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
+  const totalCardsNeeded = isMaxed ? 0 : cardsNeededToMax(r, disp, c.count||0);
+  return { ...c, r, disp, isMaxed, isUpgradable, nextStep, totalCardsNeeded,
+           canMax: !isMaxed && totalCardsNeeded === 0,
+           normalizedPotential: totalCardsNeeded * (RARITY_WEIGHT[r] || 1) };
+}
+
+// state: { rarity, search, status, sort } — the four controls both panes expose.
+function prepareCardList(rawCards, state) {
+  let cards = (rawCards||[]).map(decorateCard);
+  if (state.rarity && state.rarity !== 'all') cards = cards.filter(c => c.r === state.rarity);
+  if (state.search) cards = cards.filter(c => (c.name||'').toLowerCase().includes(state.search));
+  const statusFilter = CARD_STATUS_FILTERS[state.status];
+  if (statusFilter) cards = cards.filter(statusFilter);
+  const sort = CARD_SORTS[state.sort];
+  if (sort) cards.sort(sort);
+  // The Upgradable filter always orders by normalized potential whatever the sort
+  // says — it answers "what should I upgrade next", not "let me browse".
+  if (state.status === 'upgradable') cards.sort((a,b) => a.normalizedPotential - b.normalizedPotential);
+  return cards;
+}
+
+// Builds the maxStarLevel lookup from the /cards catalog so rows show the right
+// number of empty stars (e.g. Poison has maxStarLevel 1, not 3).
+function catalogStarMaxMap() {
+  const m = {};
+  allCards.forEach(ac => { if (ac.maxStarLevel) m[ac.id] = ac.maxStarLevel; });
+  return m;
+}
+
+
 function computeUpgrade(rarity, currentLevel, currentCount, targetLevel) {
   const data = LEVEL_DATA[rarity];
   const minL = MIN_LEVEL[rarity];
@@ -900,7 +980,7 @@ function closeFriendModal() {
   _friendData = null;
 }
 // Friend modal filter state (self-contained so it never touches the main profile)
-let _fCardStatus = 'all', _fCardRarity = 'all', _fCardSort = 'closest-max', _fCardSearch = '';
+let _fCardStatus = 'all', _fCardRarity = 'all', _fCardSort = DEFAULT_CARD_SORT, _fCardSearch = '';
 let _fEvoFilter = 'all', _fHeroFilter = 'all';
 let _fBadgeFilter = 'all', _fBadgeEntries = [];
 
@@ -910,7 +990,7 @@ function friendTab(name) {
     b.classList.toggle('active', b.dataset.ftab === name));
   const pane = document.getElementById('friend-pane');
   if (name === 'overview')    pane.innerHTML = renderOverview(d);
-  if (name === 'cards')     { _fCardStatus='all'; _fCardRarity='all'; _fCardSort='closest-max'; _fCardSearch=''; pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
+  if (name === 'cards')     { _fCardStatus='all'; _fCardRarity='all'; _fCardSort=DEFAULT_CARD_SORT; _fCardSearch=''; pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
   if (name === 'evolutions'){ _fEvoFilter='all';  pane.innerHTML = friendCollectShell('evolution'); friendRenderCollect('evolution'); }
   if (name === 'heroes')    { _fHeroFilter='all'; pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
   if (name === 'towerTroops') pane.innerHTML = friendTroopHTML(d);
@@ -950,10 +1030,10 @@ function friendCardsShell(data) {
     <div style="font-size:13px;color:var(--muted);margin-bottom:12px">${(data.cards||[]).length} / ${total} cards unlocked</div>
     <div style="display:flex;gap:8px;margin-bottom:10px">
       <select onchange="friendSetCard(this.value,'rarity')" style="${sel}">
-        <option value="all">All Rarities</option><option value="common">Common</option><option value="rare">Rare</option><option value="epic">Epic</option><option value="legendary">Legendary</option><option value="champion">Champion</option>
+        ${cardRarityOptionsHTML()}
       </select>
       <select onchange="friendSetCard(this.value,'sort')" style="${sel}">
-        <option value="closest-max">Closest to Max</option><option value="level-desc">Level ↓</option><option value="level-asc">Level ↑</option><option value="rarity">Rarity</option>
+        ${cardSortOptionsHTML()}
       </select>
     </div>
     <div class="filter-bar" id="f-card-status">
@@ -978,32 +1058,9 @@ window.friendSetCard = function(val, type) {
 function friendRenderCards() {
   const grid = document.getElementById('f-cards-grid');
   if (!grid || !_friendData) return;
-  const catalogStarMax = {}; allCards.forEach(ac => { if (ac.maxStarLevel) catalogStarMax[ac.id] = ac.maxStarLevel; });
-  let cards = (_friendData.cards||[]).map(c => {
-    const r = (c.rarity||'common').toLowerCase();
-    const disp = toDisplayLevel(r, c.level);
-    const steps = LEVEL_DATA[r] || [], minL = MIN_LEVEL[r] || 1, idx = disp - minL;
-    const isMaxed = disp >= MAX_LEVEL || idx >= steps.length;
-    const nextStep = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
-    const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
-    const canMax              = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
-    const totalCardsNeeded    = isMaxed ? 0 : cardsNeededToMax(r, disp, c.count||0);
-    const normalizedPotential = totalCardsNeeded * (RARITY_WEIGHT[r] || 1);
-    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, totalCardsNeeded, normalizedPotential };
-  });
-  if (_fCardRarity !== 'all') cards = cards.filter(c => c.r === _fCardRarity);
-  if (_fCardSearch) cards = cards.filter(c => (c.name||'').toLowerCase().includes(_fCardSearch));
-  if (_fCardStatus === 'maxed') cards = cards.filter(c => c.isMaxed);
-  if (_fCardStatus === 'upgradable') cards = cards.filter(c => c.isUpgradable);
-  if (_fCardStatus === 'canmax') cards = cards.filter(c => c.canMax);
-  // Same "Closest to Max" order as the main Cards tab: maxed first, then fewest
-  // rarity-weighted cards still needed to reach level 16.
-  if (_fCardSort === 'closest-max') cards.sort((a,b) =>
-    (b.isMaxed - a.isMaxed) || (a.normalizedPotential - b.normalizedPotential) || a.name.localeCompare(b.name));
-  if (_fCardSort === 'level-desc') cards.sort((a,b) => b.disp - a.disp);
-  if (_fCardSort === 'level-asc')  cards.sort((a,b) => a.disp - b.disp);
-  if (_fCardSort === 'rarity')     cards.sort((a,b) => (RARITY_ORDER[b.r]||0)-(RARITY_ORDER[a.r]||0) || b.disp - a.disp);
-  if (_fCardStatus === 'upgradable') cards.sort((a,b) => a.normalizedPotential - b.normalizedPotential);
+  const catalogStarMax = catalogStarMaxMap();
+  const cards = prepareCardList(_friendData.cards,
+    { rarity:_fCardRarity, search:_fCardSearch, status:_fCardStatus, sort:_fCardSort });
   if (!cards.length) { grid.innerHTML = '<div class="empty-msg">No cards match this filter.</div>'; return; }
   const rarityColor = { common:'var(--text)', rare:'var(--blue)', epic:'var(--purple)', legendary:'var(--accent)', champion:'#e74c3c' };
   grid.innerHTML = cards.map(c => {
@@ -1979,14 +2036,14 @@ function renderOverview(data, battles) {
 let _cardData = [];
 let _cardFilter = 'all';
 let _cardRarity = 'all';
-let _cardSort   = 'closest-max';
+let _cardSort   = DEFAULT_CARD_SORT;
 let _cardSearch = '';
 
 function renderCardsPane(data) {
   _cardData  = data.cards || [];
   _cardFilter = 'all';
   _cardRarity = 'all';
-  _cardSort   = 'closest-max';
+  _cardSort   = DEFAULT_CARD_SORT;
   _cardSearch = '';
   const totalCards = allCards.length || _cardData.length;
   return `
@@ -1996,19 +2053,11 @@ function renderCardsPane(data) {
     <div style="display:flex;gap:8px;margin-bottom:10px">
       <select id="card-rarity-select" onchange="setCardFilter(this.value,'rarity')"
         style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
-        <option value="all">All Rarities</option>
-        <option value="common">Common</option>
-        <option value="rare">Rare</option>
-        <option value="epic">Epic</option>
-        <option value="legendary">Legendary</option>
-        <option value="champion">Champion</option>
+        ${cardRarityOptionsHTML()}
       </select>
       <select id="card-sort-select" onchange="setCardFilter(this.value,'sort')"
         style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
-        <option value="closest-max">Closest to Max</option>
-        <option value="level-desc">Level ↓</option>
-        <option value="level-asc">Level ↑</option>
-        <option value="rarity">Rarity</option>
+        ${cardSortOptionsHTML()}
       </select>
     </div>
     <div class="filter-bar" id="card-status-filter">
@@ -2039,53 +2088,13 @@ window.setCardSearch = function(val) {
   renderCards();
 };
 
-const RARITY_ORDER = { common:0, rare:1, epic:2, legendary:3, champion:4 };
-
 function renderCards() {
   const grid = document.getElementById('cards-grid');
   if (!grid) return;
 
-  // Build maxStarLevel lookup from the /cards catalog so we show the right number
-  // of empty stars (e.g. Poison has maxStarLevel 1, not 3)
-  const catalogStarMax = {};
-  allCards.forEach(ac => { if (ac.maxStarLevel) catalogStarMax[ac.id] = ac.maxStarLevel; });
-
-  let cards = [..._cardData];
-  if (_cardRarity !== 'all') cards = cards.filter(c => (c.rarity||'').toLowerCase() === _cardRarity);
-  if (_cardSearch) cards = cards.filter(c => (c.name||'').toLowerCase().includes(_cardSearch));
-
-  cards = cards.map(c => {
-    const r = (c.rarity||'common').toLowerCase();
-    const disp = toDisplayLevel(r, c.level);
-    const steps = LEVEL_DATA[r] || [];
-    const minL  = MIN_LEVEL[r] || 1;
-    const idx   = disp - minL;
-    const isMaxed     = disp >= MAX_LEVEL || idx >= steps.length;
-    const nextStep    = (!isMaxed && idx >= 0 && idx < steps.length) ? steps[idx] : null;
-    const isUpgradable = !isMaxed && !!nextStep && (c.count||0) >= nextStep.cards;
-    const canMax             = !isMaxed && cardsNeededToMax(r, disp, c.count||0) === 0;
-    const totalCardsNeeded   = isMaxed ? 0 : cardsNeededToMax(r, disp, c.count||0);
-    const normalizedPotential = totalCardsNeeded * (RARITY_WEIGHT[r] || 1);
-    return { ...c, r, disp, isMaxed, isUpgradable, canMax, nextStep, totalCardsNeeded, normalizedPotential };
-  });
-
-  if (_cardFilter === 'maxed')     cards = cards.filter(c => c.isMaxed);
-  if (_cardFilter === 'upgradable') cards = cards.filter(c => c.isUpgradable);
-  if (_cardFilter === 'locked')    cards = cards.filter(c => !c.isMaxed && !c.isUpgradable);
-  if (_cardFilter === 'canmax')    cards = cards.filter(c => c.canMax);
-
-  // Sort
-  // "Closest to Max": already-maxed cards first, then everything else in the same
-  // order the Upgradable tab uses — fewest rarity-weighted cards still needed to
-  // reach level 16. Cards with enough cards banked to max right now score 0, so
-  // they land directly behind the maxed ones.
-  if (_cardSort === 'closest-max') cards.sort((a,b) =>
-    (b.isMaxed - a.isMaxed) || (a.normalizedPotential - b.normalizedPotential) || a.name.localeCompare(b.name));
-  if (_cardSort === 'level-desc') cards.sort((a,b) => b.disp - a.disp);
-  if (_cardSort === 'level-asc')  cards.sort((a,b) => a.disp - b.disp);
-  if (_cardSort === 'rarity')     cards.sort((a,b) => (RARITY_ORDER[b.r]||0) - (RARITY_ORDER[a.r]||0) || b.disp - a.disp);
-  // Upgradable tab always sorts by normalized potential (fewest common-equivalent cards needed first)
-  if (_cardFilter === 'upgradable') cards.sort((a,b) => a.normalizedPotential - b.normalizedPotential);
+  const catalogStarMax = catalogStarMaxMap();
+  const cards = prepareCardList(_cardData,
+    { rarity:_cardRarity, search:_cardSearch, status:_cardFilter, sort:_cardSort });
 
   if (!cards.length) {
     grid.innerHTML = '<div class="empty-msg">No cards match this filter.</div>';
