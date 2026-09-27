@@ -690,24 +690,66 @@ function _mostRecentMonthlyCacheCutoff() {
   return _firstTuesdayOfMonth(y, (prevMonth + 12) % 12);
 }
 
+const CARDS_CACHE_KEY = 'cr_cards_cache_v7';
+
+// What the catalog looks like as far as the UI cares: which cards exist, and which
+// have hero / evolution art published. Comparing this tells us whether a background
+// refresh actually changed anything worth re-rendering for.
+function _cardsSignature(items) {
+  return items.map(c => `${c.id}${c.iconUrls?.heroMedium ? 'h' : ''}${c.iconUrls?.evolutionMedium ? 'e' : ''}`).join(',');
+}
+
+function _storeCards(items) {
+  allCards = items.sort((a,b) => a.name.localeCompare(b.name));
+  try { localStorage.setItem(CARDS_CACHE_KEY, JSON.stringify({ items: allCards, savedAt: Date.now() })); } catch(e) {}
+}
+
 async function maybeLoadCards() {
   if (allCards.length) return;
   // Try the cached card list first (zero network)
-  const cacheKey = 'cr_cards_cache_v6';
   try {
-    const cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+    const cached = JSON.parse(localStorage.getItem(CARDS_CACHE_KEY) || 'null');
     if (cached && Array.isArray(cached.items) && cached.items.length && cached.savedAt >= _mostRecentMonthlyCacheCutoff()) {
       allCards = cached.items;
+      revalidateCards(); // may be mid-season stale — see below
       return;
     }
   } catch(e) {}
   try {
-    const data = await apiGet('/cards');
-    allCards = (data.items || []).sort((a,b) => a.name.localeCompare(b.name));
-    try { localStorage.setItem(cacheKey, JSON.stringify({ items: allCards, savedAt: Date.now() })); } catch(e) {}
+    _storeCards((await apiGet('/cards')).items || []);
   } catch(e) {
     // silent — card picker is optional
   }
+}
+
+// The monthly cutoff assumes the catalog only changes on Clash Royale's balance
+// Tuesday, but new cards, heroes and evolutions ship mid-season too — a card added
+// on the 10th would otherwise stay invisible until the next first Tuesday, showing
+// "122 / 122 unlocked" when the game says 123. So a cache hit is served instantly
+// (still zero-latency) and refreshed in the background; if the catalog really did
+// change, re-render the profile so the counts and new tabs pick it up.
+let _cardsRevalidating = false;
+async function revalidateCards() {
+  if (_cardsRevalidating) return;
+  _cardsRevalidating = true;
+  try {
+    const items = (await apiGet('/cards')).items || [];
+    if (!items.length) return;
+    const before = _cardsSignature(allCards);
+    _storeCards(items);
+    if (_cardsSignature(allCards) !== before) redrawForCatalogChange();
+  } catch(e) {
+    // Offline or blocked — the cached catalog is still good enough to render.
+  }
+}
+
+// Re-render the open profile in place, keeping the user on the tab they were on.
+function redrawForCatalogChange() {
+  const profile = window._currentProfile;
+  if (!profile || !document.getElementById('tab-overview')) return;
+  const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab;
+  renderProfile(profile.data, profile.battles);
+  if (activeTab) switchTab(activeTab);
 }
 
 function onCardSearch(query) {

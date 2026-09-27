@@ -98,7 +98,9 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | `copyDeckLink(names, btn)` | Opens the deck via Supercell's `link.clashroyale.com` deep link; clipboard fallback |
 | `renderUpgradePlanner(data, battles)` | "Suggested upgrades", scoped by account or deck |
 | `renderDeckUpgradeScreen()` / `buildDeckUpSuggestions()` | Deck Upgrade screen |
-| `maybeLoadCards()` | Fetches `/cards` once into `allCards`, cached in `localStorage` with monthly expiry |
+| `maybeLoadCards()` | Fetches `/cards` once into `allCards`, cached in `localStorage` with monthly expiry; a cache hit is revalidated in the background |
+| `revalidateCards()` | Background `/cards` refresh; redraws the profile only if the catalog actually changed |
+| `redrawForCatalogChange()` | Re-renders the open profile in place, keeping the active tab |
 | `_firstTuesdayOfMonth()` / `_mostRecentMonthlyCacheCutoff()` | Card-cache expiry timed to CR's monthly update |
 | `loadClan()` / `renderClan(data)` / `renderMembers()` / `setClanSort(by)` | Clan screen |
 | `renderFriends()` / `addFriend()` / `viewFriend(tag)` / `friendTab(name)` | Friends screen |
@@ -141,7 +143,7 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | `cr_friends` | Saved friends (max 10) |
 | `cr_profile_cache` | Last profile + battles, for instant render on open |
 | `cr_clan_cache` | Last clan lookup |
-| `cr_cards_cache_v6` | `{ items, savedAt }` card catalog, monthly expiry |
+| `cr_cards_cache_v7` | `{ items, savedAt }` card catalog, monthly expiry + background revalidation |
 | `cr_deck_history_v1` | Per-tag deck W/L/D history, deduped by `battleTime` |
 
 ---
@@ -158,15 +160,16 @@ The API returns relative levels (e.g. legendary starts at 1 in the API). `toDisp
 ## Card mastery badges (gotcha)
 Badges in `data.badges` are named `Mastery<InternalName>` using **Supercell's internal card names**, which for 27 cards differ from the display name — `MasteryAxeMan` is Executioner, `MasteryRageBarbarian` is Lumberjack, `MasteryZapMachine` is Sparky. `MASTERY_NAME_OVERRIDES` maps every current mismatch; unlisted names fall back to a normalized display-name match, so new cards keep working if their internal name matches.
 
-The API **only returns masteries a player has already started** — there are no level-0 entries — so locked masteries are synthesised from the `/cards` catalog. Verified Aug 2026 across four accounts: 122 mastery badges map 1:1 onto all 122 catalog cards.
+The API **only returns masteries a player has already started** — there are no level-0 entries — so locked masteries are synthesised from the `/cards` catalog. Verified Aug 2026 across four accounts: 122 mastery badges mapped 1:1 onto all 122 catalog cards then; a new card is only covered once it has a mastery badge, and falls back to a normalized display-name match.
 
 ---
 
 ## Known limitations / things to be aware of
 - The Clash Royale API only returns the last **~25–30 battles**. Deck stats work around this by accumulating history in `localStorage` (not retroactive — it only counts battles seen since the feature shipped).
 - Deck history is per-browser/per-device and never leaves the device, so different users of the deployed app never see each other's stats.
-- New cards often reach the API **before their icon art does** (Ronin, Elite Barbarians evo). Missing icons are expected for a few weeks after a release; the Cards/Decks tabs fall back gracefully, but the Evolutions tab filters on `iconUrls.evolutionMedium` and so hides an evolution entirely until Supercell publishes it.
-- `/cards` returns `items` (122 deck cards) **and** `supportItems` (4 tower troops). `allCards` holds `items` only.
+- New cards often reach the API **before their icon art does** (Ronin, Elite Barbarians evo). Missing icons are expected for a few weeks after a release; the Cards/Decks tabs fall back gracefully, and mastery badges fall back to the card's catalog art, but the Evolutions tab filters on `iconUrls.evolutionMedium` and so hides an evolution entirely until Supercell publishes it.
+- The card catalog cache expires on the first Tuesday of the month, matching CR's balance update — but **new cards, heroes and evolutions also ship mid-season**, which used to leave the app showing a stale count (e.g. `122 / 122` after Minion Giant made it 123) for up to five weeks. `maybeLoadCards()` now serves the cache instantly *and* revalidates in the background, redrawing only when the catalog really changed. Don't reintroduce a cache-only path.
+- `/cards` returns `items` (123 deck cards as of Sept 2026) **and** `supportItems` (4 tower troops). `allCards` holds `items` only.
 - `upcomingchests` exists in the API spec but was removed from the game — don't implement it.
 - No real-time meta deck data is available from any public API.
 
@@ -207,3 +210,5 @@ It is **still present in git history** and was served publicly from GitHub Pages
 11. Persisted deck W/L history in `localStorage` to beat the ~25-battle API window, with manual delete
 12. Auto-expire the card catalog cache on the first Tuesday of each month
 13. Added the Badges tab, with card-mastery filtering and locked-mastery display
+14. Shared the card filter/sort pipeline between the main and friend card panes
+15. Revalidated the card catalog in the background so mid-season cards appear without waiting for the monthly cutoff
