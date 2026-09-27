@@ -648,6 +648,11 @@ function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => {
     if (b.dataset.tab === name) b.classList.add('active');
   });
+  // The Cards grid is built here rather than by renderCardsPane(), which only emits
+  // the shell. Any path that shows the tab must go through switchTab() — a stray
+  // document click listener used to do this, which meant a programmatic tab switch
+  // (auto-refresh restoring the active tab) left the grid empty.
+  if (name === 'cards') renderCards();
   if (name === 'evolutions') loadEvolutionsGrid();
   if (name === 'heroes') loadHeroesGrid();
   if (name === 'towerTroops') loadTowerTroopsGrid();
@@ -3110,15 +3115,6 @@ window.copyDeckLink = function(names, btn) {
   }
 };
 
-
-// tab pane show — lazy render cards
-document.addEventListener('click', e => {
-  const btn = e.target.closest('.tab-btn');
-  if (!btn) return;
-  if (btn.dataset.tab === 'cards') {
-    setTimeout(renderCards, 0);
-  }
-});
 
 // ═══════════════════════════════════════════════
 //  CLAN LOOKUP
