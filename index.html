@@ -699,6 +699,14 @@ function _cardsSignature(items) {
   return items.map(c => `${c.id}${c.iconUrls?.heroMedium ? 'h' : ''}${c.iconUrls?.evolutionMedium ? 'e' : ''}`).join(',');
 }
 
+// Every cache-key bump leaves the previous catalog behind in localStorage. Drop
+// them so old versions don't sit there eating quota forever.
+try {
+  Object.keys(localStorage)
+    .filter(k => k.startsWith('cr_cards_cache_') && k !== CARDS_CACHE_KEY)
+    .forEach(k => localStorage.removeItem(k));
+} catch(e) {}
+
 function _storeCards(items) {
   allCards = items.sort((a,b) => a.name.localeCompare(b.name));
   try { localStorage.setItem(CARDS_CACHE_KEY, JSON.stringify({ items: allCards, savedAt: Date.now() })); } catch(e) {}
