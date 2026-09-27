@@ -62,7 +62,7 @@ There is no `screen-home`; the app opens on the Player screen.
 | Tab          | ID                 | Data source |
 |--------------|--------------------|-------------|
 | Overview     | `tab-overview`     | `/players/{tag}` — card insights, battle stats, donations, collection level |
-| Cards        | `tab-cards`        | `/players/{tag}` + `/cards` — full collection with filters (status, rarity, sort) |
+| Cards        | `tab-cards`        | `/players/{tag}` + `/cards` — full collection with filters (status, rarity, sort); cards not yet unlocked are synthesised from the catalog and shown greyed out at the bottom |
 | Evolutions   | `tab-evolutions`   | `/cards` catalog filtered by `iconUrls.evolutionMedium`, matched against player cards |
 | Heroes       | `tab-heroes`       | `/cards` catalog filtered by `iconUrls.heroMedium` |
 | Tower Troops | `tab-towerTroops`  | `data.supportCards` from `/players/{tag}` |
@@ -216,3 +216,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 14. Shared the card filter/sort pipeline between the main and friend card panes
 15. Revalidated the card catalog in the background so mid-season cards appear without waiting for the monthly cutoff
 16. Auto-refreshed the profile on launch/foreground when running as an installed app
+17. Showed not-yet-unlocked cards greyed out at the bottom of the Cards list, and measured Card Insights against the whole catalog

@@ -548,15 +548,46 @@ function decorateCard(c) {
            normalizedPotential: totalCardsNeeded * (RARITY_WEIGHT[r] || 1) };
 }
 
+const RARITY_COLOR = { common:'var(--text)', rare:'var(--blue)', epic:'var(--purple)', legendary:'var(--accent)', champion:'#e74c3c' };
+
+// Cards the player hasn't unlocked aren't in /players/{tag} at all, so synthesise
+// them from the catalog. Treated as level-1 with 0 copies purely so the sorts have
+// real numbers to work with — they're pinned to the bottom of the list regardless.
+function unownedCardEntries(rawCards) {
+  const ownedIds = new Set((rawCards||[]).map(c => c.id));
+  return allCards.filter(c => !ownedIds.has(c.id))
+    .map(c => ({ ...decorateCard({ ...c, level: 1, count: 0 }), owned: false }));
+}
+
+// Greyed-out row for a card the player doesn't have yet, matching how the
+// Evolutions and Heroes tabs show locked items.
+function unownedCardRowHTML(c) {
+  return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px;opacity:0.35;filter:grayscale(1)">
+    <div class="flex-between">
+      <div style="display:flex;align-items:center;gap:10px">
+        ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
+        <div>
+          <span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br>
+          <span style="font-size:11px;color:${RARITY_COLOR[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
+        </div>
+      </div>
+      <span class="badge">Not unlocked</span>
+    </div>
+  </div>`;
+}
+
 // state: { rarity, search, status, sort } — the four controls both panes expose.
 function prepareCardList(rawCards, state) {
-  let cards = (rawCards||[]).map(decorateCard);
+  let cards = (rawCards||[]).map(c => ({ ...decorateCard(c), owned: true }))
+    .concat(unownedCardEntries(rawCards));
   if (state.rarity && state.rarity !== 'all') cards = cards.filter(c => c.r === state.rarity);
   if (state.search) cards = cards.filter(c => (c.name||'').toLowerCase().includes(state.search));
   const statusFilter = CARD_STATUS_FILTERS[state.status];
   if (statusFilter) cards = cards.filter(statusFilter);
+  // Unowned cards sit at the bottom under every sort; among themselves they follow
+  // the chosen sort like everything else.
   const sort = CARD_SORTS[state.sort];
-  if (sort) cards.sort(sort);
+  if (sort) cards.sort((a,b) => (a.owned === b.owned) ? sort(a,b) : (a.owned ? -1 : 1));
   // The Upgradable filter always orders by normalized potential whatever the sort
   // says — it answers "what should I upgrade next", not "let me browse".
   if (state.status === 'upgradable') cards.sort((a,b) => a.normalizedPotential - b.normalizedPotential);
@@ -1110,8 +1141,8 @@ function friendRenderCards() {
   const cards = prepareCardList(_friendData.cards,
     { rarity:_fCardRarity, search:_fCardSearch, status:_fCardStatus, sort:_fCardSort });
   if (!cards.length) { grid.innerHTML = '<div class="empty-msg">No cards match this filter.</div>'; return; }
-  const rarityColor = { common:'var(--text)', rare:'var(--blue)', epic:'var(--purple)', legendary:'var(--accent)', champion:'#e74c3c' };
   grid.innerHTML = cards.map(c => {
+    if (!c.owned) return unownedCardRowHTML(c);
     const needed = c.nextStep ? c.nextStep.cards : 0, owned = c.count || 0;
     const pct = c.isMaxed ? 100 : needed ? Math.min(100, Math.round(owned / needed * 100)) : 0;
     const ms = c.maxStarLevel || catalogStarMax[c.id] || 0, sl = c.starLevel || 0;
@@ -1125,7 +1156,7 @@ function friendRenderCards() {
       <div class="flex-between mb8">
         <div style="display:flex;align-items:center;gap:10px">
           ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
-          <div><span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br><span style="font-size:11px;color:${rarityColor[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>${stars}</div>
+          <div><span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br><span style="font-size:11px;color:${RARITY_COLOR[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>${stars}</div>
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
           <span style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:var(--accent)">Lv ${c.disp}</span>${statusLabel}
@@ -1950,6 +1981,10 @@ function renderOverview(data, battles) {
   });
 
   const maxedCount      = enriched.filter(c => c.isMaxed).length;
+  // Measure progress against every card in the game, not just the ones owned —
+  // a card you haven't unlocked is still one you need at level 16 for a maxed
+  // account, so it belongs in the denominator.
+  const totalInGame     = allCards.length || cards.length;
   const upgradableNow   = enriched.filter(c => c.isUpgradable);
   const canMaxCards     = enriched.filter(c => c.canMax);
   const totalGoldReady  = upgradableNow.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
@@ -2040,11 +2075,11 @@ function renderOverview(data, battles) {
     <div class="card">
       <h3 style="margin-bottom:4px">⚡ Card Insights</h3>
       <div style="margin-top:20px;margin-bottom:10px;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.5px"><img src="cards-icon.webp" style="width:22px;height:18px;object-fit:contain;filter:brightness(0) invert(0.55)"> Cards</div>
-      <div class="stat-row" style="border-bottom:none"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${maxedCount} / ${cards.length}</strong></div>
+      <div class="stat-row" style="border-bottom:none"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${maxedCount} / ${totalInGame}</strong></div>
       <div class="progress-wrap mt8">
-        <div class="progress-bar" style="width:${Math.round(maxedCount/Math.max(cards.length,1)*100)}%;background:var(--accent)"></div>
+        <div class="progress-bar" style="width:${Math.round(maxedCount/Math.max(totalInGame,1)*100)}%;background:var(--accent)"></div>
       </div>
-      <div style="font-size:12px;color:var(--muted);margin-top:4px;margin-bottom:8px">${Math.round(maxedCount/Math.max(cards.length,1)*100)}% maxed</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px;margin-bottom:8px">${Math.round(maxedCount/Math.max(totalInGame,1)*100)}% maxed</div>
       ${cardsNotFound > 0 ? `<div class="stat-row"><span class="stat-label">Not Found</span><strong class="text-red">${cardsNotFound}</strong></div>` : ''}
       <div class="stat-row"><span class="stat-label">Upgradable now</span><strong class="text-green">${upgradableNow.length}</strong></div>
       <div class="stat-row"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${canMaxCards.length}</strong></div>
@@ -2187,9 +2222,8 @@ function renderCards() {
     return;
   }
 
-  const rarityColor = { common:'var(--text)', rare:'var(--blue)', epic:'var(--purple)', legendary:'var(--accent)', champion:'#e74c3c' };
-
   grid.innerHTML = cards.map(c => {
+    if (!c.owned) return unownedCardRowHTML(c);
     const needed = c.nextStep ? c.nextStep.cards : 0;
     const owned  = c.count || 0;
     const pct    = c.isMaxed ? 100 : needed ? Math.min(100, Math.round(owned / needed * 100)) : 0;
@@ -2212,7 +2246,7 @@ function renderCards() {
           ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
           <div>
             <span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br>
-            <span style="font-size:11px;color:${rarityColor[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
+            <span style="font-size:11px;color:${RARITY_COLOR[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
             ${(() => { const sl = c.starLevel||0; const ms = c.maxStarLevel || catalogStarMax[c.id] || 0; return sl > 0 && ms > 0 ? `&nbsp;<span style="font-size:12px;letter-spacing:1px">${'<span style="color:#FFD700">★</span>'.repeat(Math.min(sl,ms))}${'<span style="color:#555577">★</span>'.repeat(Math.max(0,ms-Math.min(sl,ms)))}</span>` : ''; })()}
           </div>
         </div>
