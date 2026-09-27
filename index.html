@@ -755,9 +755,7 @@ async function revalidateCards() {
 function redrawForCatalogChange() {
   const profile = window._currentProfile;
   if (!profile || !document.getElementById('tab-overview')) return;
-  const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab;
-  renderProfile(profile.data, profile.battles);
-  if (activeTab) switchTab(activeTab);
+  renderProfilePreservingView(profile.data, profile.battles);
 }
 
 function onCardSearch(query) {
@@ -1280,7 +1278,9 @@ function _renderFriendsList() {
   wrap.innerHTML = header + rows;
 }
 
-async function loadPlayer(tagOverride) {
+// opts.quiet: refresh in place without a spinner, keeping whatever is already on
+// screen if the fetch fails. Used by the installed-app auto-refresh.
+async function loadPlayer(tagOverride, opts = {}) {
   const raw = (tagOverride || document.getElementById('player-tag').value).trim();
   if (!raw) return;
   const tag = raw.startsWith('#') ? raw : '#' + raw;
@@ -1288,14 +1288,15 @@ async function loadPlayer(tagOverride) {
   localStorage.setItem('cr_player_tag', tag);
   document.getElementById('player-tag').value = tag;
   const el = document.getElementById('player-result');
-  el.innerHTML = '<div class="spinner"></div>';
+  if (!opts.quiet) el.innerHTML = '<div class="spinner"></div>';
   try {
     const [data, battles] = await Promise.all([
       apiGet('/players/' + encodeURIComponent(tag)),
       apiGet('/players/' + encodeURIComponent(tag) + '/battlelog').catch(() => []),
       maybeLoadCards()
     ]);
-    renderProfile(data, battles);
+    if (opts.quiet) renderProfilePreservingView(data, battles);
+    else renderProfile(data, battles);
     // Save this account (name + tag) so the user can switch between accounts
     saveAccount(data.tag, data.name);
     // Cache this player's cards (+ tower troops) for the calculator's Card Lookup
@@ -1312,8 +1313,20 @@ async function loadPlayer(tagOverride) {
       loadClan();
     }
   } catch(e) {
-    el.innerHTML = `<div class="error-msg">${e.message}</div>`;
+    // A quiet refresh keeps the profile already on screen — a dropped connection
+    // shouldn't replace good data with an error.
+    if (!opts.quiet) el.innerHTML = `<div class="error-msg">${e.message}</div>`;
   }
+}
+
+// Re-render the profile without throwing the user back to the Overview tab or to
+// the top of the page.
+function renderProfilePreservingView(data, battles) {
+  const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab;
+  const y = window.scrollY;
+  renderProfile(data, battles);
+  if (activeTab) switchTab(activeTab);
+  window.scrollTo(0, y);
 }
 
 // ── Profile cache (per-tag, lets us render instantly on startup) ──
@@ -1326,6 +1339,29 @@ function loadProfileCache(tag) {
     return (c && c.tag === tag) ? c : null;
   } catch(e) { return null; }
 }
+// True when launched from the home screen / Chrome's "Install app" rather than as
+// a browser tab. iOS Safari reports navigator.standalone instead of display-mode.
+function isInstalledApp() {
+  try {
+    return ['standalone','fullscreen','minimal-ui'].some(m => window.matchMedia(`(display-mode: ${m})`).matches)
+        || navigator.standalone === true;
+  } catch(e) { return false; }
+}
+
+// An installed app is expected to be current when you open it, so refresh the
+// cached profile in the background instead of waiting for a Refresh tap. Skipped
+// if the cache is younger than this, so app-switching doesn't hammer the API.
+const AUTO_REFRESH_MIN_AGE_MS = 2 * 60 * 1000;
+let _autoRefreshing = false;
+async function autoRefreshProfile() {
+  const tag = localStorage.getItem('cr_player_tag');
+  if (!tag || _autoRefreshing) return;
+  const cached = loadProfileCache(tag);
+  if (cached && Date.now() - (cached.savedAt || 0) < AUTO_REFRESH_MIN_AGE_MS) return;
+  _autoRefreshing = true;
+  try { await loadPlayer(tag, { quiet: true }); } finally { _autoRefreshing = false; }
+}
+
 function renderProfileFromCache(cached) {
   renderProfile(cached.data, cached.battles);
   window._currentProfile = { data: cached.data, battles: cached.battles };
@@ -3185,12 +3221,26 @@ calcUpdate();
 const _savedTag = localStorage.getItem('cr_player_tag');
 if (_savedTag) {
   document.getElementById('player-tag').value = _savedTag;
-  // Auto-render the saved profile from cache (no network). User taps Refresh for fresh data.
+  // Auto-render the saved profile from cache (no network). In a browser tab that's
+  // the final word until the user taps Refresh; installed as an app we then refresh
+  // in the background.
   const _cachedProfile = loadProfileCache(_savedTag);
   if (_cachedProfile) {
-    maybeLoadCards().then(() => renderProfileFromCache(_cachedProfile));
+    maybeLoadCards().then(() => {
+      renderProfileFromCache(_cachedProfile);
+      if (isInstalledApp()) autoRefreshProfile();
+    });
+  } else if (isInstalledApp()) {
+    loadPlayer(_savedTag);  // nothing cached to show — just load it
   }
 }
+
+// Android keeps an installed app alive in the background, so reopening it usually
+// resumes this page rather than reloading it. Refresh on foreground too, otherwise
+// "open the app" would only refresh on a genuine cold start.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && isInstalledApp()) autoRefreshProfile();
+});
 renderSavedAccounts();
 
 // Register service worker for PWA (standalone fullscreen install)

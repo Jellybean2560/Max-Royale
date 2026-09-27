@@ -79,7 +79,9 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | Function | What it does |
 |---|---|
 | `apiGet(path)` | Fetches `<worker>{path}`; no auth header. Throws a friendly message on failure. |
-| `loadPlayer(tagOverride)` | Fetches `/players/{tag}`, `/battlelog` and the card catalog in parallel, calls `renderProfile()` |
+| `loadPlayer(tagOverride, opts)` | Fetches `/players/{tag}`, `/battlelog` and the card catalog in parallel, calls `renderProfile()`. `opts.quiet` refreshes in place: no spinner, keeps the active tab, keeps the old view on error |
+| `isInstalledApp()` | True when launched as an installed PWA rather than a browser tab |
+| `autoRefreshProfile()` | Installed-app background refresh of the cached profile, throttled to 2 min |
 | `renderProfile(data, battles)` | Renders the header + every profile tab |
 | `renderOverview(data, battles)` | Card insights, collection level, battle/donation stats |
 | `renderCardsPane(data)` / `renderCards()` | Card collection pane; `renderCards()` re-renders on filter/sort change |
@@ -167,6 +169,7 @@ The API **only returns masteries a player has already started** — there are no
 ## Known limitations / things to be aware of
 - The Clash Royale API only returns the last **~25–30 battles**. Deck stats work around this by accumulating history in `localStorage` (not retroactive — it only counts battles seen since the feature shipped).
 - Deck history is per-browser/per-device and never leaves the device, so different users of the deployed app never see each other's stats.
+- **In a browser tab the profile never auto-refreshes** — the app renders the cached snapshot on open and waits for the Refresh button, so stats can look stale. Installed as an app it refreshes in the background on launch and on foreground. Deliberate: a tab is often left open for a long time, an installed app is expected to be current.
 - New cards often reach the API **before their icon art does** (Ronin, Elite Barbarians evo). Missing icons are expected for a few weeks after a release; the Cards/Decks tabs fall back gracefully, and mastery badges fall back to the card's catalog art, but the Evolutions tab filters on `iconUrls.evolutionMedium` and so hides an evolution entirely until Supercell publishes it.
 - The card catalog cache expires on the first Tuesday of the month, matching CR's balance update — but **new cards, heroes and evolutions also ship mid-season**, which used to leave the app showing a stale count (e.g. `122 / 122` after Minion Giant made it 123) for up to five weeks. `maybeLoadCards()` now serves the cache instantly *and* revalidates in the background, redrawing only when the catalog really changed. Don't reintroduce a cache-only path.
 - `/cards` returns `items` (123 deck cards as of Sept 2026) **and** `supportItems` (4 tower troops). `allCards` holds `items` only.
@@ -212,3 +215,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 13. Added the Badges tab, with card-mastery filtering and locked-mastery display
 14. Shared the card filter/sort pipeline between the main and friend card panes
 15. Revalidated the card catalog in the background so mid-season cards appear without waiting for the monthly cutoff
+16. Auto-refreshed the profile on launch/foreground when running as an installed app
