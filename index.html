@@ -156,6 +156,15 @@
   .deck-card-chip { display: inline-flex; align-items: center; justify-content: center; background: var(--surface3); border-radius: 4px; width: 38px; height: 46px; overflow: hidden; flex-shrink: 0; }
   .deck-card-chip img { width: 100%; height: 100%; object-fit: contain; }
   .deck-card-chip.text-chip { width: auto; height: auto; padding: 3px 7px; font-size: 10px; }
+  .deck-list-tile { display: block; border-radius: 4px; overflow: hidden; }
+  .deck-list-tile img { width: 100%; height: auto; display: block; }
+  .deck-tile { position: relative; }
+  .deck-tile.v-evo  { box-shadow: 0 0 0 2px var(--purple); }
+  .deck-tile.v-hero { box-shadow: 0 0 0 2px var(--accent); }
+  .deck-tile-text { display: flex; align-items: center; justify-content: center; text-align: center; font-size: 9px; color: var(--text); min-height: 46px; padding: 2px; }
+  .variant-tag { position: absolute; left: 50%; bottom: 1px; transform: translateX(-50%); font-size: 7px; font-weight: 700; letter-spacing: 0.3px; line-height: 11px; padding: 0 3px; border-radius: 3px; pointer-events: none; }
+  .variant-tag.v-evo  { background: var(--purple); color: #fff; }
+  .variant-tag.v-hero { background: var(--accent); color: #1a1a2e; }
 
   /* ── Deck builder ── */
   .deck-item { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
@@ -641,13 +650,14 @@ function goTo(name) {
 }
 
 function switchTab(name) {
-  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  const pane = document.getElementById('tab-' + name);
-  if (pane) pane.classList.add('active');
-  document.querySelectorAll('.tab-btn').forEach(b => {
-    if (b.dataset.tab === name) b.classList.add('active');
+  // Panes are shown with inline display, not the `active` class. Scoped to
+  // [data-tab] — the friend modal's buttons are .tab-btn too (with data-ftab).
+  document.querySelectorAll('#player-result .tab-pane').forEach(p => {
+    const on = p.id === 'tab-' + name;
+    p.classList.toggle('active', on);
+    p.style.display = on ? 'block' : 'none';
   });
+  document.querySelectorAll('.tab-btn[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   // The Cards grid is built here rather than by renderCardsPane(), which only emits
   // the shell. Any path that shows the tab must go through switchTab() — a stray
   // document click listener used to do this, which meant a programmatic tab switch
@@ -1358,7 +1368,7 @@ async function loadPlayer(tagOverride, opts = {}) {
 // Re-render the profile without throwing the user back to the Overview tab or to
 // the top of the page.
 function renderProfilePreservingView(data, battles) {
-  const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab;
+  const activeTab = document.querySelector('.tab-btn[data-tab].active')?.dataset.tab;
   const y = window.scrollY;
   renderProfile(data, battles);
   if (activeTab) switchTab(activeTab);
@@ -1522,14 +1532,6 @@ function renderProfile(data, battles) {
     <div id="tab-badges" class="tab-pane" style="display:none">${renderBadgesPane(data)}</div>
     <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles, data.tag)}</div>
   `;
-
-  // wire up tab switching to show/hide panes properly
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
-      document.getElementById('tab-' + btn.dataset.tab).style.display = 'block';
-    });
-  });
 }
 
 function esc(str) {
@@ -1587,18 +1589,31 @@ function buildDeckMapFromBattles(battles, playerTag) {
   let changed = false;
 
   (battles||[]).forEach(b => {
-    const key = b.battleTime;
-    if (!key || seen.has(key)) return;
+    const battleKey = b.battleTime;
+    if (!battleKey || seen.has(battleKey)) return;
 
     const team = (playerTag && (b.team||[]).find(p => p.tag === playerTag)) || (b.team||[])[0] || {};
     if ((team.cards||[]).length !== 8) return; // a real deck is always 8 cards — anything else is a bad/mismatched record (e.g. tag-match fallback picking up the wrong entry)
-    const cards = (team.cards||[]).map(c => c.name).sort().join('|');
-    if (!cards) return;
+    const key = deckKeyOf(team.cards);
     const tC = (b.team||[])[0]?.crowns||0, oC = (b.opponent||[])[0]?.crowns||0;
     const result = tC > oC ? 'win' : tC < oC ? 'loss' : 'draw';
 
-    if (!history.decks[cards]) history.decks[cards] = { cards: cards.split('|'), wins:0, losses:0, draws:0, modes:[], elixirSum:0, elixirCount:0 };
-    const d = history.decks[cards];
+    let d = history.decks[key];
+    if (!d) {
+      // Decks tallied before evo/hero tracking were keyed by card names alone.
+      // The first time that card set is played again, it adopts the old tally.
+      const legacyKey = team.cards.map(c => c.name).sort().join('|');
+      const legacy = legacyKey !== key && history.decks[legacyKey];
+      if (legacy && !legacy.variants) { d = legacy; delete history.decks[legacyKey]; }
+      else d = { wins:0, losses:0, draws:0, modes:[], elixirSum:0, elixirCount:0 };
+      history.decks[key] = d;
+    }
+    if (!d.variants) {
+      // Battles arrive newest-first, so this is the deck as last played. Slot order
+      // is kept so evolutions, heroes and champions sit in the first three tiles.
+      d.cards = team.cards.map(c => c.name);
+      d.variants = deckVariantsOf(team.cards);
+    }
     d[result === 'loss' ? 'losses' : result + 's']++;
     const modeLabel = battleModeLabel(b);
     if (!d.modes.includes(modeLabel)) d.modes.push(modeLabel);
@@ -1606,7 +1621,7 @@ function buildDeckMapFromBattles(battles, playerTag) {
     d.elixirSum += avg;
     d.elixirCount++;
 
-    seen.add(key);
+    seen.add(battleKey);
     changed = true;
   });
 
@@ -1619,7 +1634,7 @@ function buildDeckMapFromBattles(battles, playerTag) {
   Object.entries(history.decks).forEach(([key, d]) => {
     if ((d.cards||[]).length !== 8) return; // drop any bad entry saved before the 8-card guard existed
     deckMap[key] = {
-      cards: d.cards, wins: d.wins, losses: d.losses, draws: d.draws, modes: d.modes,
+      key, cards: d.cards, variants: d.variants || {}, wins: d.wins, losses: d.losses, draws: d.draws, modes: d.modes,
       elixir: d.elixirCount ? [d.elixirSum / d.elixirCount] : []
     };
   });
@@ -2851,6 +2866,69 @@ function badgeTilesHTML(list) {
 
 // ── Battles pane ──
 let _battleFilter = 'all';
+// ── Evolution / hero slots ──
+// A battle-log deck lists its cards in slot order, and the first three slots are
+// the special ones: evolutions, heroes and champions go there. The form a card was
+// played in comes from its `evolutionLevel` — 1 = evolution, 2 = hero (3 only shows
+// up in Boat Battle defences). No `evolutionLevel` means it was played as the plain
+// card, even if the player owns its evolution. Checked Oct 2026: in 8-card decks it
+// only ever appears on slots 0–2.
+function cardVariant(c) {
+  const lvl = c?.evolutionLevel || 0;
+  return (lvl & 2) ? 'hero' : (lvl & 1) ? 'evo' : '';
+}
+function deckVariantsOf(cards) {
+  const v = {};
+  (cards||[]).forEach(c => { const kind = cardVariant(c); if (kind) v[c.name] = kind; });
+  return v;
+}
+// Evo Knight and Hero Knight make different decks, so the played form is part of
+// the key. Cards sort by name so reordering the regular slots doesn't split a deck,
+// and a deck with no evolutions or heroes keeps its pre-variant key.
+function deckKeyOf(cards) {
+  return (cards||[]).map(c => { const v = cardVariant(c); return v ? `${c.name}[${v}]` : c.name; }).sort().join('|');
+}
+
+// name → { medium, evo, hero }. The catalog wins; battle records fill the gaps
+// (cards the catalog doesn't know yet).
+function buildCardArtMap(battles) {
+  const map = {};
+  const add = c => {
+    if (!c?.name) return;
+    const m = map[c.name] || (map[c.name] = {});
+    m.medium = m.medium || c.iconUrls?.medium;
+    m.evo    = m.evo    || EVO_IMG_OVERRIDE[c.name] || c.iconUrls?.evolutionMedium;
+    m.hero   = m.hero   || c.iconUrls?.heroMedium;
+  };
+  allCards.forEach(add);
+  (battles||[]).forEach(b => (b.team||[]).concat(b.opponent||[]).forEach(p => (p.cards||[]).forEach(add)));
+  return map;
+}
+
+const VARIANT_LABEL = { evo: 'EVO', hero: 'HERO' };
+const VARIANT_TITLE = { evo: 'Evolved', hero: 'Hero' };
+// One deck tile. Evolution / hero art falls back to the plain card art when it
+// isn't published yet or 404s — new evolutions often ship before their art.
+function deckTileHTML(name, variant, art, cls) {
+  const plain = art?.medium || '';
+  const src = (variant && art?.[variant]) || plain;
+  const title = variant ? `${VARIANT_TITLE[variant]} ${name}` : name;
+  const vCls = variant ? ` v-${variant}` : '';
+  const tag = variant ? `<span class="variant-tag v-${variant}">${VARIANT_LABEL[variant]}</span>` : '';
+  const body = src
+    ? `<img src="${src}" alt="${esc(title)}" loading="lazy"${src !== plain && plain ? ` data-fallback="${plain}"` : ''} onerror="deckImgFallback(this)" onload="if(this.naturalWidth<4)deckImgFallback(this)">`
+    : `<span class="deck-tile-text">${esc(name)}</span>`;
+  return `<div class="${cls} deck-tile${vCls}" title="${esc(title)}">${body}${tag}</div>`;
+}
+window.deckImgFallback = function(el) {
+  const alt = el.getAttribute('data-fallback');
+  if (alt) { el.removeAttribute('data-fallback'); el.src = alt; return; }
+  const t = document.createElement('span');
+  t.className = 'deck-tile-text';
+  t.textContent = el.closest('.deck-tile')?.title || el.alt || '';
+  el.replaceWith(t);
+};
+
 function renderBattles(battles) {
   if (!battles || !battles.length) return '<div class="empty-msg">No battles found.</div>';
   window._battleData = battles;
@@ -2875,9 +2953,8 @@ function _renderBattleList(battles) {
   const filtered = _battleFilter === 'all' ? battles : battles.filter(b => battleModeLabel(b) === _battleFilter);
   if (!filtered.length) return `${bar}<div class="empty-msg">No battles for this filter.</div>`;
 
-  const deckRow = (p) => (p.cards||[]).map(c => c.iconUrls?.medium
-    ? `<div class="deck-card-chip" title="${esc(c.name)}"><img src="${c.iconUrls.medium}" alt="${esc(c.name)}" loading="lazy"></div>`
-    : `<span class="deck-card-chip text-chip">${esc(c.name)}</span>`).join('');
+  const art = buildCardArtMap(battles);
+  const deckRow = (p) => (p.cards||[]).map(c => deckTileHTML(c.name, cardVariant(c), art[c.name], 'deck-card-chip')).join('');
   return bar + filtered.map(b => {
     const teamPlayers = b.team || [];
     const oppPlayers  = b.opponent || [];
@@ -3000,17 +3077,9 @@ function renderDeckBuilder(battles, playerTag) {
   window._deckBattles = battles;
   window._deckPlayerTag = playerTag;
 
-  // Build card name → icon URL map. Prefer the full card catalog (always complete)
-  // over icons embedded in individual battle-log records, which are sometimes
-  // missing iconUrls for specific cards even though the catalog has them.
-  const iconMap = {};
-  allCards.forEach(c => { if (c.name && c.iconUrls?.medium) iconMap[c.name] = c.iconUrls.medium; });
-  battles.forEach(b => {
-    (b.team||[]).concat(b.opponent||[]).forEach(p => {
-      (p.cards||[]).forEach(c => { if (c.name && c.iconUrls?.medium && !iconMap[c.name]) iconMap[c.name] = c.iconUrls.medium; });
-    });
-  });
-  window._cardIconMap = iconMap;
+  // Prefer the full card catalog (always complete) over icons embedded in
+  // individual battle-log records, which are sometimes missing iconUrls.
+  window._cardArtMap = buildCardArtMap(battles);
 
   const deckMap = buildDeckMapFromBattles(battles, playerTag);
   window._deckMapData = deckMap;
@@ -3034,19 +3103,14 @@ function _renderDeckList(deckMap, battles) {
     const total = d.wins + d.losses + d.draws;
     const wr = total ? Math.round(d.wins / total * 100) : 0;
     const avgElixir = d.elixir.length ? (d.elixir.reduce((a,b)=>a+b,0)/d.elixir.length).toFixed(1) : '—';
-    const cardChips = d.cards.map(c => {
-      const icon = window._cardIconMap?.[c];
-      return icon
-        ? `<img src="${icon}" alt="${esc(c)}" title="${esc(c)}" style="width:100%;height:auto;display:block;border-radius:4px" loading="lazy">`
-        : `<span style="font-size:9px;color:var(--text);display:flex;align-items:center;justify-content:center;text-align:center">${esc(c)}</span>`;
-    }).join('');
+    const cardChips = d.cards.map(c => deckTileHTML(c, d.variants[c], window._cardArtMap?.[c], 'deck-list-tile')).join('');
     const names = d.cards.join(', ');
     const statRow = (lbl, val, cls) =>
       `<div style="margin-bottom:5px;text-align:center"><div class="${cls}" style="font-size:15px;font-weight:700;line-height:1.1">${val}</div><div style="font-size:10px;color:var(--muted)">${lbl}</div></div>`;
     return `
       <div class="deck-item">
         <div style="display:flex;justify-content:flex-end">
-          <button class="btn btn-secondary btn-sm" title="Delete this deck's history" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="deleteDeck('${esc(d.cards.join('|'))}')">🗑️</button>
+          <button class="btn btn-secondary btn-sm" title="Delete this deck's history" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="deleteDeck('${esc(d.key)}')">🗑️</button>
         </div>
         <div style="display:flex;gap:12px;align-items:center">
           <div style="flex:1;min-width:0">

@@ -66,8 +66,8 @@ There is no `screen-home`; the app opens on the Player screen.
 | Evolutions   | `tab-evolutions`   | `/cards` catalog filtered by `iconUrls.evolutionMedium`, matched against player cards |
 | Heroes       | `tab-heroes`       | `/cards` catalog filtered by `iconUrls.heroMedium` |
 | Tower Troops | `tab-towerTroops`  | `data.supportCards` from `/players/{tag}` |
-| Decks        | `tab-decks`        | Battle log + persisted history — W/L/D per unique deck, mode filter, copy/delete |
-| Battles      | `tab-battles`      | `/players/{tag}/battlelog` — recent battles with decks, crowns, trophy change |
+| Decks        | `tab-decks`        | Battle log + persisted history — W/L/D per unique deck (card set + which cards were played as evo/hero), mode filter, copy/delete |
+| Battles      | `tab-battles`      | `/players/{tag}/battlelog` — recent battles with decks (evo/hero tiles marked), crowns, trophy change |
 | Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries |
 
 The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, Evolutions, Heroes, Tower Troops.
@@ -94,6 +94,8 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | `renderBattles(battles)` / `setBattleFilter(mode)` | Battle log tab + mode filter |
 | `renderDeckBuilder(battles, playerTag)` | Builds the icon map, delegates to `buildDeckMapFromBattles` |
 | `buildDeckMapFromBattles(battles, playerTag)` | Merges new battles into persisted deck history, returns the deck map |
+| `cardVariant(c)` / `deckKeyOf(cards)` | Battle-log card → `'evo'` / `'hero'` / `''`; deck identity including those forms |
+| `buildCardArtMap(battles)` / `deckTileHTML(name, variant, art, cls)` | Card art (plain/evo/hero) by name; one deck tile with evo/hero ring + tag and art fallback |
 | `loadDeckHistory(tag)` / `saveDeckHistory(tag, h)` | Per-tag deck W/L history in `localStorage` |
 | `deleteDeck(key)` | Removes one deck + its history (confirm prompt) |
 | `_renderDeckList(deckMap, battles)` / `setDeckFilter(mode)` | Deck tab rendering + mode filter |
@@ -108,7 +110,7 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | `renderFriends()` / `addFriend()` / `viewFriend(tag)` / `friendTab(name)` | Friends screen |
 | `computeUpgrade(rarity, level, count, target)` | Core upgrade math |
 | `toDisplayLevel(rarity, apiLevel)` | Converts API relative level → display level (1–16) |
-| `goTo(name)` / `switchTab(name)` | Screen / tab switching (tab switch triggers lazy loads) |
+| `goTo(name)` / `switchTab(name)` | Screen / tab switching. `switchTab` owns pane visibility and lazy loads — every path that shows a profile tab must go through it |
 | `formatBattleTime(ts)` | API timestamp → relative time ("2h ago") |
 
 ---
@@ -146,7 +148,7 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | `cr_profile_cache` | Last profile + battles, for instant render on open |
 | `cr_clan_cache` | Last clan lookup |
 | `cr_cards_cache_v7` | `{ items, savedAt }` card catalog, monthly expiry + background revalidation |
-| `cr_deck_history_v1` | Per-tag deck W/L/D history, deduped by `battleTime` |
+| `cr_deck_history_v1` | Per-tag deck W/L/D history, deduped by `battleTime`. Keys are sorted names with `[evo]`/`[hero]` suffixes; entries without `variants` predate that and are adopted by the first matching card set played again |
 
 ---
 
@@ -166,7 +168,11 @@ The API **only returns masteries a player has already started** — there are no
 
 ---
 
-## Known limitations / things to be aware of
+## Evolution / hero slots (gotcha)
+The first three deck slots are special: evolutions, heroes and champions go there (two evos + one hero/champion, or one evo + two heroes/champions). Battle-log decks list cards **in slot order**, and each card's `evolutionLevel` says which form it was *played* in — `1` = evolution, `2` = hero (`3` only appears in Boat Battle defences). No `evolutionLevel` means the plain card, even if the player owns its evolution. Checked Oct 2026: in 8-card decks it only appears on slots 0–2.
+
+On `/players/{tag}` cards, `evolutionLevel` means something else — what the player has *unlocked* — so don't reuse `cardVariant()` there.
+
 - The Clash Royale API only returns the last **~25–30 battles**. Deck stats work around this by accumulating history in `localStorage` (not retroactive — it only counts battles seen since the feature shipped).
 - Deck history is per-browser/per-device and never leaves the device, so different users of the deployed app never see each other's stats.
 - **In a browser tab the profile never auto-refreshes** — the app renders the cached snapshot on open and waits for the Refresh button, so stats can look stale. Installed as an app it refreshes in the background on launch and on foreground. Deliberate: a tab is often left open for a long time, an installed app is expected to be current.
@@ -217,3 +223,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 15. Revalidated the card catalog in the background so mid-season cards appear without waiting for the monthly cutoff
 16. Auto-refreshed the profile on launch/foreground when running as an installed app
 17. Showed not-yet-unlocked cards greyed out at the bottom of the Cards list, and measured Card Insights against the whole catalog
+18. Marked evolution and hero tiles in the Battles and Decks tabs, and tracked decks per evo/hero choice
