@@ -533,8 +533,8 @@ const CARD_SORTS = {
   // "Closest to Max": already-maxed cards first, then everything else in the same
   // order the Upgradable filter uses — fewest rarity-weighted cards still needed
   // to reach level 16. Cards with enough banked to max right now score 0, so they
-  // land directly behind the maxed ones.
-  'closest-max': (a,b) => (b.isMaxed - a.isMaxed) || (a.normalizedPotential - b.normalizedPotential) || a.name.localeCompare(b.name),
+  // land directly behind the maxed ones. Ties go to the higher level first.
+  'closest-max': (a,b) => (b.isMaxed - a.isMaxed) || (a.normalizedPotential - b.normalizedPotential) || (b.disp - a.disp) || a.name.localeCompare(b.name),
   'level-desc':  (a,b) => b.disp - a.disp,
   'level-asc':   (a,b) => a.disp - b.disp,
   'rarity':      (a,b) => (RARITY_ORDER[b.r]||0) - (RARITY_ORDER[a.r]||0) || b.disp - a.disp
