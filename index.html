@@ -530,11 +530,13 @@ const CARD_STATUS_FILTERS = {
 };
 
 const CARD_SORTS = {
-  // "Closest to Max": already-maxed cards first, then everything else in the same
-  // order the Upgradable filter uses — fewest rarity-weighted cards still needed
-  // to reach level 16. Cards with enough banked to max right now score 0, so they
-  // land directly behind the maxed ones. Ties go to the higher level first.
-  'closest-max': (a,b) => (b.isMaxed - a.isMaxed) || (a.normalizedPotential - b.normalizedPotential) || (b.disp - a.disp) || a.name.localeCompare(b.name),
+  // "Closest to Max": maxed cards, then cards with enough banked to max right now,
+  // then by level — highest first — and within a level by fewest rarity-weighted
+  // cards still needed. Level comes before cards because cards alone ignore gold
+  // and level-ups: a L12 legendary could rank between L13 champions on a 0.4%
+  // difference in its share of cards left, while needing a whole extra level.
+  'closest-max': (a,b) => (b.isMaxed - a.isMaxed) || (b.canMax - a.canMax) || (b.disp - a.disp)
+                       || (a.normalizedPotential - b.normalizedPotential) || a.name.localeCompare(b.name),
   'level-desc':  (a,b) => b.disp - a.disp,
   'level-asc':   (a,b) => a.disp - b.disp,
   'rarity':      (a,b) => (RARITY_ORDER[b.r]||0) - (RARITY_ORDER[a.r]||0) || b.disp - a.disp
