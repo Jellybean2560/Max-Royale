@@ -50,7 +50,7 @@ README.md                         ← setup instructions
 | Player       | `screen-lookup`  | Player profile lookup by tag + saved accounts |
 | Calculator   | `screen-calc`    | Offline upgrade cost calculator with card picker |
 | Deck Upgrade | `screen-deckup`  | Cost to upgrade a whole 8-card deck |
-| Clan         | `screen-clan`    | Clan lookup by tag, sortable member list |
+| Clan         | `screen-clan`    | Clan lookup by tag; tabs Members (sortable), River Race (live standings + each member's decks used today), War History (last 10 races, fold-out standings + member contributions) |
 | Friends      | `screen-friends` | Up to 50 saved friends (`MAX_FRIENDS`), mini profile viewer — the same modal opens clan members |
 
 There is no `screen-home`; the app opens on the Player screen.
@@ -61,16 +61,17 @@ There is no `screen-home`; the app opens on the Player screen.
 
 | Tab          | ID                 | Data source |
 |--------------|--------------------|-------------|
-| Overview     | `tab-overview`     | `/players/{tag}` + battle log — account stats (XP, age, star points, cards found, donations, clan wars), battle stats (W/L, streak, est. playtime, recent W/L per mode, Path of Legends, old trophy road, challenges), card insights, collection level |
+| Overview     | `tab-overview`     | `/players/{tag}` — card insights, collection level, suggested upgrades, upgrade planner |
 | Cards        | `tab-cards`        | `/players/{tag}` + `/cards` — full collection with filters (status, rarity, sort); cards not yet unlocked are synthesised from the catalog and shown greyed out at the bottom |
 | Evolutions   | `tab-evolutions`   | `/cards` catalog filtered by `iconUrls.evolutionMedium`, matched against player cards |
 | Heroes       | `tab-heroes`       | `/cards` catalog filtered by `iconUrls.heroMedium` |
 | Tower Troops | `tab-towerTroops`  | `data.supportCards` from `/players/{tag}` |
 | Decks        | `tab-decks`        | Battle log + persisted history — W/L/D per unique deck (card set + which cards were played as evo/hero), mode filter, copy/delete |
-| Battles      | `tab-battles`      | `/players/{tag}/battlelog` — recent battles with decks (evo/hero tiles marked), crowns, trophy change; 2v2 opponents' decks fold out underneath |
+| Battles      | `tab-battles`      | Toggle between **Battle Log** (`/battlelog` — decks with evo/hero tiles, crowns, trophy change; each battle folds out details: towers left, elixir leaked, trophies, global rank, tower troop, clan, boat stats; 2v2 also the opponents' decks) and **Battle Stats** (lifetime W/L, streak, est. playtime, recent W/L per mode, Path of Legends, old trophy road, challenges) |
 | Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries |
+| Account      | `tab-account`      | `/players/{tag}` — XP level, account age, star points, cards found, favourite card, donations, clan wars |
 
-The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, Evolutions, Heroes, Tower Troops, Badges. `viewFriend()` also fetches the friend's battle log, only for the Overview's recent-battle stats (a failure there is ignored).
+The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, Evolutions, Heroes, Tower Troops, Badges, Account. With no Battles tab there, the modal's Account tab shows the battle stats too. `viewFriend()` also fetches the friend's battle log, only for the Overview's recent-battle stats (a failure there is ignored).
 
 ---
 
@@ -96,7 +97,9 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | `renderBadgesPane(data)` / `loadBadgesGrid()` | Badges tab (lazy); builds earned + locked-mastery entries |
 | `_masteryCardFor(badgeName)` | Maps a `Mastery<InternalName>` badge to its catalog card |
 | `setBadgeFilter(val)` | Badge filter: `all` / `mastery` / `other` |
-| `renderBattles(battles)` / `setBattleFilter(mode)` | Battle log tab + mode filter |
+| `renderBattles(battles, data)` / `setBattleView(v)` / `setBattleFilter(mode)` | Battles tab: log/stats toggle + mode filter |
+| `battleDetailsHTML(b, team, opp)` | A battle's fold-out details table |
+| `clanTab(name)` / `loadClanWar(tag)` / `riverRaceHTML()` / `warHistoryHTML()` | Clan screen tabs; war data fetched on tab open, cached 1 min per clan |
 | `renderDeckBuilder(battles, playerTag)` | Builds the icon map, delegates to `buildDeckMapFromBattles` |
 | `buildDeckMapFromBattles(battles, playerTag)` | Merges new battles into persisted deck history, returns the deck map |
 | `cardVariant(c)` / `deckKeyOf(cards)` | Battle-log card → `'evo'` / `'hero'` / `''`; deck identity including those forms |
@@ -128,6 +131,8 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | `GET /players/{tag}/battlelog` | Recent battles |
 | `GET /clans/{tag}` | Clan info + member list |
 | `GET /cards` | Full catalog — `items` (deck cards) and `supportItems` (tower troops) |
+| `GET /clans/{tag}/currentriverrace` | Live River Race: the 5 clans' fame, our participants (`decksUsedToday` max 4, `decksUsed`, `fame`, `boatAttacks`). Members who haven't played have no entry at all |
+| `GET /clans/{tag}/riverracelog` | Past races: per race all 5 clans' rank, trophy change, fame and participants |
 
 ### Endpoints available but NOT yet implemented
 
@@ -135,11 +140,13 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 |---|---|
 | `GET /locations/{id}/pathoflegend/players` | Path of Legends leaderboard (this one returns data) |
 | `GET /locations/{id}/rankings/clans` | Clan leaderboard |
-| `GET /clans/{tag}/warlog` | Past clan war results |
-| `GET /clans/{tag}/currentwar` | Live war state |
+| `GET /leaderboards` / `/leaderboard/{id}` | 2v2 League, Merge Tactics, Touchdown, Mega Draft leaderboards |
+| `GET /locations/{id}/rankings/clanwars` | Clan war leaderboard |
 | `GET /tournaments/{tag}` | Tournament details |
 
 > `GET /locations/{id}/rankings/players` returned an empty `items` array when tested (Aug 2026) — likely season-dependent. Prefer the `pathoflegend` variant.
+>
+> Dead ends (Oct 2026): `/clans/{tag}/warlog` is "temporarily disabled" by Supercell (use `riverracelog`), `/challenges` 404s, `/globaltournaments` is empty, and `/players/{tag}/upcomingchests` still answers with chest names although chests are gone from the game.
 
 ---
 
@@ -200,7 +207,7 @@ The friend modal (friends **and** clan members) renders the same Overview as the
 - New cards often reach the API **before their icon art does** (Ronin, Elite Barbarians evo). Missing icons are expected for a few weeks after a release; the Cards/Decks tabs fall back gracefully, and mastery badges fall back to the card's catalog art, but the Evolutions tab filters on `iconUrls.evolutionMedium` and so hides an evolution entirely until Supercell publishes it.
 - The card catalog cache expires on the first Tuesday of the month, matching CR's balance update — but **new cards, heroes and evolutions also ship mid-season**, which used to leave the app showing a stale count (e.g. `122 / 122` after Minion Giant made it 123) for up to five weeks. `maybeLoadCards()` now serves the cache instantly *and* revalidates in the background, redrawing only when the catalog really changed. Don't reintroduce a cache-only path.
 - `/cards` returns `items` (123 deck cards as of Sept 2026) **and** `supportItems` (4 tower troops). `allCards` holds `items` only.
-- `upcomingchests` exists in the API spec but was removed from the game — don't implement it.
+- `upcomingchests` still returns data, but chests were removed from the game — it's stale; don't implement it.
 - No real-time meta deck data is available from any public API.
 
 ---
@@ -246,3 +253,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 17. Showed not-yet-unlocked cards greyed out at the bottom of the Cards list, and measured Card Insights against the whole catalog
 18. Marked evolution and hero tiles in the Battles and Decks tabs, and tracked decks per evo/hero choice
 19. Added Account and Battle Stats to both Overviews (deckai.app parity), and moved Path of Legends to the 7-league numbering
+20. Moved the stats out of the Overview (Account tab; Battles tab Log/Stats toggle), added per-battle details, and added River Race + War History to the Clan screen
