@@ -67,7 +67,7 @@ There is no `screen-home`; the app opens on the Player screen.
 | Heroes       | `tab-heroes`       | `/cards` catalog filtered by `iconUrls.heroMedium` |
 | Tower Troops | `tab-towerTroops`  | `data.supportCards` from `/players/{tag}` |
 | Decks        | `tab-decks`        | Battle log + persisted history — W/L/D per unique deck (card set + which cards were played as evo/hero), mode filter, copy/delete |
-| Battles      | `tab-battles`      | `/players/{tag}/battlelog` — recent battles with decks (evo/hero tiles marked), crowns, trophy change |
+| Battles      | `tab-battles`      | `/players/{tag}/battlelog` — recent battles with decks (evo/hero tiles marked), crowns, trophy change; 2v2 opponents' decks fold out underneath |
 | Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries |
 
 The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, Evolutions, Heroes, Tower Troops, Badges. `viewFriend()` also fetches the friend's battle log, only for the Overview's recent-battle stats (a failure there is ignored).

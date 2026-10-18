@@ -2509,7 +2509,7 @@ function toggleCardMax(id) {
   el.style.display = opening ? 'block' : 'none';
   if (toggle) {
     const closedText = toggle.dataset.closed || (id.endsWith('cl-breakdown') ? '▼' : '▼ Total to Lv 16');
-    toggle.textContent = opening ? '▲' : closedText;
+    toggle.textContent = opening ? (toggle.dataset.open || '▲') : closedText;
   }
 }
 
@@ -3105,7 +3105,7 @@ function _renderBattleList(battles) {
 
   const art = buildCardArtMap(battles);
   const deckRow = (p) => (p.cards||[]).map(c => deckTileHTML(c.name, cardVariant(c), art[c.name], 'deck-card-chip')).join('');
-  return bar + filtered.map(b => {
+  return bar + filtered.map((b, bi) => {
     const teamPlayers = b.team || [];
     const oppPlayers  = b.opponent || [];
     const team = teamPlayers[0] || {};
@@ -3122,11 +3122,12 @@ function _renderBattleList(battles) {
       `<div style="color:${color};font-weight:600;font-size:14px;text-align:${align};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name||'?')}</div>`
     ).join('');
 
-    // 1v1 → show your deck + opponent's deck side by side. 2v2 → both teammates.
+    // 1v1 → your deck + the opponent's side by side. 2v2 → both teammates, with
+    // the opponents' two decks behind a fold-out underneath.
     const teamSet = new Set(teamPlayers);
     const deckPlayers = is2v2 ? teamPlayers : [...teamPlayers, ...oppPlayers];
     const showLabels = deckPlayers.length > 1;
-    const deckCols = deckPlayers.map(p => {
+    const deckCol = p => {
       const names = (p.cards||[]).map(c => c.name).join(', ');
       const labelColor = teamSet.has(p) ? '#5b9bff' : '#e9685c';
       return `<div style="flex:1;min-width:0;text-align:center">
@@ -3134,7 +3135,16 @@ function _renderBattleList(battles) {
         <div style="display:grid;grid-template-columns:repeat(4,38px);gap:4px;justify-content:center;margin-top:4px">${deckRow(p)}</div>
         <button class="btn btn-secondary btn-sm" style="margin-top:6px;font-size:11px;padding:3px 9px" onclick="copyDeckLink('${esc(names)}',this)">📋 Copy</button>
       </div>`;
-    }).join('');
+    };
+    const deckCols = deckPlayers.map(deckCol).join('');
+    const oppId = `battle-${bi}-opp`;
+    const oppFold = is2v2 && oppPlayers.some(p => (p.cards||[]).length) ? `
+          <div onclick="toggleCardMax('${oppId}')" style="cursor:pointer;margin-top:10px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);text-align:center;user-select:none">
+            <span id="${oppId}-toggle" data-closed="▼ Opponents' decks" data-open="▲ Hide opponents' decks">▼ Opponents' decks</span>
+          </div>
+          <div id="${oppId}-max" style="display:none;margin-top:8px">
+            <div style="display:flex;gap:12px">${oppPlayers.map(deckCol).join('')}</div>
+          </div>` : '';
 
     return `
       <div class="battle-item" style="padding:0;overflow:hidden">
@@ -3152,7 +3162,7 @@ function _renderBattleList(battles) {
           <div style="flex:1;background:rgba(231,76,60,0.10);padding:10px 12px;min-width:0">${sideNames(oppPlayers, '#e9685c', 'center')}</div>
         </div>
         <div style="padding:10px 12px">
-          <div style="display:flex;gap:12px">${deckCols}</div>
+          <div style="display:flex;gap:12px">${deckCols}</div>${oppFold}
           <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:11px;color:var(--muted)">
             <span>${formatBattleTime(b.battleTime)}</span>
             ${trophyChange != null ? `<span style="color:${trophyChange>=0?'var(--green)':'var(--red)'}">${trophyChange>=0?'+':''}${trophyChange} 🏆</span>` : ''}
