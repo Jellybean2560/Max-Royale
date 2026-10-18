@@ -51,7 +51,7 @@ README.md                         ← setup instructions
 | Calculator   | `screen-calc`    | Offline upgrade cost calculator with card picker |
 | Deck Upgrade | `screen-deckup`  | Cost to upgrade a whole 8-card deck |
 | Clan         | `screen-clan`    | Clan lookup by tag, sortable member list |
-| Friends      | `screen-friends` | Up to 10 saved friends, mini profile viewer |
+| Friends      | `screen-friends` | Up to 50 saved friends (`MAX_FRIENDS`), mini profile viewer — the same modal opens clan members |
 
 There is no `screen-home`; the app opens on the Player screen.
 
@@ -79,12 +79,15 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | Function | What it does |
 |---|---|
 | `apiGet(path)` | Fetches `<worker>{path}`; no auth header. Throws a friendly message on failure. |
+| `normalizeTag(raw)` | Uppercases, strips spaces/`#`, O→0 — the API 404s on lowercase tags. Every tag input goes through it |
 | `loadPlayer(tagOverride, opts)` | Fetches `/players/{tag}`, `/battlelog` and the card catalog in parallel, calls `renderProfile()`. `opts.quiet` refreshes in place: no spinner, keeps the active tab, keeps the old view on error |
 | `isInstalledApp()` | True when launched as an installed PWA rather than a browser tab |
 | `autoRefreshProfile()` | Installed-app background refresh of the cached profile, throttled to 2 min |
 | `renderProfile(data, battles)` | Renders the header + every profile tab |
 | `renderOverview(data, battles)` | Account + battle stats, card insights, collection level — shared by the profile and friend Overview |
 | `accountStatsHTML()` / `battleStatsHTML()` | The Overview's Account and Battle Stats cards |
+| `makePlanCtx(scope, data, decks)` / `planDeckOptions()` | Per-Overview state for Suggested Upgrades + Upgrade Planner (`'p'` profile, `'f'` friend modal) |
+| `syncClanToProfile(data, opts)` | Clan screen follows the loaded profile's clan unless the user looked up another one |
 | `polLeagueName(r)` / `polLeagueDetail(r)` / `polLeagueText(r)` | Path of Legends season result → league name, rank/trophies |
 | `renderCardsPane(data)` / `renderCards()` | Card collection pane; `renderCards()` re-renders on filter/sort change |
 | `renderEvolutionsPane()` / `loadEvolutionsGrid()` | Evolutions tab (lazy-loaded on tab click) |
@@ -146,7 +149,7 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 |---|---|
 | `cr_player_tag` | Last looked-up player tag |
 | `cr_saved_accounts` | Saved account list (name + tag) |
-| `cr_friends` | Saved friends (max 10) |
+| `cr_friends` | Saved friends (max 50) |
 | `cr_profile_cache` | Last profile + battles, for instant render on open |
 | `cr_clan_cache` | Last clan lookup |
 | `cr_cards_cache_v7` | `{ items, savedAt }` card catalog, monthly expiry + background revalidation |
@@ -184,6 +187,11 @@ On `/players/{tag}` cards, `evolutionLevel` means something else — what the pl
 - **Classic / Grand 12-win challenges** — `progress` of the `Classic12Wins` / `Grand12Wins` badges; absent badge = 0.
 
 ---
+
+## Profile vs friend modal (gotcha)
+The friend modal (friends **and** clan members) renders the same Overview as the profile, and both are in the DOM at once. Anything the Overview renders needs per-scope state and element ids (`renderOverview(data, battles, scope)`, ids like `${scope}-plan-output`) — a fixed id makes the friend's control drive the profile's hidden copy. Friend deck maps use `buildDeckMapFromBattles(..., { persist: false })` so a friend's decks never enter this device's deck history.
+
+`loadPlayer`, `viewFriend` and `loadClan` each take a sequence ticket and drop responses that are no longer the latest, so a slow request (e.g. the installed-app background refresh) can't overwrite a newer one.
 
 ## Known limitations / things to be aware of
 - The Clash Royale API only returns the last **~25–30 battles**. Deck stats work around this by accumulating history in `localStorage` (not retroactive — it only counts battles seen since the feature shipped).

@@ -698,6 +698,14 @@ async function apiGet(path) {
   return res.json();
 }
 
+// Clash Royale tags are uppercase and only use 0289PYLQGRJCUV — never the letter
+// O — but people type them in lowercase, with spaces, or with O for 0, and the API
+// 404s on all of those.
+function normalizeTag(raw) {
+  const t = String(raw || '').toUpperCase().replace(/[^0-9A-Z]/g, '').replace(/O/g, '0');
+  return t ? '#' + t : '';
+}
+
 function fmtNum(n) { return n == null ? '—' : n.toLocaleString(); }
 
 function formatBattleTime(ts) {
@@ -1000,18 +1008,17 @@ document.addEventListener('click', e => {
   }
 });
 
-// ── Friends (up to 10, stored in localStorage) ──
+// ── Friends (up to 50, stored in localStorage) ──
+const MAX_FRIENDS = 50;
 function getFriends() {
   try { return JSON.parse(localStorage.getItem('cr_friends') || '[]'); }
   catch(e) { return []; }
 }
 async function addFriend() {
-  const raw = document.getElementById('friend-tag').value.trim();
-  const msg = document.getElementById('friend-msg');
-  if (!raw) return;
-  const tag = raw.startsWith('#') ? raw : '#' + raw;
+  const tag = normalizeTag(document.getElementById('friend-tag').value);
+  if (!tag) return;
   let list = getFriends();
-  if (list.length >= 50) { showFriendMsg('You can save up to 50 friends. Remove one first.', true); return; }
+  if (list.length >= MAX_FRIENDS) { showFriendMsg(`You can save up to ${MAX_FRIENDS} friends. Remove one first.`, true); return; }
   if (list.some(f => f.tag === tag)) { showFriendMsg('That friend is already saved.', true); return; }
   showFriendMsg('Checking tag…', false);
   try {
@@ -1039,7 +1046,11 @@ function removeFriend(tag, ev) {
   _renderFriendsList();  // keep current edit mode while removing
 }
 let _friendData = null, _friendBattles = [];
+// Same ticket idea as loadPlayer: tapping a second friend (or closing the modal)
+// before the first finishes loading must not let the first one land.
+let _friendSeq = 0;
 async function viewFriend(tag) {
+  const seq = ++_friendSeq;
   const modal = document.getElementById('friend-modal');
   const body  = document.getElementById('friend-modal-body');
   modal.style.display = 'block';
@@ -1049,10 +1060,12 @@ async function viewFriend(tag) {
     await maybeLoadCards();
     // The battle log only feeds the Overview's recent-battle stats — a failure
     // there shouldn't stop the profile from opening.
-    [_friendData, _friendBattles] = await Promise.all([
+    const [data, battles] = await Promise.all([
       apiGet('/players/' + encodeURIComponent(tag)),
       apiGet('/players/' + encodeURIComponent(tag) + '/battlelog').catch(() => [])
     ]);
+    if (seq !== _friendSeq) return;
+    [_friendData, _friendBattles] = [data, battles];
     body.innerHTML = `
       <div class="lookup-header" style="margin-bottom:12px">
         <div class="player-name">${esc(_friendData.name)}</div>
@@ -1072,10 +1085,12 @@ async function viewFriend(tag) {
       <div id="friend-pane"></div>`;
     friendTab('overview');
   } catch(e) {
-    body.innerHTML = `<div class="error-msg">${e.message}</div>`;
+    if (seq !== _friendSeq) return;
+    body.innerHTML = `<div class="error-msg">${esc(e.message)}</div>`;
   }
 }
 function closeFriendModal() {
+  _friendSeq++;
   document.getElementById('friend-modal').style.display = 'none';
   document.body.style.overflow = '';
   _friendData = null;
@@ -1091,7 +1106,7 @@ function friendTab(name) {
   document.querySelectorAll('#friend-modal-body .tab-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.ftab === name));
   const pane = document.getElementById('friend-pane');
-  if (name === 'overview')    pane.innerHTML = renderOverview(d, _friendBattles);
+  if (name === 'overview')    pane.innerHTML = renderOverview(d, _friendBattles, 'f');
   if (name === 'cards')     { _fCardStatus='all'; _fCardRarity='all'; _fCardSort=DEFAULT_CARD_SORT; _fCardSearch=''; pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
   if (name === 'evolutions'){ _fEvoFilter='all';  pane.innerHTML = friendCollectShell('evolution'); friendRenderCollect('evolution'); }
   if (name === 'heroes')    { _fHeroFilter='all'; pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
@@ -1309,7 +1324,7 @@ function _renderFriendsList() {
   if (!wrap) return;
   const list = getFriends();
   if (!list.length) {
-    wrap.innerHTML = '<div class="empty-msg">No friends saved yet. Add a player tag above (up to 10).</div>';
+    wrap.innerHTML = `<div class="empty-msg">No friends saved yet. Add a player tag above (up to ${MAX_FRIENDS}).</div>`;
     return;
   }
   const header = `
@@ -1334,10 +1349,13 @@ function _renderFriendsList() {
 
 // opts.quiet: refresh in place without a spinner, keeping whatever is already on
 // screen if the fetch fails. Used by the installed-app auto-refresh.
+// Each lookup takes a ticket; a response whose ticket is no longer the latest is
+// dropped, so a slow background refresh can't overwrite an account you switched to.
+let _loadPlayerSeq = 0;
 async function loadPlayer(tagOverride, opts = {}) {
-  const raw = (tagOverride || document.getElementById('player-tag').value).trim();
-  if (!raw) return;
-  const tag = raw.startsWith('#') ? raw : '#' + raw;
+  const tag = normalizeTag(tagOverride || document.getElementById('player-tag').value);
+  if (!tag) return;
+  const seq = ++_loadPlayerSeq;
   // Save tag so it survives page reload
   localStorage.setItem('cr_player_tag', tag);
   document.getElementById('player-tag').value = tag;
@@ -1349,6 +1367,7 @@ async function loadPlayer(tagOverride, opts = {}) {
       apiGet('/players/' + encodeURIComponent(tag) + '/battlelog').catch(() => []),
       maybeLoadCards()
     ]);
+    if (seq !== _loadPlayerSeq) return;
     if (opts.quiet) renderProfilePreservingView(data, battles);
     else renderProfile(data, battles);
     // Save this account (name + tag) so the user can switch between accounts
@@ -1361,16 +1380,30 @@ async function loadPlayer(tagOverride, opts = {}) {
     // Persist the full profile so we can render instantly on next app open
     saveProfileCache(data.tag, data, battles);
     window._currentProfile = { data, battles };
-    // Auto-fill and auto-load the clan from the player's clan tag
-    if (data.clan?.tag) {
-      document.getElementById('clan-tag').value = data.clan.tag;
-      loadClan();
-    }
+    syncClanToProfile(data);
   } catch(e) {
+    if (seq !== _loadPlayerSeq) return;
     // A quiet refresh keeps the profile already on screen — a dropped connection
-    // shouldn't replace good data with an error.
-    if (!opts.quiet) el.innerHTML = `<div class="error-msg">${e.message}</div>`;
+    // shouldn't replace good data with an error. With no profile showing (it
+    // superseded a lookup whose spinner is still up), say what went wrong.
+    if (!opts.quiet || !document.getElementById('tab-overview')) el.innerHTML = `<div class="error-msg">${esc(e.message)}</div>`;
   }
+}
+
+// The Clan screen follows the loaded profile's clan — unless the user has looked
+// up a different clan there, which switching accounts or a background refresh
+// shouldn't yank away. fromCache: render the cached clan, no network (app start).
+let _profileClanTag = '';
+function syncClanToProfile(data, { fromCache = false } = {}) {
+  const input = document.getElementById('clan-tag');
+  const shown = normalizeTag(input.value);
+  if (shown && shown !== _profileClanTag) return;
+  _profileClanTag = data.clan?.tag || '';
+  input.value = _profileClanTag;
+  if (!_profileClanTag) { document.getElementById('clan-result').innerHTML = ''; return; }
+  if (!fromCache) { loadClan(); return; }
+  const cached = loadClanCache(_profileClanTag);
+  if (cached) renderClan(cached.data);
 }
 
 // Re-render the profile without throwing the user back to the Overview tab or to
@@ -1421,11 +1454,7 @@ function renderProfileFromCache(cached) {
   window._currentProfile = { data: cached.data, battles: cached.battles };
   _playerCardsById = {};
   [...(cached.data.cards || []), ...(cached.data.supportCards || [])].forEach(c => { _playerCardsById[c.id] = c; });
-  if (cached.data.clan?.tag) {
-    document.getElementById('clan-tag').value = cached.data.clan.tag;
-    const clanCached = loadClanCache(cached.data.clan.tag);
-    if (clanCached) renderClan(clanCached.data);
-  }
+  syncClanToProfile(cached.data, { fromCache: true });
 }
 
 // Path of Legends league names. Supercell dropped the three Challenger leagues, so
@@ -1552,15 +1581,22 @@ function renderProfile(data, battles) {
 }
 
 function esc(str) {
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 // ── Upgrade Planner ──
 const RARITY_DISPLAY_NAME = { common:'Common', rare:'Rare', epic:'Epic', legendary:'Legendary', champion:'Champion' };
 const RARITY_COLOR_MAP = { common:'var(--text)', rare:'var(--blue)', epic:'var(--purple)', legendary:'var(--accent)', champion:'#e74c3c' };
 const RARITY_ORDER_KEYS = ['common','rare','epic','legendary','champion'];
-let _planMode = 'account';
-let _planTarget = MAX_LEVEL;
+// The profile Overview and the friend modal's Overview each render Suggested
+// Upgrades and the Upgrade Planner, and both can be in the DOM at once. Each gets
+// its own context — data, decks, selections — and its own element ids, keyed by
+// scope ('p' = profile, 'f' = friend), so neither can read or redraw the other.
+const _planCtx = {};
+function makePlanCtx(scope, data, decks) {
+  return (_planCtx[scope] = { scope, data, decks, planMode: 'account', planTarget: MAX_LEVEL, suggestMode: 'account' });
+}
 
 function cardsToMaxStats(c, target) {
   const r = (c.rarity||'common').toLowerCase();
@@ -1600,8 +1636,10 @@ function saveDeckHistory(tag, history) {
   } catch(e) {}
 }
 
-function buildDeckMapFromBattles(battles, playerTag) {
-  const history = loadDeckHistory(playerTag);
+// persist:false builds the map from these battles alone and saves nothing — for
+// friends, whose decks must never land in this device's deck history.
+function buildDeckMapFromBattles(battles, playerTag, { persist = true } = {}) {
+  const history = persist ? loadDeckHistory(playerTag) : { decks: {}, seen: [] };
   const seen = new Set(history.seen);
   let changed = false;
 
@@ -1642,7 +1680,7 @@ function buildDeckMapFromBattles(battles, playerTag) {
     changed = true;
   });
 
-  if (changed) {
+  if (changed && persist) {
     history.seen = [...seen].slice(-300); // bound growth; far more than one battle log window
     saveDeckHistory(playerTag, history);
   }
@@ -1657,17 +1695,17 @@ function buildDeckMapFromBattles(battles, playerTag) {
   });
   return deckMap;
 }
-function getPlanDeckOptions() {
-  let dm = window._deckMapData;
-  if (!dm || !Object.keys(dm).length) dm = buildDeckMapFromBattles(window._planBattles || [], window._planData?.tag);
-  return Object.values(dm || {}).sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws)).slice(0,8);
+// Most-played decks first. The profile reads (and extends) this device's saved
+// deck history; a friend only gets the decks in their current battle log.
+function planDeckOptions(data, battles, scope) {
+  const dm = buildDeckMapFromBattles(battles || [], data.tag, { persist: scope === 'p' });
+  return Object.values(dm).sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws)).slice(0,8);
 }
-function renderUpgradePlanner(data, battles) {
-  window._planData = data;
-  window._planBattles = battles || [];
-  _planMode = 'account';
-  _planTarget = MAX_LEVEL;
-  const decks = getPlanDeckOptions();
+const planDeckOptionHTML = (d, i) =>
+  `<option value="deck-${i}">Deck #${i+1} · ${d.wins}W ${d.losses}L (${d.cards.slice(0,3).map(esc).join(', ')}…)</option>`;
+
+function renderUpgradePlanner(ctx) {
+  const { data, decks, scope } = ctx;
 
   // Detect the lowest display level so the dropdown only shows meaningful targets
   const allDisp = (data.cards||[]).map(c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level));
@@ -1680,35 +1718,32 @@ function renderUpgradePlanner(data, battles) {
       <h3 style="margin-bottom:6px">📈 Upgrade Planner</h3>
       <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Cards &amp; gold needed by rarity to reach your target level</p>
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
-        <select onchange="setPlanMode(this.value)" style="${selStyle}">
+        <select onchange="setPlanMode('${scope}', this.value)" style="${selStyle}">
           <option value="account">Whole account</option>
-          ${decks.map((d,i) => `<option value="deck-${i}">Deck #${i+1} · ${d.wins}W ${d.losses}L (${d.cards.slice(0,3).map(esc).join(', ')}…)</option>`).join('')}
+          ${decks.map(planDeckOptionHTML).join('')}
         </select>
-        <select onchange="setPlanTarget(this.value)" style="${selStyle}">
+        <select onchange="setPlanTarget('${scope}', this.value)" style="${selStyle}">
           ${Array.from({length: MAX_LEVEL - lowestTarget + 1}, (_,i) => MAX_LEVEL - i)
             .map(lv => `<option value="${lv}">to Lv ${lv}</option>`).join('')}
         </select>
       </div>
-      <div id="plan-output">${buildPlanOutput()}</div>
+      <div id="${scope}-plan-output">${buildPlanOutput(ctx)}</div>
     </div>`;
 }
-window.setPlanMode = function(v) {
-  _planMode = v;
-  document.getElementById('plan-output').innerHTML = buildPlanOutput();
-};
-window.setPlanTarget = function(v) {
-  _planTarget = parseInt(v,10) || MAX_LEVEL;
-  document.getElementById('plan-output').innerHTML = buildPlanOutput();
-};
+function _redrawPlan(scope, key, val) {
+  const ctx = _planCtx[scope]; if (!ctx) return;
+  ctx[key] = val;
+  const isSuggest = key === 'suggestMode';
+  const el = document.getElementById(`${scope}-${isSuggest ? 'suggested' : 'plan'}-output`);
+  if (el) el.innerHTML = isSuggest ? buildSuggestedOutput(ctx) : buildPlanOutput(ctx);
+}
+window.setPlanMode    = (scope, v) => _redrawPlan(scope, 'planMode', v);
+window.setPlanTarget  = (scope, v) => _redrawPlan(scope, 'planTarget', parseInt(v,10) || MAX_LEVEL);
 
 // ── Suggested Upgrades (scoped by account or deck) ──
-let _suggestMode = 'account';
-window.setSuggestMode = function(v) {
-  _suggestMode = v;
-  document.getElementById('suggested-output').innerHTML = buildSuggestedOutput();
-};
-function buildSuggestedOutput() {
-  const data = window._planData;
+window.setSuggestMode = (scope, v) => _redrawPlan(scope, 'suggestMode', v);
+function buildSuggestedOutput(ctx) {
+  const data = ctx.data;
   if (!data) return '';
   const enriched = (data.cards||[]).map(c => {
     const r = (c.rarity||'common').toLowerCase();
@@ -1726,10 +1761,8 @@ function buildSuggestedOutput() {
   // show up to 5 cheapest. A ✓ vs +X cards still needed label tells the user
   // whether it's actually doable right now.
   let upgradable = enriched.filter(c => !c.isMaxed && c.nextStep);
-  if (_suggestMode.startsWith('deck-')) {
-    const idx = parseInt(_suggestMode.slice(5),10);
-    const decks = getPlanDeckOptions();
-    const deck = decks[idx];
+  if (ctx.suggestMode.startsWith('deck-')) {
+    const deck = ctx.decks[parseInt(ctx.suggestMode.slice(5),10)];
     if (!deck) return '<div class="empty-msg">Deck not found.</div>';
     const deckNames = new Set(deck.cards);
     upgradable = upgradable.filter(c => deckNames.has(c.name));
@@ -1753,21 +1786,19 @@ function buildSuggestedOutput() {
     </div>`;
   }).join('');
 }
-function buildPlanOutput() {
-  const data = window._planData;
+function buildPlanOutput(ctx) {
+  const data = ctx.data;
   if (!data) return '';
   let cards = data.cards || [];
   let titleSuffix = '';
-  if (_planMode.startsWith('deck-')) {
-    const idx = parseInt(_planMode.slice(5),10);
-    const decks = getPlanDeckOptions();
-    const deck = decks[idx];
+  if (ctx.planMode.startsWith('deck-')) {
+    const deck = ctx.decks[parseInt(ctx.planMode.slice(5),10)];
     if (!deck) return '<div class="empty-msg">Deck not found.</div>';
     const deckNames = new Set(deck.cards);
     cards = cards.filter(c => deckNames.has(c.name));
     titleSuffix = ` (deck)`;
   }
-  const target = _planTarget;
+  const target = ctx.planTarget;
   const sum = buildPlanSummary(cards, target);
   const rows = RARITY_ORDER_KEYS.map(r => {
     const v = sum.byR[r];
@@ -1795,6 +1826,7 @@ let _deckUpSelectedDeckIdx = 0;
 let _deckUpCustomIds = [];             // array of selected card IDs (max 8)
 let _deckUpTarget = MAX_LEVEL;
 let _deckUpSearch = '';
+let _deckUpTag = null;                 // whose deck the selections above belong to
 
 function renderDeckUpgradeScreen() {
   const screen = document.getElementById('screen-deckup');
@@ -1808,6 +1840,12 @@ function renderDeckUpgradeScreen() {
   }
   const data = profile.data;
   const battles = profile.battles || [];
+  if (data.tag !== _deckUpTag) {
+    // A custom deck is a list of card ids — on another account it would show a
+    // count of cards that aren't in the slots. Start over per account.
+    _deckUpTag = data.tag;
+    _deckUpCustomIds = []; _deckUpSelectedDeckIdx = 0; _deckUpSearch = '';
+  }
   const decks = Object.values(buildDeckMapFromBattles(battles, data.tag))
     .sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws))
     .slice(0,10);
@@ -2105,7 +2143,8 @@ function battleStatsHTML(data, battles) {
     </div>`;
 }
 
-function renderOverview(data, battles) {
+// scope: 'p' for the profile, 'f' for the friend modal — see makePlanCtx().
+function renderOverview(data, battles, scope = 'p') {
   const cards = data.cards || [];
 
   // Compute per-card enriched data
@@ -2250,11 +2289,11 @@ function renderOverview(data, battles) {
 
     <div class="card">
       <h3 style="margin-bottom:12px">📊 Collection Level</h3>
-      <div class="stat-row" onclick="toggleCardMax('cl-breakdown')" style="cursor:pointer">
-        <span class="stat-label">Collection Level <span id="cl-breakdown-toggle" style="font-size:10px;color:var(--muted)">▼</span></span>
+      <div class="stat-row" onclick="toggleCardMax('${scope}-cl-breakdown')" style="cursor:pointer">
+        <span class="stat-label">Collection Level <span id="${scope}-cl-breakdown-toggle" style="font-size:10px;color:var(--muted)">▼</span></span>
         <strong style="font-size:20px;font-family:'Rajdhani',sans-serif">${fmtNum(collectionLevel)}</strong>
       </div>
-      <div id="cl-breakdown-max" style="display:none;padding:6px 0 4px;border-bottom:1px solid var(--border);margin-bottom:2px">
+      <div id="${scope}-cl-breakdown-max" style="display:none;padding:6px 0 4px;border-bottom:1px solid var(--border);margin-bottom:2px">
         <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding:2px 0"><span>Cards (levels)</span><span>+${fmtNum(cardLevelCL)}</span></div>
         ${evolvedCount > 0 ? `<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding:2px 0"><span>Evolutions (×5 each)</span><span style="color:var(--blue)">+${evolvedCount * 5} (${evolvedCount} evos)</span></div>` : ''}
         ${heroCount > 0 ? `<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding:2px 0"><span>Heroes (×5 each)</span><span style="color:var(--purple)">+${heroCount * 5} (${heroCount} heroes)</span></div>` : ''}
@@ -2268,27 +2307,20 @@ function renderOverview(data, battles) {
 
     ${(() => {
       // Suggested Upgrades — scoped to whole account or a specific recent deck.
-      // Prime the shared plan state so getPlanDeckOptions() / buildSuggestedOutput()
-      // can see the current profile + battles (renderUpgradePlanner runs after us
-      // and would otherwise be the only thing setting these).
-      window._planData = data;
-      window._planBattles = battles || [];
-      _suggestMode = 'account';
-      const decks = getPlanDeckOptions();
+      const ctx = makePlanCtx(scope, data, planDeckOptions(data, battles, scope));
       const selStyle = "width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center;margin-bottom:10px";
       return `
         <div class="card">
           <h3 style="margin-bottom:6px">💡 Suggested Upgrades</h3>
           <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Cheapest upgrades you can do right now</p>
-          <select onchange="setSuggestMode(this.value)" style="${selStyle}">
+          <select onchange="setSuggestMode('${scope}', this.value)" style="${selStyle}">
             <option value="account">Whole account</option>
-            ${decks.map((d,i) => `<option value="deck-${i}">Deck #${i+1} · ${d.wins}W ${d.losses}L (${d.cards.slice(0,3).map(esc).join(', ')}…)</option>`).join('')}
+            ${ctx.decks.map(planDeckOptionHTML).join('')}
           </select>
-          <div id="suggested-output">${buildSuggestedOutput()}</div>
-        </div>`;
-    })()}
-
-    ${renderUpgradePlanner(data, battles)}`;
+          <div id="${scope}-suggested-output">${buildSuggestedOutput(ctx)}</div>
+        </div>
+        ${renderUpgradePlanner(ctx)}`;
+    })()}`;
 }
 
 // ── Cards pane ──
@@ -2476,7 +2508,7 @@ function toggleCardMax(id) {
   const opening = el.style.display === 'none' || el.style.display === '';
   el.style.display = opening ? 'block' : 'none';
   if (toggle) {
-    const closedText = toggle.dataset.closed || (id === 'cl-breakdown' ? '▼' : '▼ Total to Lv 16');
+    const closedText = toggle.dataset.closed || (id.endsWith('cl-breakdown') ? '▼' : '▼ Total to Lv 16');
     toggle.textContent = opening ? '▲' : closedText;
   }
 }
@@ -3064,7 +3096,7 @@ window.setBattleFilter = function(mode) {
 function _renderBattleList(battles) {
   const modes = [...new Set(battles.map(b => battleModeLabel(b)))];
   const modeButtons = ['all', ...modes].map(m =>
-    `<button class="filter-btn ${_battleFilter===m?'active':''}" onclick="setBattleFilter('${m}')">${m === 'all' ? 'All Modes' : m}</button>`
+    `<button class="filter-btn ${_battleFilter===m?'active':''}" data-mode="${esc(m)}" onclick="setBattleFilter(this.dataset.mode)">${m === 'all' ? 'All Modes' : esc(m)}</button>`
   ).join('');
   const bar = `<div class="filter-bar">${modeButtons}</div>`;
 
@@ -3205,14 +3237,17 @@ function renderDeckBuilder(battles, playerTag) {
 }
 
 function _renderDeckList(deckMap, battles) {
+  const modes = [...new Set(battles.map(b => battleModeLabel(b)))];
+  // The filter survives re-renders, but not onto an account (or a refreshed
+  // battle log) without that mode — it would have no button to clear it.
+  if (_deckFilter !== 'all' && !modes.includes(_deckFilter)) _deckFilter = 'all';
   const entries = Object.values(deckMap);
   let filtered = entries;
   if (_deckFilter !== 'all') filtered = entries.filter(d => d.modes.includes(_deckFilter));
   filtered.sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws));
 
-  const modes = [...new Set(battles.map(b => battleModeLabel(b)))];
   const modeButtons = ['all', ...modes].map(m =>
-    `<button class="filter-btn ${_deckFilter===m?'active':''}" onclick="setDeckFilter('${m}')">${m === 'all' ? 'All Modes' : m}</button>`
+    `<button class="filter-btn ${_deckFilter===m?'active':''}" data-mode="${esc(m)}" onclick="setDeckFilter(this.dataset.mode)">${m === 'all' ? 'All Modes' : esc(m)}</button>`
   ).join('');
 
   if (!filtered.length) return `<div class="filter-bar">${modeButtons}</div><div class="empty-msg">No decks for this filter.</div>`;
@@ -3316,18 +3351,23 @@ function countryFlag(code) {
 let _clanMembers = [];
 let _clanSort = 'trophies';
 
+let _loadClanSeq = 0;
 async function loadClan() {
-  const raw = document.getElementById('clan-tag').value.trim();
-  if (!raw) return;
-  const tag = raw.startsWith('#') ? raw : '#' + raw;
+  const input = document.getElementById('clan-tag');
+  const tag = normalizeTag(input.value);
+  if (!tag) return;
+  input.value = tag;
+  const seq = ++_loadClanSeq;
   const el = document.getElementById('clan-result');
   el.innerHTML = '<div class="spinner"></div>';
   try {
     const data = await apiGet('/clans/' + encodeURIComponent(tag));
+    if (seq !== _loadClanSeq) return;
     renderClan(data);
     saveClanCache(tag, data);
   } catch(e) {
-    el.innerHTML = `<div class="error-msg">${e.message}</div>`;
+    if (seq !== _loadClanSeq) return;
+    el.innerHTML = `<div class="error-msg">${esc(e.message)}</div>`;
   }
 }
 
@@ -3373,9 +3413,8 @@ function renderClan(data) {
     <div style="margin-bottom:10px">
       <select id="clan-sort-select" onchange="setClanSort(this.value)"
         style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
-        <option value="trophies">Sort: Trophies</option>
-        <option value="donations">Sort: Donations</option>
-        <option value="lastseen">Sort: Last Seen</option>
+        ${[['trophies','Trophies'],['donations','Donations'],['lastseen','Last Seen']].map(([v,l]) =>
+          `<option value="${v}"${_clanSort===v?' selected':''}>Sort: ${l}</option>`).join('')}
       </select>
     </div>
     <div id="clan-members-list"></div>`;
