@@ -61,7 +61,7 @@ There is no `screen-home`; the app opens on the Player screen.
 
 | Tab          | ID                 | Data source |
 |--------------|--------------------|-------------|
-| Overview     | `tab-overview`     | `/players/{tag}` — card insights, battle stats, donations, collection level |
+| Overview     | `tab-overview`     | `/players/{tag}` + battle log — account stats (XP, age, star points, cards found, donations, clan wars), battle stats (W/L, streak, est. playtime, recent W/L per mode, Path of Legends, old trophy road, challenges), card insights, collection level |
 | Cards        | `tab-cards`        | `/players/{tag}` + `/cards` — full collection with filters (status, rarity, sort); cards not yet unlocked are synthesised from the catalog and shown greyed out at the bottom |
 | Evolutions   | `tab-evolutions`   | `/cards` catalog filtered by `iconUrls.evolutionMedium`, matched against player cards |
 | Heroes       | `tab-heroes`       | `/cards` catalog filtered by `iconUrls.heroMedium` |
@@ -70,7 +70,7 @@ There is no `screen-home`; the app opens on the Player screen.
 | Battles      | `tab-battles`      | `/players/{tag}/battlelog` — recent battles with decks (evo/hero tiles marked), crowns, trophy change |
 | Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries |
 
-The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, Evolutions, Heroes, Tower Troops.
+The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, Evolutions, Heroes, Tower Troops, Badges. `viewFriend()` also fetches the friend's battle log, only for the Overview's recent-battle stats (a failure there is ignored).
 
 ---
 
@@ -83,7 +83,9 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | `isInstalledApp()` | True when launched as an installed PWA rather than a browser tab |
 | `autoRefreshProfile()` | Installed-app background refresh of the cached profile, throttled to 2 min |
 | `renderProfile(data, battles)` | Renders the header + every profile tab |
-| `renderOverview(data, battles)` | Card insights, collection level, battle/donation stats |
+| `renderOverview(data, battles)` | Account + battle stats, card insights, collection level — shared by the profile and friend Overview |
+| `accountStatsHTML()` / `battleStatsHTML()` | The Overview's Account and Battle Stats cards |
+| `polLeagueName(r)` / `polLeagueDetail(r)` / `polLeagueText(r)` | Path of Legends season result → league name, rank/trophies |
 | `renderCardsPane(data)` / `renderCards()` | Card collection pane; `renderCards()` re-renders on filter/sort change |
 | `renderEvolutionsPane()` / `loadEvolutionsGrid()` | Evolutions tab (lazy-loaded on tab click) |
 | `renderHeroesPane()` / `loadHeroesGrid()` | Heroes tab (lazy) |
@@ -173,6 +175,17 @@ The first three deck slots are special: evolutions, heroes and champions go ther
 
 On `/players/{tag}` cards, `evolutionLevel` means something else — what the player has *unlocked* — so don't reuse `cardVariant()` there.
 
+## Path of Legends leagues (gotcha)
+`leagueNumber` now runs **1–7**: Master I–III, Champion, Grand Champion, Royal Champion, Ultimate Champion. Supercell dropped the three Challenger leagues; checked Oct 2026, the global #1 and #2 are both league 7. Values 8–10 only appear in results from the old 10-league system (10 = Ultimate Champion), e.g. an old best season. Global rank is only meaningful in Ultimate Champion.
+
+## Derived stats (no API field)
+- **Account age** — the `YearsPlayed` badge's `progress` is days played.
+- **Estimated playtime** — `battleCount × 4 min` (split by `tournamentBattleCount`), the same assumption deckai.app uses.
+- **Classic / Grand 12-win challenges** — `progress` of the `Classic12Wins` / `Grand12Wins` badges; absent badge = 0.
+
+---
+
+## Known limitations / things to be aware of
 - The Clash Royale API only returns the last **~25–30 battles**. Deck stats work around this by accumulating history in `localStorage` (not retroactive — it only counts battles seen since the feature shipped).
 - Deck history is per-browser/per-device and never leaves the device, so different users of the deployed app never see each other's stats.
 - **In a browser tab the profile never auto-refreshes** — the app renders the cached snapshot on open and waits for the Refresh button, so stats can look stale. Installed as an app it refreshes in the background on launch and on foreground. Deliberate: a tab is often left open for a long time, an installed app is expected to be current.
@@ -224,3 +237,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 16. Auto-refreshed the profile on launch/foreground when running as an installed app
 17. Showed not-yet-unlocked cards greyed out at the bottom of the Cards list, and measured Card Insights against the whole catalog
 18. Marked evolution and hero tiles in the Battles and Decks tabs, and tracked decks per evo/hero choice
+19. Added Account and Battle Stats to both Overviews (deckai.app parity), and moved Path of Legends to the 7-league numbering
