@@ -47,7 +47,7 @@ README.md                         ← setup instructions
 
 | Nav item     | Screen ID        | Description |
 |--------------|------------------|-------------|
-| Player       | `screen-lookup`  | Player profile lookup by tag + saved accounts |
+| Player       | `screen-lookup`  | Player profile. A compact header (name ▾, trophies, refresh; King/CL/league line) sits above the tabs; tapping the name opens the Accounts menu (switch, edit, add/look up by tag). The tag box (`#lookup-start`) only shows with no profile on screen: first run or a failed lookup |
 | Calculator   | `screen-calc`    | Offline upgrade cost calculator with card picker |
 | Deck Upgrade | `screen-deckup`  | Cost to upgrade a whole 8-card deck |
 | Clan         | `screen-clan`    | Clan lookup by tag; tabs Members (sortable), River Race (live standings + each member's decks used today), War History (last 10 races, fold-out standings + member contributions) |
@@ -66,12 +66,12 @@ There is no `screen-home`; the app opens on the Player screen.
 | Evolutions   | `tab-evolutions`   | `/cards` catalog filtered by `iconUrls.evolutionMedium`, matched against player cards |
 | Heroes       | `tab-heroes`       | `/cards` catalog filtered by `iconUrls.heroMedium` |
 | Tower Troops | `tab-towerTroops`  | `data.supportCards` from `/players/{tag}` |
-| Decks        | `tab-decks`        | Battle log + persisted history — W/L/D per unique deck (card set + which cards were played as evo/hero), mode filter, copy/delete |
-| Battles      | `tab-battles`      | Toggle between **Battle Log** (`/battlelog` — decks with evo/hero tiles, crowns, trophy change; each battle folds out details: towers left, elixir leaked, trophies, global rank, tower troop, clan, boat stats; 2v2 also the opponents' decks) and **Battle Stats** (the current in-game deck from `currentDeck`, lifetime W/L, streak, est. playtime, recent W/L per mode, Path of Legends, old trophy road, challenges) |
+| Decks        | `tab-decks`        | Current in-game deck pinned on top (its tracked W/L, Copy, Upgrade cost → Deck Upgrade), then battle log + persisted history — W/L/D per unique deck (card set + which cards were played as evo/hero), mode filter, copy/delete |
+| Battles      | `tab-battles`      | Toggle between **Battle Log** (`/battlelog` — decks with evo/hero tiles, crowns, trophy change; each battle folds out details: towers left, elixir leaked, trophies, global rank, tower troop, clan, boat stats; 2v2 also the opponents' decks) and **Battle Stats** (lifetime W/L, streak, est. playtime, recent W/L per mode, Path of Legends, old trophy road, challenges) |
 | Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries |
 | Account      | `tab-account`      | `/players/{tag}` — XP level, account age, star points, cards found, favourite card, donations, clan wars |
 
-The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, Evolutions, Heroes, Tower Troops, Badges, Account. With no Battles tab there, the modal's Account tab shows the battle stats too. `viewFriend()` also fetches the friend's battle log, only for the Overview's recent-battle stats (a failure there is ignored).
+The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, Evolutions, Heroes, Tower Troops, Badges, Account. With no Battles or Decks tab there, the modal's Account tab also shows the current deck and the battle stats. `viewFriend()` also fetches the friend's battle log, only for the Overview's recent-battle stats (a failure there is ignored).
 
 ---
 
@@ -99,7 +99,9 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | `setBadgeFilter(val)` | Badge filter: `all` / `mastery` / `other` |
 | `renderBattles(battles, data)` / `setBattleView(v)` / `setBattleFilter(mode)` | Battles tab: log/stats toggle + mode filter |
 | `battleDetailsHTML(b, team, opp)` | A battle's fold-out details table |
-| `currentDeckHTML(data, battles)` / `currentDeckVariants()` | Current in-game deck card at the top of Battle Stats |
+| `currentDeckHTML(data, battles, opts)` / `currentDeckVariants()` | Current in-game deck card (Decks tab top; friend Account tab) |
+| `renderSavedAccounts()` / `menuLookup()` / `showLookupStart(on)` | Accounts menu (opened from the header name) and the start card's account chips |
+| `openCurrentDeckUpgrade()` | Opens Deck Upgrade with the current deck as its custom deck |
 | `clanTab(name)` / `loadClanWar(tag)` / `riverRaceHTML()` / `warHistoryHTML()` | Clan screen tabs; war data fetched on tab open, cached 1 min per clan |
 | `renderDeckBuilder(battles, playerTag)` | Builds the icon map, delegates to `buildDeckMapFromBattles` |
 | `buildDeckMapFromBattles(battles, playerTag)` | Merges new battles into persisted deck history, returns the deck map |
@@ -216,6 +218,8 @@ The friend modal (friends **and** clan members) renders the same Overview as the
 ## Deployment
 Push to `main` — the GitHub Actions workflow deploys to Pages automatically (~1 min). Watch the **Actions** tab for the green ✓.
 
+To undo the Oct 2026 header/accounts redesign, the tag `pre-redesign` marks the last version before it: `git revert --no-edit pre-redesign..HEAD` (or check out files from it) and push.
+
 If a run fails with *"Multiple artifacts named github-pages"*, it's because a failed run was re-run. Don't re-run — push a fresh commit instead (`git commit --allow-empty` works).
 
 No API key setup is needed by end users; the Worker holds it.
@@ -255,3 +259,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 18. Marked evolution and hero tiles in the Battles and Decks tabs, and tracked decks per evo/hero choice
 19. Added Account and Battle Stats to both Overviews (deckai.app parity), and moved Path of Legends to the 7-league numbering
 20. Moved the stats out of the Overview (Account tab; Battles tab Log/Stats toggle), added per-battle details, and added River Race + War History to the Clan screen
+21. Redesign: compact profile header, tag lookup moved into the Accounts menu, current deck pinned on the Decks tab (tagged `pre-redesign` before it)

@@ -131,6 +131,13 @@
   /* ── Player / Clan lookup ── */
   .lookup-header { background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
   .player-name { font-family: 'Rajdhani', sans-serif; font-size: 26px; font-weight: 700; }
+  .ph-head { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 12px; }
+  .ph-name { background: none; border: none; padding: 0; color: var(--text); font-family: 'Rajdhani', sans-serif; font-size: 22px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .ph-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ph-caret { font-size: 12px; color: var(--muted); }
+  .ph-icon { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 50%; width: 30px; height: 30px; cursor: pointer; font-size: 14px; line-height: 1; flex-shrink: 0; }
+  .ph-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .acct-chip { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 16px; padding: 6px 12px; font-size: 13px; font-family: 'Inter', sans-serif; cursor: pointer; }
   .player-tag { color: var(--muted); font-size: 13px; font-family: monospace; }
   .trophies { display: block; margin-top: 6px; font-size: 13px; color: var(--muted); }
 
@@ -264,26 +271,28 @@
 
     <!-- ═══════════════ PLAYER LOOKUP ═══════════════ -->
     <div id="screen-lookup" class="screen active">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;position:relative">
-        <h2 style="margin:0">🔍 Player Lookup</h2>
-        <button id="accounts-btn" onclick="toggleAccountsMenu(event)" style="display:none;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:16px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer">👤 Accounts ▾</button>
-        <div id="saved-accounts" style="display:none;position:absolute;right:0;top:100%;margin-top:6px;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px;min-width:200px;max-width:280px;box-shadow:0 8px 24px rgba(0,0,0,0.4)"></div>
-      </div>
-      <div class="card">
-        <div class="field" style="margin-bottom:0">
-          <label>Player Tag</label>
-          <div class="flex-row">
-            <input type="text" id="player-tag" placeholder="#ABC123" style="flex:1" onkeydown="if(event.key==='Enter')loadPlayer()">
-            <button class="btn btn-primary" onclick="loadPlayer()">Search</button>
-          </div>
-        </div>
-      </div>
-      <div id="player-result">
-        <div style="text-align:center;padding:48px 0 32px">
-          <img src="icon.png" alt="Max Royale" style="width:120px;height:120px;margin-bottom:20px">
+      <!-- Shown only while no profile is on screen: first run, or after a failed
+           lookup. Once a profile loads, the tag lives in the Accounts menu. -->
+      <div id="lookup-start">
+        <div style="text-align:center;padding:36px 0 22px">
+          <img src="icon.png" alt="Max Royale" style="width:96px;height:96px;margin-bottom:16px">
           <div style="font-family:'Rajdhani',sans-serif;font-size:34px;font-weight:700;color:var(--accent);letter-spacing:1px">Max Royale</div>
-          <div style="font-size:13px;color:var(--muted);margin-top:6px">Enter a player tag above to get started</div>
+          <div style="font-size:13px;color:var(--muted);margin-top:6px">Enter a player tag to get started</div>
         </div>
+        <div class="card">
+          <div class="field" style="margin-bottom:0">
+            <label>Player Tag</label>
+            <div class="flex-row">
+              <input type="text" id="player-tag" placeholder="#ABC123" style="flex:1" onkeydown="if(event.key==='Enter')loadPlayer()">
+              <button class="btn btn-primary" onclick="loadPlayer()">Search</button>
+            </div>
+          </div>
+          <div id="start-accounts"></div>
+        </div>
+      </div>
+      <div style="position:relative">
+        <div id="saved-accounts" style="display:none;position:absolute;left:0;top:76px;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px;width:280px;max-width:calc(100vw - 32px);box-shadow:0 8px 24px rgba(0,0,0,0.4)"></div>
+        <div id="player-result"></div>
       </div>
     </div>
 
@@ -972,6 +981,9 @@ function toggleAccountsMenu(ev) {
   if (!wrap) return;
   const opening = wrap.style.display === 'none' || !wrap.style.display;
   if (opening) _accountsEditMode = false;  // always start in normal mode
+  // Drop down just below the profile header, however tall its info line wraps
+  const head = document.querySelector('.ph-head');
+  if (opening && head) wrap.style.top = (head.offsetHeight + 4) + 'px';
   wrap.style.display = opening ? 'block' : 'none';
   if (opening) renderSavedAccounts();
 }
@@ -980,37 +992,63 @@ function toggleAccountsEdit(ev) {
   _accountsEditMode = !_accountsEditMode;
   renderSavedAccounts();
 }
+// The Accounts menu opens from the name in the profile header: switch between
+// saved accounts, edit them, or add one / look up any player by tag.
 function renderSavedAccounts() {
+  renderStartAccounts();
   const wrap = document.getElementById('saved-accounts');
-  const btn  = document.getElementById('accounts-btn');
   if (!wrap) return;
   const list = getSavedAccounts();
-  if (!list.length) {
-    wrap.innerHTML = '';
-    wrap.style.display = 'none';
-    if (btn) btn.style.display = 'none';
-    return;
-  }
-  if (btn) btn.style.display = 'block';
   const current = localStorage.getItem('cr_player_tag');
   wrap.innerHTML = `
+    ${list.length ? `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Saved Accounts</span>
+      <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Accounts</span>
       <span onclick="toggleAccountsEdit(event)" style="cursor:pointer;font-size:14px;opacity:${_accountsEditMode?1:0.6}" title="Edit accounts">⚙️</span>
     </div>
     <div style="display:flex;flex-direction:column;gap:6px">
       ${list.map(a => `
         <span onclick="${_accountsEditMode ? '' : `loadPlayer('${a.tag}');toggleAccountsMenu(event)`}" style="display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:${_accountsEditMode?'default':'pointer'};background:${a.tag===current?'var(--accent)':'var(--surface2)'};color:${a.tag===current?'#1a1a2e':'var(--text)'};border:1px solid var(--border);border-radius:10px;padding:7px 10px;font-size:13px">
-          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.name)}</span>
+          <span style="min-width:0;display:flex;flex-direction:column">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600">${esc(a.name)}</span>
+            <span style="font-size:11px;font-family:monospace;opacity:0.7">${esc(a.tag)}</span>
+          </span>
           ${_accountsEditMode ? `<span onclick="removeAccount('${a.tag}',event)" style="color:var(--red);font-weight:700;padding:0 4px;flex-shrink:0;cursor:pointer" title="Remove">🗑</span>` : ''}
         </span>`).join('')}
+    </div>
+    <div style="border-top:1px solid var(--border);margin:12px 0 10px"></div>` : ''}
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Add an account or look up a player</div>
+    <div class="flex-row">
+      <input type="text" id="account-tag-input" placeholder="#ABC123" style="flex:1;min-width:0" onkeydown="if(event.key==='Enter')menuLookup()">
+      <button class="btn btn-primary btn-sm" onclick="menuLookup()">Go</button>
     </div>`;
+}
+window.menuLookup = function() {
+  const input = document.getElementById('account-tag-input');
+  if (!normalizeTag(input?.value)) return;
+  document.getElementById('saved-accounts').style.display = 'none';
+  loadPlayer(input.value);
+};
+// Saved accounts as one-tap chips on the start card, so a failed lookup or a
+// fresh start never strands you without a way back to an account.
+function renderStartAccounts() {
+  const el = document.getElementById('start-accounts');
+  if (!el) return;
+  const list = getSavedAccounts();
+  el.innerHTML = list.length ? `
+    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 8px">Your accounts</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${list.map(a => `<button class="acct-chip" onclick="loadPlayer('${a.tag}')">${esc(a.name)}</button>`).join('')}
+    </div>` : '';
+}
+function showLookupStart(on) {
+  const el = document.getElementById('lookup-start');
+  if (el) el.style.display = on ? '' : 'none';
 }
 // Close the accounts dropdown when clicking elsewhere
 document.addEventListener('click', e => {
   const wrap = document.getElementById('saved-accounts');
-  const btn  = document.getElementById('accounts-btn');
-  if (wrap && wrap.style.display === 'block' && !wrap.contains(e.target) && e.target !== btn && !btn?.contains(e.target)) {
+  if (wrap && wrap.style.display === 'block' && !wrap.contains(e.target) && !e.target.closest('.ph-name')) {
     wrap.style.display = 'none';
   }
 });
@@ -1121,7 +1159,7 @@ function friendTab(name) {
   if (name === 'towerTroops') pane.innerHTML = friendTroopHTML(d);
   if (name === 'badges')    { _fBadgeFilter='all'; pane.innerHTML = friendBadgesShell(d); friendRenderBadges(); }
   // No Battles tab in the modal, so its battle stats sit under the account stats
-  if (name === 'account')     pane.innerHTML = accountStatsHTML(d) + battleStatsHTML(d, _friendBattles);
+  if (name === 'account')     pane.innerHTML = accountStatsHTML(d) + currentDeckHTML(d, _friendBattles) + battleStatsHTML(d, _friendBattles);
   document.getElementById('friend-modal').scrollTop = 0;
 }
 
@@ -1370,7 +1408,7 @@ async function loadPlayer(tagOverride, opts = {}) {
   localStorage.setItem('cr_player_tag', tag);
   document.getElementById('player-tag').value = tag;
   const el = document.getElementById('player-result');
-  if (!opts.quiet) el.innerHTML = '<div class="spinner"></div>';
+  if (!opts.quiet) { el.innerHTML = '<div class="spinner"></div>'; showLookupStart(false); }
   try {
     const [data, battles] = await Promise.all([
       apiGet('/players/' + encodeURIComponent(tag)),
@@ -1396,7 +1434,10 @@ async function loadPlayer(tagOverride, opts = {}) {
     // A quiet refresh keeps the profile already on screen — a dropped connection
     // shouldn't replace good data with an error. With no profile showing (it
     // superseded a lookup whose spinner is still up), say what went wrong.
-    if (!opts.quiet || !document.getElementById('tab-overview')) el.innerHTML = `<div class="error-msg">${esc(e.message)}</div>`;
+    if (!opts.quiet || !document.getElementById('tab-overview')) {
+      el.innerHTML = `<div class="error-msg">${esc(e.message)}</div>`;
+      showLookupStart(true);
+    }
   }
 }
 
@@ -1545,27 +1586,28 @@ function renderProfile(data, battles) {
   const _troopCL     = (data.supportCards||[]).reduce((s, c) => s + toDisplayLevel((c.rarity||'common').toLowerCase(), c.level), 0);
   const _profileCL   = _cardCL + _evoCount * 5 + _heroCount * 5 + _troopCL;
 
+  showLookupStart(false);
+  // One compact block, the same on every tab: the name opens the Accounts menu
+  const pol = data.currentPathOfLegendSeasonResult?.leagueNumber ? data.currentPathOfLegendSeasonResult
+            : data.lastPathOfLegendSeasonResult?.leagueNumber ? data.lastPathOfLegendSeasonResult
+            : data.bestPathOfLegendSeasonResult;
+  const mt = data.currentMergeTacticsSeasonResult || data.lastMergeTacticsSeasonResult || data.bestMergeTacticsSeasonResult;
+  const sub = [
+    `👑 King ${calcKingTowerLevel(_cards.map(c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level)))}`,
+    `📊 CL ${fmtNum(_profileCL)}`,
+    pol?.leagueNumber ? `⚔️ ${polLeagueName(pol)}${isUltimateLeague(pol.leagueNumber) && pol.rank ? ` #${fmtNum(pol.rank)}` : ''}` : '',
+    mt?.leagueNumber && MT_LEAGUES[mt.leagueNumber] ? `🧩 ${MT_LEAGUES[mt.leagueNumber]}` : ''
+  ].filter(Boolean).join(' · ');
   el.innerHTML = `
-    <div class="lookup-header">
-      <div class="flex-between" style="align-items:flex-start">
-        <div>
-          <div class="player-name">${esc(data.name)}</div>
-          <div class="player-tag">${data.tag}</div>
-          <div class="trophies">🏆 <span style="color:var(--accent);font-weight:700">${fmtNum(data.trophies)}</span></div>
-          ${polHeaderLine(data)}
-          ${mergeTacticsHeaderLine(data)}
-        </div>
-        <div style="text-align:right">
-          <div style="font-size:13px;color:var(--muted)">King Level</div>
-          <div style="font-size:28px;font-weight:700;font-family:'Rajdhani',sans-serif;color:var(--accent)">${calcKingTowerLevel(_cards.map(c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level)))}</div>
-          <div style="font-size:13px;color:var(--muted);margin-top:6px">Collection Level</div>
-          <div style="font-size:28px;font-weight:700;font-family:'Rajdhani',sans-serif;color:var(--accent)">${fmtNum(_profileCL)}</div>
+    <div class="ph-head">
+      <div class="flex-between" style="gap:10px">
+        <button class="ph-name" onclick="toggleAccountsMenu(event)" title="Switch or add accounts"><span>${esc(data.name)}</span><span class="ph-caret">▾</span></button>
+        <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+          <span style="color:var(--accent);font-weight:700;font-size:15px">🏆 ${fmtNum(data.trophies)}</span>
+          <button class="ph-icon" onclick="loadPlayer(localStorage.getItem('cr_player_tag'))" title="Refresh">🔄</button>
         </div>
       </div>
-
-
-
-      <button class="btn btn-secondary btn-sm mt8" onclick="loadPlayer(localStorage.getItem('cr_player_tag'))">🔄 Refresh</button>
+      <div class="ph-sub">${sub}</div>
     </div>
 
     <div class="tab-bar">
@@ -1587,7 +1629,7 @@ function renderProfile(data, battles) {
     <div id="tab-towerTroops" class="tab-pane" style="display:none">${renderTowerTroopsPane(data)}</div>
     <div id="tab-battles" class="tab-pane" style="display:none">${renderBattles(battles, data)}</div>
     <div id="tab-badges" class="tab-pane" style="display:none">${renderBadgesPane(data)}</div>
-    <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles, data.tag)}</div>
+    <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles, data)}</div>
     <div id="tab-account" class="tab-pane" style="display:none">${accountStatsHTML(data)}</div>
   `;
 }
@@ -2153,10 +2195,15 @@ function currentDeckVariants(deck, battles, tag) {
   });
 }
 
-function currentDeckHTML(data, battles) {
-  const deck = data.currentDeck || [];
+// opts.deckMap: show this deck's tracked W/L; opts.upgrade: add an Upgrade cost
+// button (the profile's Decks tab — friends have no Deck Upgrade screen).
+function currentDeckHTML(data, battles, opts = {}) {
+  const deck = data?.currentDeck || [];
   if (!deck.length) return '';
   const variants = currentDeckVariants(deck, battles, data.tag);
+  const key = deck.map((c, i) => variants[i] ? `${c.name}[${variants[i]}]` : c.name).sort().join('|');
+  const rec = opts.deckMap?.[key];
+  const recTotal = rec ? rec.wins + rec.losses + rec.draws : 0;
   const catalog = Object.fromEntries(allCards.map(c => [c.id, c]));
   const tiles = deck.map((c, i) => {
     const cat = catalog[c.id] || {};
@@ -2173,15 +2220,33 @@ function currentDeckHTML(data, battles) {
   const tower = (data.currentDeckSupportCards || [])[0];
   return `
     <div class="card">
-      <h3 style="margin-bottom:10px">🃏 Current Deck</h3>
+      <div class="flex-between" style="margin-bottom:10px">
+        <h3 style="margin:0">🃏 Current Deck</h3>
+        ${opts.deckMap ? (recTotal
+          ? `<span style="font-size:13px"><span class="text-green">${rec.wins}W</span> <span class="text-red">${rec.losses}L</span> · <span class="text-accent">${Math.round(rec.wins / recTotal * 100)}%</span></span>`
+          : '<span style="font-size:12px;color:var(--muted)">Not played yet</span>') : ''}
+      </div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">${tiles.join('')}</div>
       <div class="flex-between" style="margin-top:10px;font-size:13px;color:var(--muted)">
         <span>💧 ${elixir.toFixed(1)} avg elixir${deck.length < 8 ? ` <span style="font-size:11px">(${deck.length} known cards)</span>` : ''}</span>
         ${tower ? `<span>🏰 ${esc(tower.name)}</span>` : ''}
       </div>
-      <button class="btn btn-secondary btn-sm" style="margin-top:10px;width:100%;font-size:12px" onclick="copyDeckLink('${esc(deck.map(c => c.name).join(', '))}', this)">📋 Copy Deck</button>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn btn-secondary btn-sm" style="flex:1;font-size:12px" onclick="copyDeckLink('${esc(deck.map(c => c.name).join(', '))}', this)">📋 Copy Deck</button>
+        ${opts.upgrade ? `<button class="btn btn-secondary btn-sm" style="flex:1;font-size:12px" onclick="openCurrentDeckUpgrade()">⬆️ Upgrade cost</button>` : ''}
+      </div>
     </div>`;
 }
+// Open Deck Upgrade with the current deck as its custom deck
+window.openCurrentDeckUpgrade = function() {
+  const data = window._currentProfile?.data;
+  if (!data?.currentDeck) return;
+  const owned = new Set((data.cards || []).map(c => c.id));
+  _deckUpTag = data.tag; _deckUpMode = 'custom'; _deckUpSearch = '';
+  _deckUpCustomIds = data.currentDeck.map(c => c.id).filter(id => owned.has(id)).slice(0, 8);
+  goTo('deckup');
+  window.scrollTo(0, 0);
+};
 
 function battleStatsHTML(data, battles) {
   const games = data.battleCount || 0;
@@ -2194,7 +2259,6 @@ function battleStatsHTML(data, battles) {
                ['Best Season',    data.bestPathOfLegendSeasonResult]].filter(([, r]) => r?.leagueNumber);
   const best = data.leagueStatistics?.bestSeason;
   return `
-    ${currentDeckHTML(data, battles)}
     <div class="card">
       <h3 style="margin-bottom:6px">⚔️ Battle Stats</h3>
       ${ovRow('Total Games', fmtNum(games))}
@@ -3383,8 +3447,10 @@ function battleModeLabel(b) {
   return deckModeLabel(b.type || '');  // last-resort fallback to the coarse type
 }
 
-function renderDeckBuilder(battles, playerTag) {
-  if (!battles || !battles.length) return '<div class="empty-msg">No battle data to build decks from.</div>';
+function renderDeckBuilder(battles, data) {
+  const playerTag = data.tag;
+  window._deckProfileData = data;
+  if (!battles || !battles.length) return currentDeckHTML(data, [], { upgrade: true }) + '<div class="empty-msg">No battle data to build decks from.</div>';
   window._deckBattles = battles;
   window._deckPlayerTag = playerTag;
 
@@ -3398,6 +3464,7 @@ function renderDeckBuilder(battles, playerTag) {
 }
 
 function _renderDeckList(deckMap, battles) {
+  const current = currentDeckHTML(window._deckProfileData, battles, { deckMap, upgrade: true });
   const modes = [...new Set(battles.map(b => battleModeLabel(b)))];
   // The filter survives re-renders, but not onto an account (or a refreshed
   // battle log) without that mode — it would have no button to clear it.
@@ -3411,7 +3478,7 @@ function _renderDeckList(deckMap, battles) {
     `<button class="filter-btn ${_deckFilter===m?'active':''}" data-mode="${esc(m)}" onclick="setDeckFilter(this.dataset.mode)">${m === 'all' ? 'All Modes' : esc(m)}</button>`
   ).join('');
 
-  if (!filtered.length) return `<div class="filter-bar">${modeButtons}</div><div class="empty-msg">No decks for this filter.</div>`;
+  if (!filtered.length) return `${current}<div class="filter-bar">${modeButtons}</div><div class="empty-msg">No decks for this filter.</div>`;
 
   const items = filtered.map(d => {
     const total = d.wins + d.losses + d.draws;
@@ -3445,7 +3512,7 @@ function _renderDeckList(deckMap, battles) {
       </div>`;
   }).join('');
 
-  return `<div class="filter-bar">${modeButtons}</div>${items}`;
+  return `${current}<div class="filter-bar">${modeButtons}</div>${items}`;
 }
 
 window.setDeckFilter = function(mode) {
