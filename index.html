@@ -2131,6 +2131,58 @@ function recentBattlesByModeHTML(battles) {
       `<span class="text-green">${r.w}W</span> <span class="text-red">${r.l}L</span>${r.d ? ` <span class="text-muted">${r.d}D</span>` : ''} · ${Math.round(r.w / Math.max(r.w + r.l + r.d, 1) * 100)}%`)).join('')}`;
 }
 
+// ── Current in-game deck ──
+// currentDeck lists the equipped deck in slot order, but its evolutionLevel says
+// what the player OWNS (bit 1 = evolution, bit 2 = hero — 3 is both), not which
+// form is equipped. The slot decides: slot 1 takes an evolution, slot 2 a hero or
+// champion, slot 3 either. Only a card owned in both forms in slot 3 is
+// ambiguous; the battle log settles it once that deck (or that card in slot 3)
+// has been played, else it's shown as an evolution.
+function currentDeckVariants(deck, battles, tag) {
+  const mine = (battles || []).map(b => (b.team || []).find(p => p.tag === tag)).filter(p => p && (p.cards||[]).length === 8);
+  const setKey = cards => cards.map(c => c.name).sort().join('|');
+  const sameDeck = mine.find(p => setKey(p.cards) === setKey(deck));
+  if (sameDeck) return deck.map(c => cardVariant(sameDeck.cards.find(x => x.name === c.name)));
+  return deck.map((c, i) => {
+    const evo = !!((c.evolutionLevel || 0) & 1), hero = !!((c.evolutionLevel || 0) & 2);
+    if (i === 0) return evo ? 'evo' : '';
+    if (i === 1) return hero ? 'hero' : '';
+    if (i !== 2) return '';
+    if (evo && hero) return cardVariant(mine.map(p => p.cards[2]).find(x => x?.name === c.name)) || 'evo';
+    return evo ? 'evo' : hero ? 'hero' : '';
+  });
+}
+
+function currentDeckHTML(data, battles) {
+  const deck = data.currentDeck || [];
+  if (!deck.length) return '';
+  const variants = currentDeckVariants(deck, battles, data.tag);
+  const catalog = Object.fromEntries(allCards.map(c => [c.id, c]));
+  const tiles = deck.map((c, i) => {
+    const cat = catalog[c.id] || {};
+    const art = { medium: c.iconUrls?.medium || cat.iconUrls?.medium,
+                  evo:  EVO_IMG_OVERRIDE[c.name] || c.iconUrls?.evolutionMedium || cat.iconUrls?.evolutionMedium,
+                  hero: c.iconUrls?.heroMedium || cat.iconUrls?.heroMedium };
+    const lvl = toDisplayLevel((c.rarity || 'common').toLowerCase(), c.level);
+    return `<div>${deckTileHTML(c.name, variants[i], art, 'deck-list-tile')}
+      <div style="font-size:10px;text-align:center;color:var(--accent);font-weight:700;margin-top:3px">Lv ${lvl}</div></div>`;
+  });
+  // A card the API doesn't know yet can be left out of currentDeck entirely
+  while (tiles.length < 8) tiles.push(`<div><div class="deck-list-tile deck-tile" title="Not in the API yet"><span class="deck-tile-text" style="color:var(--muted)">?</span></div></div>`);
+  const elixir = deck.reduce((s, c) => s + (c.elixirCost || 0), 0) / deck.length;
+  const tower = (data.currentDeckSupportCards || [])[0];
+  return `
+    <div class="card">
+      <h3 style="margin-bottom:10px">🃏 Current Deck</h3>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">${tiles.join('')}</div>
+      <div class="flex-between" style="margin-top:10px;font-size:13px;color:var(--muted)">
+        <span>💧 ${elixir.toFixed(1)} avg elixir${deck.length < 8 ? ` <span style="font-size:11px">(${deck.length} known cards)</span>` : ''}</span>
+        ${tower ? `<span>🏰 ${esc(tower.name)}</span>` : ''}
+      </div>
+      <button class="btn btn-secondary btn-sm" style="margin-top:10px;width:100%;font-size:12px" onclick="copyDeckLink('${esc(deck.map(c => c.name).join(', '))}', this)">📋 Copy Deck</button>
+    </div>`;
+}
+
 function battleStatsHTML(data, battles) {
   const games = data.battleCount || 0;
   const tourn = data.tournamentBattleCount || 0;
@@ -2142,6 +2194,7 @@ function battleStatsHTML(data, battles) {
                ['Best Season',    data.bestPathOfLegendSeasonResult]].filter(([, r]) => r?.leagueNumber);
   const best = data.leagueStatistics?.bestSeason;
   return `
+    ${currentDeckHTML(data, battles)}
     <div class="card">
       <h3 style="margin-bottom:6px">⚔️ Battle Stats</h3>
       ${ovRow('Total Games', fmtNum(games))}
