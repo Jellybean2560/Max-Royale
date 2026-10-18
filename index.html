@@ -1038,7 +1038,7 @@ function removeFriend(tag, ev) {
   localStorage.setItem('cr_friends', JSON.stringify(list));
   _renderFriendsList();  // keep current edit mode while removing
 }
-let _friendData = null;
+let _friendData = null, _friendBattles = [];
 async function viewFriend(tag) {
   const modal = document.getElementById('friend-modal');
   const body  = document.getElementById('friend-modal-body');
@@ -1047,7 +1047,12 @@ async function viewFriend(tag) {
   body.innerHTML = '<div class="spinner"></div>';
   try {
     await maybeLoadCards();
-    _friendData = await apiGet('/players/' + encodeURIComponent(tag));
+    // The battle log only feeds the Overview's recent-battle stats — a failure
+    // there shouldn't stop the profile from opening.
+    [_friendData, _friendBattles] = await Promise.all([
+      apiGet('/players/' + encodeURIComponent(tag)),
+      apiGet('/players/' + encodeURIComponent(tag) + '/battlelog').catch(() => [])
+    ]);
     body.innerHTML = `
       <div class="lookup-header" style="margin-bottom:12px">
         <div class="player-name">${esc(_friendData.name)}</div>
@@ -1074,6 +1079,7 @@ function closeFriendModal() {
   document.getElementById('friend-modal').style.display = 'none';
   document.body.style.overflow = '';
   _friendData = null;
+  _friendBattles = [];
 }
 // Friend modal filter state (self-contained so it never touches the main profile)
 let _fCardStatus = 'all', _fCardRarity = 'all', _fCardSort = DEFAULT_CARD_SORT, _fCardSearch = '';
@@ -1085,7 +1091,7 @@ function friendTab(name) {
   document.querySelectorAll('#friend-modal-body .tab-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.ftab === name));
   const pane = document.getElementById('friend-pane');
-  if (name === 'overview')    pane.innerHTML = renderOverview(d);
+  if (name === 'overview')    pane.innerHTML = renderOverview(d, _friendBattles);
   if (name === 'cards')     { _fCardStatus='all'; _fCardRarity='all'; _fCardSort=DEFAULT_CARD_SORT; _fCardSearch=''; pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
   if (name === 'evolutions'){ _fEvoFilter='all';  pane.innerHTML = friendCollectShell('evolution'); friendRenderCollect('evolution'); }
   if (name === 'heroes')    { _fHeroFilter='all'; pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
@@ -1422,12 +1428,26 @@ function renderProfileFromCache(cached) {
   }
 }
 
-// Path of Legends league names (leagueNumber 1-10)
+// Path of Legends league names. Supercell dropped the three Challenger leagues, so
+// leagueNumber now runs 1-7 with 7 = Ultimate Champion — checked Oct 2026: the
+// global #1 and #2 are both league 7. 8-10 only appear in results from the old
+// 10-league system (where 10 was Ultimate Champion), e.g. a best season from 2024.
 const POL_LEAGUES = {
-  1: 'Challenger I', 2: 'Challenger II', 3: 'Challenger III',
-  4: 'Master I', 5: 'Master II', 6: 'Master III',
-  7: 'Champion', 8: 'Grand Champion', 9: 'Royal Champion', 10: 'Ultimate Champion'
+  1: 'Master I', 2: 'Master II', 3: 'Master III',
+  4: 'Champion', 5: 'Grand Champion', 6: 'Royal Champion', 7: 'Ultimate Champion',
+  8: 'Grand Champion', 9: 'Royal Champion', 10: 'Ultimate Champion'
 };
+const isUltimateLeague = n => n === 7 || n === 10;
+const polLeagueName = r => POL_LEAGUES[r.leagueNumber] || `League ${r.leagueNumber}`;
+// Ultimate Champion has a global rank; lower leagues only a trophy/step count
+function polLeagueDetail(r) {
+  if (isUltimateLeague(r.leagueNumber) && r.rank) return `#${fmtNum(r.rank)} · ${fmtNum(r.trophies)} 🏆`;
+  return r.trophies ? `${fmtNum(r.trophies)} 🏆` : '';
+}
+function polLeagueText(r) {
+  const detail = polLeagueDetail(r);
+  return detail ? `${polLeagueName(r)} · ${detail}` : polLeagueName(r);
+}
 function polHeaderLine(data) {
   // current is usually empty mid-season; fall back to last, then best
   const r = data.currentPathOfLegendSeasonResult
@@ -1436,12 +1456,7 @@ function polHeaderLine(data) {
   if (!r || !r.leagueNumber) return '';
   const isCurrent = !!(data.currentPathOfLegendSeasonResult && data.currentPathOfLegendSeasonResult.leagueNumber);
   const prefix = isCurrent ? 'Ranked' : 'Ranked (best)';
-  const league = POL_LEAGUES[r.leagueNumber] || `League ${r.leagueNumber}`;
-  // Ultimate Champion uses a global rank; lower leagues use trophy/step count
-  const detail = (r.leagueNumber === 10 && r.rank)
-    ? `#${fmtNum(r.rank)} · ${fmtNum(r.trophies)} 🏆`
-    : `${fmtNum(r.trophies)} 🏆`;
-  return `<div style="font-size:13px;color:var(--muted);margin-top:2px">⚔️ ${prefix}: <span style="color:var(--text)">${league} · ${detail}</span></div>`;
+  return `<div style="font-size:13px;color:var(--muted);margin-top:2px">⚔️ ${prefix}: <span style="color:var(--text)">${polLeagueText(r)}</span></div>`;
 }
 
 const MT_LEAGUES = {
@@ -1985,6 +2000,111 @@ function renderDeckBreakdown(cards) {
     </div>`;
 }
 
+// ── Overview: account + battle stats ──
+// All straight from /players/{tag} (plus the battle log for the per-mode split),
+// the same fields stat sites like deckai.app show.
+const OV_SECTION_STYLE = "margin:14px 0 6px;font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.5px";
+const ovRow = (label, value, cls = '') =>
+  `<div class="stat-row"><span class="stat-label">${label}</span><span class="stat-value ${cls}">${value}</span></div>`;
+const pct = (n, total) => total ? (n / total * 100).toFixed(1) + '%' : '—';
+
+// Days played comes from the YearsPlayed badge, whose progress counts days.
+function accountAgeDays(data) {
+  return (data.badges || []).find(b => b.name === 'YearsPlayed')?.progress || 0;
+}
+function fmtAge(days) {
+  const y = Math.floor(days / 365), w = Math.floor(days % 365 / 7), d = days % 365 % 7;
+  return `${y}y ${w}w ${d}d`;
+}
+// The API has no playtime, so estimate it at 4 minutes a game — the same
+// assumption deckai.app makes (its 493h 36m for 7,404 games is exactly that).
+const EST_MINUTES_PER_GAME = 4;
+const fmtHours = mins => `${Math.floor(mins / 60)}h ${Math.round(mins % 60)}m`;
+const badgeProgress = (data, name) => (data.badges || []).find(b => b.name === name)?.progress || 0;
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const fmtSeasonId = id => { const [y, m] = (id || '').split('-'); return m ? `${MONTHS[+m - 1]} ${y}` : ''; };
+
+function accountStatsHTML(data, { foundCount, foundTotal, fav }) {
+  const days = accountAgeDays(data);
+  return `
+    <div class="card">
+      <h3 style="margin-bottom:6px">👤 Account</h3>
+      ${ovRow('Experience Level', `Lv ${fmtNum(data.expLevel)}`)}
+      ${days ? ovRow('Account Age', fmtAge(days)) : ''}
+      ${ovRow('Highest Trophies', `🏆 ${fmtNum(data.bestTrophies)}`)}
+      ${ovRow('Star Points', `⭐ ${fmtNum(data.starPoints)}`)}
+      ${ovRow('Cards Found', `${foundCount} / ${foundTotal}`)}
+      ${fav ? `<div class="stat-row"><span class="stat-label">Favourite Card</span><span class="stat-value" style="display:flex;align-items:center;gap:6px">${fav.iconUrls?.medium?`<img src="${fav.iconUrls.medium}" alt="" style="width:26px;height:32px;object-fit:contain">`:''}${esc(fav.name)}</span></div>` : ''}
+
+      <div style="${OV_SECTION_STYLE}">Donations</div>
+      ${ovRow('Cards Donated', fmtNum(data.totalDonations))}
+      ${data.clan ? ovRow('This Week', `${fmtNum(data.donations)} given · ${fmtNum(data.donationsReceived)} received`) : ''}
+
+      <div style="${OV_SECTION_STYLE}">Clan Wars</div>
+      ${ovRow('Clan Cards Collected', fmtNum(data.clanCardsCollected))}
+      ${ovRow('War Day Wins', fmtNum(data.warDayWins))}
+    </div>`;
+}
+
+// W/L per game mode over the battle log (~30 most recent games).
+function recentBattlesByModeHTML(battles) {
+  const byMode = {};
+  (battles || []).forEach(b => {
+    const t = (b.team || [])[0]?.crowns || 0, o = (b.opponent || [])[0]?.crowns || 0;
+    const m = byMode[battleModeLabel(b)] || (byMode[battleModeLabel(b)] = { w: 0, l: 0, d: 0 });
+    if (t > o) m.w++; else if (t < o) m.l++; else m.d++;
+  });
+  const rows = Object.entries(byMode).sort((a, b) => (b[1].w + b[1].l + b[1].d) - (a[1].w + a[1].l + a[1].d));
+  if (!rows.length) return '';
+  return `
+    <div style="${OV_SECTION_STYLE}">Recent Battles <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· last ${battles.length}</span></div>
+    ${rows.map(([mode, r]) => ovRow(esc(mode),
+      `<span class="text-green">${r.w}W</span> <span class="text-red">${r.l}L</span>${r.d ? ` <span class="text-muted">${r.d}D</span>` : ''} · ${Math.round(r.w / Math.max(r.w + r.l + r.d, 1) * 100)}%`)).join('')}`;
+}
+
+function battleStatsHTML(data, battles) {
+  const games = data.battleCount || 0;
+  const tourn = data.tournamentBattleCount || 0;
+  const days = accountAgeDays(data);
+  const streak = data.currentWinLoseStreak || 0;
+  const winRate = games ? Math.round(data.wins / games * 100) : 0;
+  const pol = [['Current Season', data.currentPathOfLegendSeasonResult],
+               ['Last Season',    data.lastPathOfLegendSeasonResult],
+               ['Best Season',    data.bestPathOfLegendSeasonResult]].filter(([, r]) => r?.leagueNumber);
+  const best = data.leagueStatistics?.bestSeason;
+  return `
+    <div class="card">
+      <h3 style="margin-bottom:6px">⚔️ Battle Stats</h3>
+      ${ovRow('Total Games', fmtNum(games))}
+      ${ovRow('Wins', `${fmtNum(data.wins)} <span class="text-muted" style="font-weight:400">(${pct(data.wins, games)})</span>`, 'text-green')}
+      ${ovRow('Losses', `${fmtNum(data.losses)} <span class="text-muted" style="font-weight:400">(${pct(data.losses, games)})</span>`, 'text-red')}
+      <div class="progress-wrap mt8"><div class="progress-bar" style="width:${winRate}%;background:var(--green)"></div></div>
+      <div style="font-size:12px;color:var(--muted);margin:4px 0 8px">${winRate}% win rate</div>
+      ${ovRow('3-Crown Wins', `👑 ${fmtNum(data.threeCrownWins)}`)}
+      ${streak ? ovRow('Current Streak', streak > 0 ? `🔥 ${streak} win${streak > 1 ? 's' : ''}` : `${-streak} loss${streak < -1 ? 'es' : ''}`, streak > 0 ? 'text-green' : 'text-red') : ''}
+      ${days ? ovRow('Games per Day', (games / days).toFixed(2)) : ''}
+      ${ovRow('Est. Playtime', fmtHours(games * EST_MINUTES_PER_GAME))}
+      <div style="font-size:11px;color:var(--muted);margin:-2px 0 6px;text-align:right">${fmtHours((games - tourn) * EST_MINUTES_PER_GAME)} trophy road &amp; challenges · ${fmtHours(tourn * EST_MINUTES_PER_GAME)} tournaments · ~${EST_MINUTES_PER_GAME} min a game</div>
+
+      ${recentBattlesByModeHTML(battles)}
+
+      ${pol.length ? `<div style="${OV_SECTION_STYLE}">Path of Legends</div>
+      ${pol.map(([label, r]) => { const detail = polLeagueDetail(r);
+        return ovRow(label, `<div style="text-align:right">${polLeagueName(r)}${detail ? `<div style="font-size:11px;font-weight:400;color:var(--muted)">${detail}</div>` : ''}</div>`); }).join('')}` : ''}
+
+      ${best || data.legacyTrophyRoadHighScore ? `<div style="${OV_SECTION_STYLE}">Old Trophy Road</div>
+      ${best ? ovRow('Best Season', `${best.rank ? `#${fmtNum(best.rank)} · ` : ''}🏆 ${fmtNum(best.trophies)}${best.id ? ` <span class="text-muted" style="font-weight:400">(${fmtSeasonId(best.id)})</span>` : ''}`) : ''}
+      ${data.legacyTrophyRoadHighScore ? ovRow('Record', `🏆 ${fmtNum(data.legacyTrophyRoadHighScore)}`) : ''}` : ''}
+
+      <div style="${OV_SECTION_STYLE}">Challenges &amp; Tournaments</div>
+      ${ovRow('Challenge Max Wins', fmtNum(data.challengeMaxWins))}
+      ${ovRow('Classic Challenge 12 Wins', fmtNum(badgeProgress(data, 'Classic12Wins')))}
+      ${ovRow('Grand Challenge 12 Wins', fmtNum(badgeProgress(data, 'Grand12Wins')))}
+      ${ovRow('Challenge Cards Won', fmtNum(data.challengeCardsWon))}
+      ${ovRow('Tournament Games', fmtNum(tourn))}
+    </div>`;
+}
+
 function renderOverview(data, battles) {
   const cards = data.cards || [];
 
@@ -2082,17 +2202,13 @@ function renderOverview(data, battles) {
     </div>`
   ).join('');
 
+  // Everything found: cards + evolutions + heroes + tower troops, against the catalog
+  const foundCount = cards.length + evolvedCount + heroCount + supportCards.length;
+  const foundTotal = totalInGame + evoIds.size + heroIds.size + troopsTotal;
+
   return `
-    <div class="card">
-      <div class="stat-row"><span class="stat-label">Highest Trophies</span><span class="stat-value">🏆 ${fmtNum(data.bestTrophies)}</span></div>
-      <div class="stat-row"><span class="stat-label">Total Wins</span><span class="stat-value text-green">${fmtNum(data.wins)}</span></div>
-      <div class="stat-row"><span class="stat-label">Total Losses</span><span class="stat-value text-red">${fmtNum(data.losses)}</span></div>
-      <div class="stat-row"><span class="stat-label">3-Crown Wins</span><span class="stat-value">👑 ${fmtNum(data.threeCrownWins)}</span></div>
-      <div class="stat-row"><span class="stat-label">Challenge Max Wins</span><span class="stat-value">${fmtNum(data.challengeMaxWins)}</span></div>
-      <div class="stat-row"><span class="stat-label">Challenge Cards Won</span><span class="stat-value">${fmtNum(data.challengeCardsWon)}</span></div>
-      <div class="stat-row"><span class="stat-label">Cards Donated</span><span class="stat-value">${fmtNum(data.totalDonations)}</span></div>
-      ${fav ? `<div class="stat-row"><span class="stat-label">Favourite Card</span><span class="stat-value" style="display:flex;align-items:center;gap:6px">${fav.iconUrls?.medium?`<img src="${fav.iconUrls.medium}" alt="" style="width:26px;height:32px;object-fit:contain">`:''}${esc(fav.name)}</span></div>` : ''}
-    </div>
+    ${accountStatsHTML(data, { foundCount, foundTotal, fav })}
+    ${battleStatsHTML(data, battles)}
 
     <div class="card">
       <h3 style="margin-bottom:4px">⚡ Card Insights</h3>
