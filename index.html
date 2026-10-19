@@ -111,6 +111,15 @@
   .stat-row:last-child { border-bottom: none; }
   .stat-label { color: var(--muted); font-size: 14px; }
   .stat-value { font-weight: 600; }
+  /* Overview numbers that open the matching list (ovGo) */
+  .ov-link { cursor: pointer; }
+  .ov-link > .stat-label { flex: 1; }
+  .ov-link::after { content: '›'; color: var(--muted); font-size: 18px; line-height: 1; margin-left: 8px; }
+  .ov-link:active { opacity: .6; }
+  /* Battle log day headers */
+  .day-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin: 14px 2px 8px; font-size: 13px; }
+  .day-head > span:first-child { font-weight: 700; text-transform: uppercase; letter-spacing: .5px; font-size: 12px; }
+  .filter-sep { flex-shrink: 0; width: 1px; background: var(--border); margin: 4px 2px; }
 
   /* ── Loading / Error states ── */
   .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 40px auto; }
@@ -574,6 +583,7 @@ const cardSortOptionsHTML   = () => _optionsHTML(CARD_SORT_OPTIONS);
 const cardRarityOptionsHTML = () => _optionsHTML(CARD_RARITY_OPTIONS);
 
 const CARD_STATUS_FILTERS = {
+  notfound:   c => !c.owned,
   maxed:      c => c.isMaxed,
   upgradable: c => c.isUpgradable,
   locked:     c => !c.isMaxed && !c.isUpgradable,
@@ -1539,6 +1549,7 @@ function friendCardsShell(data) {
       <button class="filter-btn" onclick="friendSetCard('upgradable','status')">Upgradable</button>
       <button class="filter-btn" onclick="friendSetCard('canmax','status')">Can Max</button>
       <button class="filter-btn" onclick="friendSetCard('maxed','status')">Maxed</button>
+      ${total > (data.cards||[]).length ? `<button class="filter-btn" onclick="friendSetCard('notfound','status')">Not Found</button>` : ''}
     </div>
     <input type="text" placeholder="🔍 Search card name…" oninput="friendSetCard(this.value,'search')" autocomplete="off"
       style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:8px 14px;font-size:13px;font-family:'Inter',sans-serif;margin-bottom:10px">
@@ -2273,6 +2284,7 @@ function buildDeckMapFromBattles(battles, playerTag, { persist = true } = {}) {
       d.variants = deckVariantsOf(team.cards);
     }
     d[result === 'loss' ? 'losses' : result + 's']++;
+    if (!d.last || b.battleTime > d.last) d.last = b.battleTime;
     const modeLabel = battleModeLabel(b);
     if (!d.modes.includes(modeLabel)) d.modes.push(modeLabel);
     const avg = (team.cards||[]).reduce((s,c) => s + (c.elixirCost||0), 0) / Math.max((team.cards||[]).length,1);
@@ -2281,6 +2293,14 @@ function buildDeckMapFromBattles(battles, playerTag, { persist = true } = {}) {
 
     seen.add(battleKey);
     changed = true;
+  });
+
+  // Decks counted before "last played" was tracked pick it up from whichever
+  // battles are still in the log (already-seen ones aren't counted again above)
+  (battles||[]).forEach(b => {
+    const team = (playerTag && (b.team||[]).find(p => p.tag === playerTag)) || (b.team||[])[0] || {};
+    const d = (team.cards||[]).length === 8 && history.decks[deckKeyOf(team.cards)];
+    if (d && b.battleTime && (!d.last || b.battleTime > d.last)) { d.last = b.battleTime; changed = true; }
   });
 
   if (changed && persist) {
@@ -2292,7 +2312,7 @@ function buildDeckMapFromBattles(battles, playerTag, { persist = true } = {}) {
   Object.entries(history.decks).forEach(([key, d]) => {
     if ((d.cards||[]).length !== 8) return; // drop any bad entry saved before the 8-card guard existed
     deckMap[key] = {
-      key, cards: d.cards, variants: d.variants || {}, wins: d.wins, losses: d.losses, draws: d.draws, modes: d.modes,
+      key, cards: d.cards, variants: d.variants || {}, wins: d.wins, losses: d.losses, draws: d.draws, modes: d.modes, last: d.last || '',
       elixir: d.elixirCount ? [d.elixirSum / d.elixirCount] : []
     };
   });
@@ -2569,19 +2589,29 @@ function parseDeckLinkIds(text) {
 window.importDeckLink = function(text) {
   const msg = document.getElementById('deckup-link-msg');
   const say = (t, err) => { if (msg) { msg.textContent = t; msg.style.color = err ? 'var(--red)' : 'var(--muted)'; } };
-  const data = window._currentProfile?.data;
-  if (!data) return;
+  if (!window._currentProfile?.data) return;
   const ids = parseDeckLinkIds(text);
   if (!ids.length) { say("That doesn't look like a deck link.", true); return; }
+  loadDeckIds(ids);
+};
+// Puts these card ids in the custom deck (Deck Upgrade must be on screen in
+// Custom mode) and names any you haven't unlocked
+function loadDeckIds(ids) {
+  const data = window._currentProfile?.data;
+  const msg = document.getElementById('deckup-link-msg');
+  if (!data) return;
   const owned = new Set((data.cards || []).map(c => c.id));
   const missing = ids.filter(id => !owned.has(id)).map(id => allCards.find(c => c.id === id)?.name || `card ${id}`);
-  _deckUpCustomIds = ids.filter(id => owned.has(id));
+  _deckUpCustomIds = ids.filter(id => owned.has(id)).slice(0, 8);
   _deckUpSearch = '';
   const input = document.getElementById('deckup-link-input');
   if (input) input.value = '';
   refreshCustomDeckSections();
-  say(missing.length ? `✓ Deck loaded. Not unlocked yet: ${missing.join(', ')}` : '✓ Deck loaded.', false);
-};
+  if (msg) {
+    msg.textContent = missing.length ? `✓ Deck loaded. Not unlocked yet: ${missing.join(', ')}` : '✓ Deck loaded.';
+    msg.style.color = 'var(--muted)';
+  }
+}
 
 // A deck shared to the installed app (manifest share_target) arrives as
 // ?title=&text=&url= — open it in Deck Upgrade once the profile is on screen.
@@ -2870,7 +2900,7 @@ function recordMatchups(tag, battles) {
 function matchupsHTML(data, battles, scope) {
   let m = scope === 'p' ? loadMatchups(data.tag) : null;
   if (!m) { m = newMatchups(); tallyMatchups(m, battles); }
-  const since = scope === 'p' && m.since ? ` since ${new Date(m.since).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}` : '';
+  const since = scope === 'p' && m.since ? ` since ${new Date(m.since).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : '';
   const head = `<div style="${OV_SECTION_STYLE}">Opponent Cards <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· ${m.battles} battle${m.battles === 1 ? '' : 's'}${since}</span></div>`;
   const rows = Object.entries(m.cards)
     .map(([name, [w, l, d]]) => ({ name, w, l, d, n: w + l + d, rate: w / Math.max(w + l + d, 1) }))
@@ -3040,36 +3070,36 @@ function renderOverview(data, battles, scope = 'p') {
     <div class="card">
       <h3 style="margin-bottom:4px">⚡ Card Insights</h3>
       <div style="margin-top:20px;margin-bottom:10px;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.5px"><img src="cards-icon.webp" style="width:22px;height:18px;object-fit:contain;filter:brightness(0) invert(0.55)"> Cards</div>
-      <div class="stat-row" style="border-bottom:none"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${maxedCount} / ${totalInGame}</strong></div>
+      <div class="stat-row ov-link" onclick="ovGo('${scope}','cards','maxed')" style="border-bottom:none"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${maxedCount} / ${totalInGame}</strong></div>
       <div class="progress-wrap mt8">
         <div class="progress-bar" style="width:${Math.round(maxedCount/Math.max(totalInGame,1)*100)}%;background:var(--accent)"></div>
       </div>
       <div style="font-size:12px;color:var(--muted);margin-top:4px;margin-bottom:8px">${Math.round(maxedCount/Math.max(totalInGame,1)*100)}% maxed</div>
-      ${cardsNotFound > 0 ? `<div class="stat-row"><span class="stat-label">Not Found</span><strong class="text-red">${cardsNotFound}</strong></div>` : ''}
-      <div class="stat-row"><span class="stat-label">Upgradable now</span><strong class="text-green">${upgradableNow.length}</strong></div>
-      <div class="stat-row"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${canMaxCards.length}</strong></div>
-      <div class="stat-row"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(totalGoldReady)} 💰</strong></div>
+      ${cardsNotFound > 0 ? `<div class="stat-row ov-link" onclick="ovGo('${scope}','cards','notfound')"><span class="stat-label">Not Found</span><strong class="text-red">${cardsNotFound}</strong></div>` : ''}
+      <div class="stat-row ov-link" onclick="ovGo('${scope}','cards','upgradable')"><span class="stat-label">Upgradable now</span><strong class="text-green">${upgradableNow.length}</strong></div>
+      <div class="stat-row ov-link" onclick="ovGo('${scope}','cards','canmax')"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${canMaxCards.length}</strong></div>
+      <div class="stat-row ov-link" onclick="ovGo('${scope}','cards','upgradable')"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(totalGoldReady)} 💰</strong></div>
 
       ${troopEnriched.length ? `
       <div style="margin-top:14px">
         <div style="margin-bottom:10px;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.5px"><img src="tower-troop-icon.webp" style="width:14px;height:20px;object-fit:contain;filter:brightness(0) invert(0.55)"> Tower Troops</div>
-        <div class="stat-row" style="border-bottom:none"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${troopMaxed} / ${troopEnriched.length}</strong></div>
+        <div class="stat-row ov-link" onclick="ovGo('${scope}','towerTroops')" style="border-bottom:none"><span class="stat-label">Maxed (Level 16)</span><strong class="text-accent">${troopMaxed} / ${troopEnriched.length}</strong></div>
         <div class="progress-wrap mt8">
           <div class="progress-bar" style="width:${Math.round(troopMaxed/troopEnriched.length*100)}%;background:var(--accent)"></div>
         </div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px;margin-bottom:8px">${Math.round(troopMaxed/troopEnriched.length*100)}% maxed</div>
-        ${troopsNotFound > 0 ? `<div class="stat-row"><span class="stat-label">Not Found</span><strong class="text-red">${troopsNotFound}</strong></div>` : ''}
-        <div class="stat-row"><span class="stat-label">Upgradable now</span><strong class="text-green">${troopUpgradable.length}</strong></div>
-        <div class="stat-row"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${troopCanMax}</strong></div>
-        ${troopGoldReady > 0 ? `<div class="stat-row"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(troopGoldReady)} 💰</strong></div>` : ''}
+        ${troopsNotFound > 0 ? `<div class="stat-row ov-link" onclick="ovGo('${scope}','towerTroops')"><span class="stat-label">Not Found</span><strong class="text-red">${troopsNotFound}</strong></div>` : ''}
+        <div class="stat-row ov-link" onclick="ovGo('${scope}','towerTroops')"><span class="stat-label">Upgradable now</span><strong class="text-green">${troopUpgradable.length}</strong></div>
+        <div class="stat-row ov-link" onclick="ovGo('${scope}','towerTroops')"><span class="stat-label">Can reach Level 16 now</span><strong class="text-blue">${troopCanMax}</strong></div>
+        ${troopGoldReady > 0 ? `<div class="stat-row ov-link" onclick="ovGo('${scope}','towerTroops')"><span class="stat-label">Gold to upgrade all ready</span><strong class="text-accent">${fmtNum(troopGoldReady)} 💰</strong></div>` : ''}
       </div>` : ''}
 
       <div style="margin-top:14px">
         <div style="margin-bottom:10px;display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.5px"><img src="evo-hero-icon.webp" style="width:17px;height:20px;object-fit:contain;filter:grayscale(1) brightness(0) invert(0.55)"> Evolutions &amp; Heroes</div>
-        <div class="stat-row" style="border-bottom:none"><span class="stat-label">Evolutions unlocked</span><strong class="text-blue">${evolvedCount} / ${evoIds.size}</strong></div>
+        <div class="stat-row ov-link" onclick="ovGo('${scope}','evolutions','unlocked')" style="border-bottom:none"><span class="stat-label">Evolutions unlocked</span><strong class="text-blue">${evolvedCount} / ${evoIds.size}</strong></div>
         <div class="progress-wrap mt8"><div class="progress-bar" style="width:${Math.round(evolvedCount/Math.max(evoIds.size,1)*100)}%;background:var(--blue)"></div></div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px;margin-bottom:8px">${Math.round(evolvedCount/Math.max(evoIds.size,1)*100)}% unlocked</div>
-        <div class="stat-row" style="border-bottom:none"><span class="stat-label">Heroes unlocked</span><strong class="text-purple">${heroCount} / ${heroIds.size}</strong></div>
+        <div class="stat-row ov-link" onclick="ovGo('${scope}','heroes','unlocked')" style="border-bottom:none"><span class="stat-label">Heroes unlocked</span><strong class="text-purple">${heroCount} / ${heroIds.size}</strong></div>
         <div class="progress-wrap mt8"><div class="progress-bar" style="width:${Math.round(heroCount/Math.max(heroIds.size,1)*100)}%;background:var(--purple)"></div></div>
         <div style="font-size:12px;color:var(--muted);margin-top:4px">${Math.round(heroCount/Math.max(heroIds.size,1)*100)}% unlocked</div>
       </div>
@@ -3111,6 +3141,33 @@ function renderOverview(data, battles, scope = 'p') {
     })()}`;
 }
 
+// Overview numbers open the list they count: "Upgradable now 54" → the Cards tab
+// filtered to exactly those 54 (no leftover rarity or search filter).
+window.ovGo = function(scope, tab, filter = '') {
+  if (scope === 'f') {
+    friendTab(tab);  // resets the modal pane's filters
+    if (tab === 'cards' && filter) friendSetCard(filter, 'status');
+    if (tab === 'evolutions' && filter) friendSetEvo(filter);
+    if (tab === 'heroes' && filter) friendSetHero(filter);
+    return;
+  }
+  if (tab === 'cards') {
+    _cardRarity = 'all'; _cardSearch = '';
+    const rar = document.getElementById('card-rarity-select'), q = document.getElementById('card-name-search');
+    if (rar) rar.value = 'all';
+    if (q) q.value = '';
+    switchTab('cards');
+    setCardFilter(filter || 'all', 'status');
+    return;
+  }
+  if (tab === 'evolutions') _evoFilter = filter || 'all';
+  if (tab === 'heroes') _heroFilter = filter || 'all';
+  switchTab(tab);
+  // Already built? Apply now; otherwise loadEvolutionsGrid / loadHeroesGrid will
+  if (tab === 'evolutions') setEvoFilter(_evoFilter);
+  if (tab === 'heroes') setHeroFilter(_heroFilter);
+};
+
 // ── Cards pane ──
 let _cardData = [];
 let _cardFilter = 'all';
@@ -3144,6 +3201,7 @@ function renderCardsPane(data) {
       <button class="filter-btn" onclick="setCardFilter('upgradable','status')">Upgradable</button>
       <button class="filter-btn" onclick="setCardFilter('canmax','status')">Can Max</button>
       <button class="filter-btn" onclick="setCardFilter('maxed','status')">Maxed</button>
+      ${totalCards > _cardData.length ? `<button class="filter-btn" onclick="setCardFilter('notfound','status')">Not Found</button>` : ''}
     </div>
     <input type="text" id="card-name-search" placeholder="🔍 Search card name…" oninput="setCardSearch(this.value)" autocomplete="off"
       style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:8px 14px;font-size:13px;font-family:'Inter',sans-serif;margin-bottom:10px">
@@ -3354,7 +3412,7 @@ async function loadEvolutionsGrid() {
         <button class="filter-btn" onclick="setEvoFilter('locked')">Locked</button>
       </div>
       <div id="evo-cards-grid"></div>`;
-    _renderEvoCards();
+    setEvoFilter(_evoFilter);
   } catch(e) { grid.innerHTML = `<div class="error-msg">${e.message}</div>`; }
 }
 
@@ -3414,7 +3472,7 @@ async function loadHeroesGrid() {
         <button class="filter-btn" onclick="setHeroFilter('locked')">Locked</button>
       </div>
       <div id="hero-cards-grid"></div>`;
-    _renderHeroCards();
+    setHeroFilter(_heroFilter);
   } catch(e) { grid.innerHTML = `<div class="error-msg">${e.message}</div>`; }
 }
 
@@ -3874,7 +3932,7 @@ window.deckImgFallback = function(el) {
 // profile, 'f' modal). The view choice survives re-renders; the filter resets.
 const _battleState = {};
 function renderBattles(battles, data, scope = 'p') {
-  _battleState[scope] = { battles: battles || [], data, filter: 'all', view: _battleState[scope]?.view || 'log' };
+  _battleState[scope] = { battles: battles || [], data, filter: 'all', result: '', view: _battleState[scope]?.view || 'log' };
   const v = _battleState[scope].view;
   return `
     <div class="seg" id="${scope}-battle-view-bar">
@@ -3898,6 +3956,13 @@ window.setBattleView = function(scope, v) {
 window.setBattleFilter = function(scope, mode) {
   const st = _battleState[scope]; if (!st) return;
   st.filter = mode;
+  const el = document.getElementById(`${scope}-battle-view`);
+  if (el) el.innerHTML = _renderBattleList(scope);
+};
+// Wins / Losses toggle: tap again to show all results
+window.setBattleResult = function(scope, r) {
+  const st = _battleState[scope]; if (!st) return;
+  st.result = st.result === r ? '' : r;
   const el = document.getElementById(`${scope}-battle-view`);
   if (el) el.innerHTML = _renderBattleList(scope);
 };
@@ -3956,16 +4021,46 @@ function battleDetailsHTML(b, team, opp, scope = 'p') {
     </div>`;
 }
 
+const battleResult = b => {
+  const t = (b.team || [])[0]?.crowns || 0, o = (b.opponent || [])[0]?.crowns || 0;
+  return t > o ? 'win' : t < o ? 'loss' : 'draw';
+};
+// "Today", "Yesterday", else "Mon 13 Oct" — in the phone's own time zone
+function battleDayLabel(ts) {
+  const d = parseApiTime(ts), day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(new Date()) - day(d)) / 86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+function battleDaySummary(list) {
+  const n = { win: 0, loss: 0, draw: 0 };
+  list.forEach(b => n[battleResult(b)]++);
+  const tr = list.filter(b => (b.team || [])[0]?.trophyChange != null);
+  const sum = tr.reduce((s, b) => s + b.team[0].trophyChange, 0);
+  return `<span class="text-green">${n.win}W</span> <span class="text-red">${n.loss}L</span>${n.draw ? ` <span class="text-muted">${n.draw}D</span>` : ''}`
+    + (tr.length ? ` · <span style="color:${sum >= 0 ? 'var(--green)' : 'var(--red)'}">${sum >= 0 ? '+' : ''}${sum} 🏆</span>` : '');
+}
+
 function _renderBattleList(scope) {
-  const { battles, filter } = _battleState[scope];
+  const { battles, filter, result } = _battleState[scope];
   const modes = [...new Set(battles.map(b => battleModeLabel(b)))];
   const modeButtons = ['all', ...modes].map(m =>
     `<button class="filter-btn ${filter===m?'active':''}" data-mode="${esc(m)}" onclick="setBattleFilter('${scope}', this.dataset.mode)">${m === 'all' ? 'All Modes' : esc(m)}</button>`
   ).join('');
-  const bar = `<div class="filter-bar">${modeButtons}</div>`;
+  const resultButtons = [['win', 'Wins'], ['loss', 'Losses']].map(([r, label]) =>
+    `<button class="filter-btn ${result === r ? 'active' : ''}" onclick="setBattleResult('${scope}','${r}')">${label}</button>`).join('');
+  const bar = `<div class="filter-bar">${resultButtons}<span class="filter-sep"></span>${modeButtons}</div>`;
 
-  const filtered = filter === 'all' ? battles : battles.filter(b => battleModeLabel(b) === filter);
+  const filtered = battles.filter(b => (filter === 'all' || battleModeLabel(b) === filter) && (!result || battleResult(b) === result));
   if (!filtered.length) return `${bar}<div class="empty-msg">No battles for this filter.</div>`;
+  // Battles arrive newest-first, so each day's battles are consecutive
+  const dayOf = b => b.battleTime ? battleDayLabel(b.battleTime) : '';
+  const dayHead = (b, bi) => {
+    const day = dayOf(b);
+    if (!day || (bi > 0 && dayOf(filtered[bi - 1]) === day)) return '';
+    return `<div class="day-head"${bi === 0 ? ' style="margin-top:0"' : ''}><span>${esc(day)}</span><span>${battleDaySummary(filtered.filter(x => dayOf(x) === day))}</span></div>`;
+  };
 
   const art = buildCardArtMap(battles);
   const deckRow = (p) => (p.cards||[]).map(c => deckTileHTML(c.name, cardVariant(c), art[c.name], 'deck-card-chip')).join('');
@@ -4014,7 +4109,7 @@ function _renderBattleList(scope) {
             ${details}
           </div>` : '';
 
-    return `
+    return `${dayHead(b, bi)}
       <div class="battle-item" style="padding:0;overflow:hidden">
         <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--surface2)">
           <span style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:${resColor}">${resLabel}</span>
@@ -4106,6 +4201,7 @@ function renderDeckBuilder(battles, data, scope = 'p') {
   _deckState[scope] = {
     data, battles,
     filter: scope === 'p' ? (_deckState.p?.filter || 'all') : 'all',
+    sort: scope === 'p' ? (_deckState.p?.sort || 'played') : 'played',
     // Prefer the full card catalog (always complete) over icons embedded in
     // individual battle-log records, which are sometimes missing iconUrls.
     art: buildCardArtMap(battles),
@@ -4132,14 +4228,19 @@ function _renderDeckList(scope) {
   const entries = Object.values(deckMap);
   let filtered = entries;
   if (st.filter !== 'all') filtered = entries.filter(d => d.modes.includes(st.filter));
-  filtered.sort((a,b) => (!!inUseLabel(b.key) - !!inUseLabel(a.key)) || (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws));
+  filtered.sort(DECK_SORTS[st.sort] ? DECK_SORTS[st.sort] : DECK_SORTS.played);
+  // Most played (the default) keeps the decks in use on top
+  if (st.sort === 'played') filtered.sort((a,b) => !!inUseLabel(b.key) - !!inUseLabel(a.key));
+  const sortSel = `<select onchange="setDeckSort('${scope}', this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
+    ${Object.entries(DECK_SORT_LABELS).map(([v, l]) => `<option value="${v}"${st.sort === v ? ' selected' : ''}>Sort: ${l}</option>`).join('')}
+  </select>`;
 
   const modeButtons = ['all', ...modes].map(m =>
     `<button class="filter-btn ${st.filter===m?'active':''}" data-mode="${esc(m)}" onclick="setDeckFilter('${scope}', this.dataset.mode)">${m === 'all' ? 'All Modes' : esc(m)}</button>`
   ).join('');
 
   if (!entries.length) return `<div class="empty-msg">No battle data to build decks from.</div>`;
-  if (!filtered.length) return `<div class="filter-bar">${modeButtons}</div><div class="empty-msg">No decks for this filter.</div>`;
+  if (!filtered.length) return `${sortSel}<div class="filter-bar">${modeButtons}</div><div class="empty-msg">No decks for this filter.</div>`;
 
   const items = filtered.map(d => {
     const inUse = inUseLabel(d.key);
@@ -4152,14 +4253,16 @@ function _renderDeckList(scope) {
       `<div style="margin-bottom:5px;text-align:center"><div class="${cls}" style="font-size:15px;font-weight:700;line-height:1.1">${val}</div><div style="font-size:10px;color:var(--muted)">${lbl}</div></div>`;
     return `
       <div class="deck-item"${inUse ? ' style="border-color:var(--accent)"' : ''}>
-        ${mine || inUse ? `<div style="display:flex;justify-content:space-between;align-items:center;min-height:22px">
-          ${inUse ? `<span class="badge badge-gold" title="1v1: the deck equipped in-game. 2v2: the deck from your latest 2v2 battle.">${inUse}</span>` : '<span></span>'}
+        ${mine || inUse || d.last ? `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;min-height:22px;margin-bottom:6px">
+          <span style="display:flex;align-items:center;gap:8px;min-width:0">
+            ${inUse ? `<span class="badge badge-gold" title="1v1: the deck equipped in-game. 2v2: the deck from your latest 2v2 battle.">${inUse}</span>` : ''}
+            ${d.last ? `<span style="font-size:11px;color:var(--muted);white-space:nowrap" title="Last played">🕓 ${formatBattleTime(d.last)}</span>` : ''}
+          </span>
           ${mine ? `<button class="btn btn-secondary btn-sm" title="Delete this deck's history" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="deleteDeck('${esc(d.key)}')">🗑️</button>` : ''}
         </div>` : ''}
         <div style="display:flex;gap:12px;align-items:center">
           <div style="flex:1;min-width:0">
             <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px">${cardChips}</div>
-            <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%;font-size:11px;padding:4px 8px" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
           </div>
           <div style="flex:1;min-width:0">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 8px">
@@ -4172,11 +4275,42 @@ function _renderDeckList(scope) {
             <div class="progress-wrap" style="margin-top:2px"><div class="progress-bar" style="width:${wr}%;background:var(--green)"></div></div>
           </div>
         </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+          <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
+          <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="upgradeDeck('${esc(names)}')">💰 Upgrade Cost</button>
+        </div>
       </div>`;
   }).join('');
 
-  return `<div class="filter-bar">${modeButtons}</div>${items}`;
+  return `${sortSel}<div class="filter-bar">${modeButtons}</div>${items}`;
 }
+
+// Best win rate puts decks with 3+ games first — a 1-0 deck isn't the best one
+const DECK_SORT_LABELS = { played: 'Most played', winrate: 'Best win rate', recent: 'Recently played' };
+const deckGames = d => d.wins + d.losses + d.draws;
+const DECK_SORTS = {
+  played:  (a, b) => deckGames(b) - deckGames(a),
+  winrate: (a, b) => ((deckGames(b) >= 3) - (deckGames(a) >= 3))
+                  || (b.wins / Math.max(deckGames(b), 1)) - (a.wins / Math.max(deckGames(a), 1))
+                  || deckGames(b) - deckGames(a),
+  recent:  (a, b) => (b.last || '').localeCompare(a.last || '') || deckGames(b) - deckGames(a),
+};
+window.setDeckSort = function(scope, v) {
+  const st = _deckState[scope]; if (!st) return;
+  st.sort = v;
+  const el = document.getElementById(`${scope}-decks`);
+  if (el) el.innerHTML = _renderDeckList(scope);
+};
+// A deck's cost to upgrade with YOUR cards — from your own decks or a friend's —
+// opened as a custom deck in Deck Upgrade
+window.upgradeDeck = function(names) {
+  const ids = (names || '').split(',').map(n => allCards.find(c => c.name === n.trim())?.id).filter(Boolean);
+  if (document.getElementById('friend-modal').style.display === 'block') closeFriendModal();
+  _deckUpMode = 'custom';
+  _screenScroll.deckup = 0;
+  goTo('deckup');
+  loadDeckIds(ids);
+};
 
 window.setDeckFilter = function(scope, mode) {
   const st = _deckState[scope]; if (!st) return;
@@ -4459,7 +4593,7 @@ function warHistoryHTML(log, tag) {
     const standings = [...(race.standings || [])].sort((a,b) => a.rank - b.rank);
     const mine = standings.find(s => s.clan.tag === tag);
     if (!mine) return '';
-    const date = race.createdDate ? parseApiTime(race.createdDate).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }) : '';
+    const date = race.createdDate ? parseApiTime(race.createdDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '';
     const tc = mine.trophyChange || 0;
     const id = `war-hist-${i}`;
     const parts = [...(mine.clan.participants || [])].filter(p => p.fame || p.decksUsed).sort((a,b) => b.fame - a.fame);

@@ -61,13 +61,13 @@ There is no `screen-home`; the app opens on the Player screen.
 
 | Tab          | ID                 | Data source |
 |--------------|--------------------|-------------|
-| Overview     | `tab-overview`     | `/players/{tag}` — card insights, collection level, suggested upgrades, upgrade planner |
+| Overview     | `tab-overview`     | `/players/{tag}` — card insights, collection level, suggested upgrades, upgrade planner. Card Insights numbers (›) open the list they count via `ovGo()`: Cards filtered by status (rarity/search cleared, so the count matches), Tower Troops, Evolutions/Heroes on Unlocked |
 | Cards        | `tab-cards`        | `/players/{tag}` + `/cards` — full collection with filters (status, rarity, sort); cards not yet unlocked are synthesised from the catalog and shown greyed out at the bottom |
 | Evolutions   | `tab-evolutions`   | `/cards` catalog filtered by `iconUrls.evolutionMedium`, matched against player cards |
 | Heroes       | `tab-heroes`       | `/cards` catalog filtered by `iconUrls.heroMedium` |
 | Tower Troops | `tab-towerTroops`  | `data.supportCards` from `/players/{tag}` |
-| Decks        | `tab-decks`        | Battle log + persisted history (decks in use are listed first, marked "In use · 1v1" / "· 2v2") — W/L/D per unique deck (card set + which cards were played as evo/hero), mode filter, copy/delete |
-| Battles      | `tab-battles`      | Toggle between **Battle Log** (`/battlelog` — decks with evo/hero tiles, crowns, trophy change; each battle folds out details: towers left, elixir leaked, trophies, global rank, tower troop, clan, boat stats; 2v2 also the opponents' decks) and **Battle Stats** (lifetime W/L, streak, est. playtime, recent W/L per mode, Opponent Cards — toughest / best-against cards, Path of Legends, old trophy road, challenges) |
+| Decks        | `tab-decks`        | Battle log + persisted history — W/L/D per unique deck (card set + which cards were played as evo/hero), last played, sort (most played — decks in use pinned first, marked "In use · 1v1" / "· 2v2" — / best win rate, 3+ games first / recently played), mode filter, Copy Deck + Upgrade Cost (opens it as a custom deck in Deck Upgrade, costed with *your* cards — also from a friend's deck), delete |
+| Battles      | `tab-battles`      | Toggle between **Battle Log** (`/battlelog` — grouped by day with a W/L/trophy summary per day, Wins/Losses toggle + mode filter; decks with evo/hero tiles, crowns, trophy change; each battle folds out details: towers left, elixir leaked, trophies, global rank, tower troop, clan, boat stats; 2v2 also the opponents' decks) and **Battle Stats** (lifetime W/L, streak, est. playtime, recent W/L per mode, Opponent Cards — toughest / best-against cards, Path of Legends, old trophy road, challenges) |
 | Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries |
 | Account      | `tab-account`      | `/players/{tag}` — XP level, account age, star points, cards found, favourite card, donations, clan wars |
 
@@ -184,7 +184,7 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compa
 | `cr_cards_cache_v7` | `{ items, savedAt }` card catalog, monthly expiry + background revalidation |
 | `cr_coplayers_v1` | Per-tag co-players for Suggested Friends: `{ seen, players: { tag: { name, clan, mates, friendlies, last } }, dismissed }` |
 | `cr_matchups_v1` | Per-tag opponent-card tally: `{ since, battles, seen, cards: { name: [wins, losses, draws] } }`; friendlies and boat battles skipped |
-| `cr_deck_history_v1` | Per-tag deck W/L/D history, deduped by `battleTime`. Keys are sorted names with `[evo]`/`[hero]` suffixes; entries without `variants` predate that and are adopted by the first matching card set played again |
+| `cr_deck_history_v1` | Per-tag deck W/L/D history (+ `last` played battleTime), deduped by `battleTime`. Keys are sorted names with `[evo]`/`[hero]` suffixes; entries without `variants` predate that and are adopted by the first matching card set played again |
 
 ---
 
@@ -297,3 +297,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 25. Opponent-card matchups, Compare tab, deck links + share target in Deck Upgrade, backup/restore, "updated X ago" header, friends list with trophies/last battle/sorting, API retries
 26. Card art stored on the device (cache-first, re-checked every 3 days), image placeholders + fade-in
 27. Clan tab in the profile modal; Back steps through modal profiles and closes the modal instead of the app
+28. Overview numbers open the matching list; battle log grouped by day with summaries and a Wins/Losses filter; deck sorting, last played and an Upgrade Cost button
