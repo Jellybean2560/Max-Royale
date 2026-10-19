@@ -91,6 +91,15 @@
   /* ── Tabs ── */
   .tab-bar { display: flex; gap: 6px; margin-bottom: 16px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
   .tab-bar::-webkit-scrollbar { display: none; }
+  /* Fades on the edge(s) that have more tabs beyond them — set by updateTabFade() */
+  .tab-bar.fade-right { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+  .tab-bar.fade-left { -webkit-mask-image: linear-gradient(to right, transparent, #000 36px); mask-image: linear-gradient(to right, transparent, #000 36px); }
+  .tab-bar.fade-left.fade-right { -webkit-mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
+  /* Profile header + tab bar stay pinned while the tab content scrolls (#content scrolls) */
+  .ph-sticky { position: sticky; top: 0; z-index: 40; background: var(--bg); margin-top: -16px; padding-top: 16px; }
+  .ph-sticky .ph-head { margin-bottom: 10px; }
+  .ph-sticky .tab-bar { margin-bottom: 0; padding-bottom: 10px; }
+  .ftab-sticky { position: sticky; z-index: 1; background: var(--bg); margin-left: -16px; margin-right: -16px; padding: 10px 16px; }
   .tab-btn { flex-shrink: 0; padding: 10px 16px; border-radius: 22px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 500; cursor: pointer; transition: all .2s; white-space: nowrap; }
   .tab-btn.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
 
@@ -358,7 +367,7 @@
 
   <!-- ═══════════════ FRIEND PROFILE MODAL ═══════════════ -->
   <div id="friend-modal" style="display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.65);overflow-y:auto" onclick="if(event.target===this)closeFriendModal()">
-    <div style="max-width:560px;margin:20px auto;background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:hidden">
+    <div style="max-width:560px;margin:20px auto;background:var(--bg);border:1px solid var(--border);border-radius:14px;overflow:clip">
       <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1">
         <span style="font-weight:700;font-family:'Rajdhani',sans-serif;font-size:18px">Friend Profile</span>
         <button onclick="closeFriendModal()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:50%;width:30px;height:30px;cursor:pointer;font-size:18px;line-height:1">×</button>
@@ -651,7 +660,16 @@ function computeUpgrade(rarity, currentLevel, currentCount, targetLevel) {
 // ═══════════════════════════════════════════════
 let currentScreen = 'lookup';
 
+// The screens share one scroller (#content), so each remembers its own position —
+// otherwise switching screens lands you halfway down the next one.
+const _screenScroll = {};
 function goTo(name) {
+  const sc = document.getElementById('content');
+  if (name === currentScreen) {  // re-tapping the active bottom button: back to top
+    sc.scrollTop = 0;  // instant — smooth scrolling proved unreliable (see revealTab)
+    return;
+  }
+  _screenScroll[currentScreen] = sc.scrollTop;
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('screen-' + name).classList.add('active');
@@ -661,6 +679,54 @@ function goTo(name) {
   if (name === 'calc') { maybeLoadCards(); calcUpdate(); }
   if (name === 'friends') renderFriends();
   if (name === 'deckup') renderDeckUpgradeScreen();
+  sc.scrollTop = _screenScroll[name] || 0;
+}
+
+// Scroll a tab bar sideways so this button is fully visible, clear of the fade
+function revealTab(btn) {
+  const bar = btn?.parentElement;
+  if (!bar) return;
+  const b = btn.getBoundingClientRect(), r = bar.getBoundingClientRect(), pad = 40;
+  // Instant, not smooth: a smooth scroll can be cancelled or never run (seen in testing)
+  if (b.left < r.left + pad) bar.scrollLeft += b.left - r.left - pad;
+  else if (b.right > r.right - pad) bar.scrollLeft += b.right - r.right + pad;
+  updateTabFade(bar);
+}
+function updateTabFade(bar) {
+  if (!bar) return;
+  bar.classList.toggle('fade-left', bar.scrollLeft > 2);
+  bar.classList.toggle('fade-right', bar.scrollLeft + bar.clientWidth < bar.scrollWidth - 2);
+}
+// scroll doesn't bubble, so listen in the capture phase for every tab bar
+document.addEventListener('scroll', e => { if (e.target.classList?.contains('tab-bar')) updateTabFade(e.target); }, true);
+window.addEventListener('resize', () => document.querySelectorAll('.tab-bar').forEach(updateTabFade));
+
+// Swipe left/right on a profile's content to move to the next/previous tab.
+// A clearly horizontal, quick swipe only — and never one that starts in
+// something that scrolls sideways itself (the tab bar, mode filters) or a field.
+function attachTabSwipe(container, getButtons, activate) {
+  let x0 = 0, y0 = 0, t0 = 0, armed = false;
+  container.addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    armed = e.touches.length === 1 && !swipeBlocked(e.target, container);
+    x0 = t.clientX; y0 = t.clientY; t0 = Date.now();
+  }, { passive: true });
+  container.addEventListener('touchend', e => {
+    if (!armed) return;
+    armed = false;
+    const t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0;
+    if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 2 || Date.now() - t0 > 700) return;
+    const btns = getButtons(), i = btns.findIndex(b => b.classList.contains('active'));
+    const next = i < 0 ? null : btns[i + (dx < 0 ? 1 : -1)];
+    if (next) activate(next);
+  }, { passive: true });
+}
+function swipeBlocked(el, root) {
+  for (let n = el; n && n !== root; n = n.parentElement) {
+    if (n.matches?.('input, textarea, select, .tab-bar, .filter-bar')) return true;
+    if (n.scrollWidth > n.clientWidth + 2 && /(auto|scroll)/.test(getComputedStyle(n).overflowX)) return true;
+  }
+  return false;
 }
 
 function switchTab(name) {
@@ -672,6 +738,13 @@ function switchTab(name) {
     p.style.display = on ? 'block' : 'none';
   });
   document.querySelectorAll('.tab-btn[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  revealTab(document.querySelector(`.tab-btn[data-tab="${name}"]`));
+  // Scrolled down past the header? Show the new tab from its top, header still pinned
+  const sc = document.getElementById('content'), pr = document.getElementById('player-result');
+  if (sc && pr) {
+    const naturalTop = pr.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;
+    if (sc.scrollTop > naturalTop) sc.scrollTop = naturalTop;
+  }
   // The Cards grid is built here rather than by renderCardsPane(), which only emits
   // the shell. Any path that shows the tab must go through switchTab() — a stray
   // document click listener used to do this, which meant a programmatic tab switch
@@ -981,9 +1054,13 @@ function toggleAccountsMenu(ev) {
   if (!wrap) return;
   const opening = wrap.style.display === 'none' || !wrap.style.display;
   if (opening) _accountsEditMode = false;  // always start in normal mode
-  // Drop down just below the profile header, however tall its info line wraps
+  // Drop down just below the profile header — wherever it is, since it stays
+  // pinned while scrolling — however tall its info line wraps
   const head = document.querySelector('.ph-head');
-  if (opening && head) wrap.style.top = (head.offsetHeight + 4) + 'px';
+  if (opening && head) {
+    const r = head.getBoundingClientRect();
+    Object.assign(wrap.style, { position: 'fixed', top: (r.bottom + 4) + 'px', left: r.left + 'px' });
+  }
   wrap.style.display = opening ? 'block' : 'none';
   if (opening) renderSavedAccounts();
 }
@@ -1119,7 +1196,7 @@ async function viewFriend(tag) {
         ${polHeaderLine(_friendData)}
         ${_friendData.clan ? `<div style="font-size:13px;color:var(--muted);margin-top:4px">🛡 ${esc(_friendData.clan.name)}</div>` : ''}
       </div>
-      <div class="tab-bar">
+      <div class="tab-bar ftab-sticky">
         <button class="tab-btn active" data-ftab="overview" onclick="friendTab('overview')">Overview</button>
         <button class="tab-btn" data-ftab="cards" onclick="friendTab('cards')">Cards</button>
         <button class="tab-btn" data-ftab="evolutions" onclick="friendTab('evolutions')">Evolutions</button>
@@ -1131,6 +1208,10 @@ async function viewFriend(tag) {
         <button class="tab-btn" data-ftab="account" onclick="friendTab('account')">Account</button>
       </div>
       <div id="friend-pane"></div>`;
+    // Pin the tab bar just under the modal's own sticky title bar
+    const bar = body.querySelector('.ftab-sticky'), title = document.querySelector('#friend-modal > div > div');
+    if (bar && title) bar.style.top = title.offsetHeight + 'px';
+    updateTabFade(bar);
     friendTab('overview');
   } catch(e) {
     if (seq !== _friendSeq) return;
@@ -1153,6 +1234,7 @@ function friendTab(name) {
   const d = _friendData; if (!d) return;
   document.querySelectorAll('#friend-modal-body .tab-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.ftab === name));
+  revealTab(document.querySelector(`#friend-modal-body .tab-btn[data-ftab="${name}"]`));
   const pane = document.getElementById('friend-pane');
   if (name === 'overview')    pane.innerHTML = renderOverview(d, _friendBattles, 'f');
   if (name === 'cards')     { _fCardStatus='all'; _fCardRarity='all'; _fCardSort=DEFAULT_CARD_SORT; _fCardSearch=''; pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
@@ -1565,10 +1647,10 @@ function syncClanToProfile(data, { fromCache = false } = {}) {
 // the top of the page.
 function renderProfilePreservingView(data, battles) {
   const activeTab = document.querySelector('.tab-btn[data-tab].active')?.dataset.tab;
-  const y = window.scrollY;
+  const sc = document.getElementById('content'), y = sc.scrollTop;
   renderProfile(data, battles);
   if (activeTab) switchTab(activeTab);
-  window.scrollTo(0, y);
+  sc.scrollTop = y;
 }
 
 // ── Profile cache (per-tag, lets us render instantly on startup) ──
@@ -1704,6 +1786,7 @@ function renderProfile(data, battles) {
     mt?.leagueNumber && MT_LEAGUES[mt.leagueNumber] ? `🧩 ${MT_LEAGUES[mt.leagueNumber]}` : ''
   ].filter(Boolean).join(' · ');
   el.innerHTML = `
+    <div class="ph-sticky">
     <div class="ph-head">
       <div class="flex-between" style="gap:10px">
         <button class="ph-name" onclick="toggleAccountsMenu(event)" title="Switch or add accounts"><span>${esc(data.name)}</span><span class="ph-caret">▾</span></button>
@@ -1726,6 +1809,8 @@ function renderProfile(data, battles) {
       <button class="tab-btn" data-tab="badges" onclick="switchTab('badges')">Badges</button>
       <button class="tab-btn" data-tab="account" onclick="switchTab('account')">Account</button>
     </div>
+    </div>
+    <div style="height:12px"></div>
 
     <div id="tab-overview" class="tab-pane active">${renderOverview(data, battles)}</div>
     <div id="tab-cards" class="tab-pane" style="display:none">${renderCardsPane(data)}</div>
@@ -1737,6 +1822,7 @@ function renderProfile(data, battles) {
     <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles, data)}</div>
     <div id="tab-account" class="tab-pane" style="display:none">${accountStatsHTML(data)}</div>
   `;
+  updateTabFade(el.querySelector('.tab-bar'));
 }
 
 function esc(str) {
@@ -2349,8 +2435,8 @@ window.openCurrentDeckUpgrade = function() {
   const owned = new Set((data.cards || []).map(c => c.id));
   _deckUpTag = data.tag; _deckUpMode = 'custom'; _deckUpSearch = '';
   _deckUpCustomIds = data.currentDeck.map(c => c.id).filter(id => owned.has(id)).slice(0, 8);
+  _screenScroll.deckup = 0;
   goTo('deckup');
-  window.scrollTo(0, 0);
 };
 
 function battleStatsHTML(data, battles) {
@@ -3770,6 +3856,8 @@ const CLAN_SELECT_STYLE = "width:100%;background:var(--surface2);color:var(--tex
 window.clanTab = async function(name) {
   _clanTab = name;
   document.querySelectorAll('#clan-tabs .tab-btn').forEach(b => b.classList.toggle('active', b.dataset.ctab === name));
+  updateTabFade(document.getElementById('clan-tabs'));
+  revealTab(document.querySelector(`#clan-tabs .tab-btn[data-ctab="${name}"]`));
   const pane = document.getElementById('clan-pane');
   if (!pane) return;
   if (name === 'members') {
@@ -4005,6 +4093,11 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && isInstalledApp()) autoRefreshProfile();
 });
 renderSavedAccounts();
+
+attachTabSwipe(document.getElementById('player-result'),
+  () => [...document.querySelectorAll('#player-result .tab-btn[data-tab]')], b => switchTab(b.dataset.tab));
+attachTabSwipe(document.getElementById('friend-modal-body'),
+  () => [...document.querySelectorAll('#friend-modal-body .tab-btn[data-ftab]')], b => friendTab(b.dataset.ftab));
 
 // Register service worker for PWA (standalone fullscreen install)
 if ('serviceWorker' in navigator) {

@@ -123,7 +123,8 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Cards
 | `renderFriends()` / `addFriend()` / `viewFriend(tag)` / `friendTab(name)` | Friends screen |
 | `computeUpgrade(rarity, level, count, target)` | Core upgrade math |
 | `toDisplayLevel(rarity, apiLevel)` | Converts API relative level → display level (1–16) |
-| `goTo(name)` / `switchTab(name)` | Screen / tab switching. `switchTab` owns pane visibility and lazy loads — every path that shows a profile tab must go through it |
+| `goTo(name)` / `switchTab(name)` | Screen / tab switching. `switchTab` owns pane visibility and lazy loads — every path that shows a profile tab must go through it. `goTo` remembers each screen's scroll position; re-tapping the active bottom button scrolls to the top |
+| `revealTab(btn)` / `updateTabFade(bar)` / `attachTabSwipe()` | Keep the selected tab fully in view, edge fades on tab bars, swipe between profile tabs |
 | `formatBattleTime(ts)` | API timestamp → relative time ("2h ago") |
 
 ---
@@ -206,6 +207,9 @@ The friend modal (friends **and** clan members) renders the same Overview as the
 
 `loadPlayer`, `viewFriend` and `loadClan` each take a sequence ticket and drop responses that are no longer the latest, so a slow request (e.g. the installed-app background refresh) can't overwrite a newer one.
 
+## Scrolling (gotcha)
+The page itself never scrolls: `html, body` are `overflow: hidden` and **`#content` is the scroller**. Use `document.getElementById('content').scrollTop`, never `window.scrollY` / `window.scrollTo` (both silently do nothing). The profile header + tab bar (`.ph-sticky`) and the friend modal's tab bar (`.ftab-sticky`; the modal card uses `overflow: clip`, not `hidden`, so sticky works) stay pinned. Programmatic scrolls are instant on purpose — `behavior: 'smooth'` never ran in testing.
+
 ## Known limitations / things to be aware of
 - The Clash Royale API only returns the last **~25–30 battles**. Deck stats work around this by accumulating history in `localStorage` (not retroactive — it only counts battles seen since the feature shipped).
 - Deck history is per-browser/per-device and never leaves the device, so different users of the deployed app never see each other's stats.
@@ -264,3 +268,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 20. Moved the stats out of the Overview (Account tab; Battles tab Log/Stats toggle), added per-battle details, and added River Race + War History to the Clan screen
 21. Redesign: compact profile header, tag lookup moved into the Accounts menu, current deck pinned on the Decks tab (tagged `pre-redesign` before it)
 22. Suggested friends, all profile tabs in the friend/clan-member modal, bigger tab buttons
+23. Pinned header + tab bar, swipe between tabs, selected tab kept in view, tab bar edge fades, re-tap a bottom button to scroll up, per-screen scroll memory
