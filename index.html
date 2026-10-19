@@ -1304,7 +1304,7 @@ async function viewFriend(tag, { fromHistory = false } = {}) {
         <button class="tab-btn" data-ftab="battles" onclick="friendTab('battles')">Battles</button>
         <button class="tab-btn" data-ftab="badges" onclick="friendTab('badges')">Badges</button>
         <button class="tab-btn" data-ftab="account" onclick="friendTab('account')">Account</button>
-        ${_friendData.clan?.tag ? `<button class="tab-btn" data-ftab="clan" onclick="friendTab('clan')">Clan</button>` : ''}
+        ${showClanTab(_friendData) ? `<button class="tab-btn" data-ftab="clan" onclick="friendTab('clan')">Clan</button>` : ''}
       </div>
       <div id="friend-pane"></div>`;
     // Pin the tab bar just under the modal's own sticky title bar
@@ -1346,6 +1346,17 @@ function hideFriendModal() {
 // into the Clan screen for River Race and war history. Fetched on first open;
 // kept while you move between members of the same clan.
 let _fClan = null, _fClanSort = 'trophies';
+// No Clan tab when it would only repeat a clan you're already looking at: your
+// own clan, the clan on the Clan screen you opened them from, or the clan of the
+// profile you came from (a member tapped in its Clan tab).
+function showClanTab(d) {
+  const tag = d?.clan?.tag;
+  if (!tag) return false;
+  if (tag === window._currentProfile?.data?.clan?.tag) return false;
+  if (currentScreen === 'clan' && tag === _clanTag) return false;
+  const prev = _modalStack.length > 1 && _modalProfiles[_modalStack[_modalStack.length - 2]];
+  return !(prev && prev[0]?.clan?.tag === tag);
+}
 async function friendClanTab() {
   const d = _friendData, tag = d?.clan?.tag, pane = document.getElementById('friend-pane');
   if (!pane || !tag) return;
