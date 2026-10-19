@@ -128,7 +128,8 @@ self.addEventListener('fetch', e => {
   }
   if (req.method === 'GET' && req.destination === 'image' && req.mode === 'no-cors'
       && IMG_HOSTS.includes(new URL(req.url).hostname)) {
-    e.respondWith(imageResponse(e));
+    // If the cache itself fails (storage full, evicted), just go to the network
+    e.respondWith(imageResponse(e).catch(() => fetch(req)));
     return;
   }
   e.respondWith(caches.match(req).then(cached => cached || fetch(req)));

@@ -71,7 +71,9 @@ There is no `screen-home`; the app opens on the Player screen.
 | Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries |
 | Account      | `tab-account`      | `/players/{tag}` — XP level, account age, star points, cards found, favourite card, donations, clan wars |
 
-The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compare, Cards, Evolutions, Heroes, Tower Troops, Decks, Battles, Badges, Account. **Compare** (only when a profile is loaded and it's someone else) puts the loaded profile next to them: account stats with the higher value highlighted, then every card's level, filterable by who's ahead. Its Decks tab uses only the friend's current battle log (never saved, no delete button); its battle details label the sides by name instead of "You".
+The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compare, Cards, Evolutions, Heroes, Tower Troops, Decks, Battles, Badges, Account, Clan. **Clan** (only when they're in one) shows the clan header and members — tap one to open them — and a button into the Clan screen for River Race / War History. **Compare** (only when a profile is loaded and it's someone else) puts the loaded profile next to them: account stats with the higher value highlighted, then every card's level, filterable by who's ahead. Its Decks tab uses only the friend's current battle log (never saved, no delete button); its battle details label the sides by name instead of "You".
+
+**Modal history:** every profile opened in the modal pushes a history entry (`_modalStack`, `state.modal` = depth), so Android Back / the ← button steps back through profiles (restoring the tab each was on, from `_modalProfiles` without refetching) and finally closes the modal instead of leaving the app. `closeFriendModal()` unwinds those entries; `hideFriendModal()` is the actual close — don't hide the modal any other way or the history gets out of step.
 
 **Friends list stats:** each saved friend in `cr_friends` carries a snapshot (`trophies`, `clan`, `lastBattle`, `statsAt`). Opening the Friends screen refreshes snapshots older than 15 min, four requests at a time (`refreshFriendStats()`); 🔄 refreshes all; opening a friend's profile updates theirs.
 
@@ -112,6 +114,7 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compa
 | `recordMatchups(tag, battles)` / `matchupsHTML(data, battles, scope)` | Win rate per opponent card (`cr_matchups_v1`); the friend modal tallies their current log only |
 | `profileLevels(data)` | King level, collection level, evolution and hero counts |
 | `compareHTML(me, them)` / `setCompareFilter(v)` | Friend modal Compare tab |
+| `friendClanTab()` / `clanHeaderHTML(data)` / `memberRowsHTML(members, sort, highlightTag)` | Friend modal Clan tab; header and member rows shared with the Clan screen |
 | `refreshFriendStats(force)` / `saveFriendStats()` / `sortedFriends()` | Friends list snapshots and sorting |
 | `parseDeckLinkIds(text)` / `importDeckLink(text)` / `takeSharedDeck()` | Deck links into Deck Upgrade's Custom Deck; shared decks on launch |
 | `exportBackup()` / `importBackup(input)` | Backup file |
@@ -293,3 +296,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 24. Replaced the Current Deck card with an "In use" mark in the deck list and a Current deck option in Deck Upgrade
 25. Opponent-card matchups, Compare tab, deck links + share target in Deck Upgrade, backup/restore, "updated X ago" header, friends list with trophies/last battle/sorting, API retries
 26. Card art stored on the device (cache-first, re-checked every 3 days), image placeholders + fade-in
+27. Clan tab in the profile modal; Back steps through modal profiles and closes the modal instead of the app
