@@ -89,9 +89,9 @@
   .progress-bar { height: 100%; border-radius: 4px; transition: width .4s; }
 
   /* ── Tabs ── */
-  .tab-bar { display: flex; gap: 4px; margin-bottom: 16px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+  .tab-bar { display: flex; gap: 6px; margin-bottom: 16px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
   .tab-bar::-webkit-scrollbar { display: none; }
-  .tab-btn { flex-shrink: 0; padding: 7px 14px; border-radius: 20px; border: 1px solid var(--border); background: none; color: var(--muted); font-family: 'Inter', sans-serif; font-size: 13px; cursor: pointer; transition: all .2s; white-space: nowrap; }
+  .tab-btn { flex-shrink: 0; padding: 10px 16px; border-radius: 22px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 500; cursor: pointer; transition: all .2s; white-space: nowrap; }
   .tab-btn.active { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
 
   /* ── Divider ── */
@@ -1125,6 +1125,8 @@ async function viewFriend(tag) {
         <button class="tab-btn" data-ftab="evolutions" onclick="friendTab('evolutions')">Evolutions</button>
         <button class="tab-btn" data-ftab="heroes" onclick="friendTab('heroes')">Heroes</button>
         <button class="tab-btn" data-ftab="towerTroops" onclick="friendTab('towerTroops')">Tower Troops</button>
+        <button class="tab-btn" data-ftab="decks" onclick="friendTab('decks')">Decks</button>
+        <button class="tab-btn" data-ftab="battles" onclick="friendTab('battles')">Battles</button>
         <button class="tab-btn" data-ftab="badges" onclick="friendTab('badges')">Badges</button>
         <button class="tab-btn" data-ftab="account" onclick="friendTab('account')">Account</button>
       </div>
@@ -1158,8 +1160,9 @@ function friendTab(name) {
   if (name === 'heroes')    { _fHeroFilter='all'; pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
   if (name === 'towerTroops') pane.innerHTML = friendTroopHTML(d);
   if (name === 'badges')    { _fBadgeFilter='all'; pane.innerHTML = friendBadgesShell(d); friendRenderBadges(); }
-  // No Battles tab in the modal, so its battle stats sit under the account stats
-  if (name === 'account')     pane.innerHTML = accountStatsHTML(d) + currentDeckHTML(d, _friendBattles) + battleStatsHTML(d, _friendBattles);
+  if (name === 'decks')       pane.innerHTML = renderDeckBuilder(_friendBattles, d, 'f');
+  if (name === 'battles')     pane.innerHTML = renderBattles(_friendBattles, d, 'f');
+  if (name === 'account')     pane.innerHTML = accountStatsHTML(d);
   document.getElementById('friend-modal').scrollTop = 0;
 }
 
@@ -1372,7 +1375,7 @@ function _renderFriendsList() {
   if (!wrap) return;
   const list = getFriends();
   if (!list.length) {
-    wrap.innerHTML = `<div class="empty-msg">No friends saved yet. Add a player tag above (up to ${MAX_FRIENDS}).</div>`;
+    wrap.innerHTML = `<div class="empty-msg">No friends saved yet. Add a player tag above (up to ${MAX_FRIENDS}).</div>` + suggestedFriendsHTML();
     return;
   }
   const header = `
@@ -1392,8 +1395,108 @@ function _renderFriendsList() {
           : '<span class="text-accent" style="font-size:13px;font-weight:600">View →</span>'}
       </div>
     </div>`).join('');
-  wrap.innerHTML = header + rows;
+  wrap.innerHTML = header + rows + suggestedFriendsHTML();
 }
+
+// ── Suggested friends ──
+// The API has no friends list, so suggest from who you play WITH: a 2v2
+// teammate seen in 2+ games (a random matchmade teammate almost never repeats —
+// your real partner does, e.g. 12 of 30), or anyone in a Friendly battle (only
+// possible with friends and clanmates). Co-players accumulate per tag in
+// localStorage, deduped by battleTime like deck history, so suggestions outgrow
+// the ~30-battle window.
+const COPLAYERS_KEY = 'cr_coplayers_v1';
+const SUGGEST_MIN_TEAMMATE_GAMES = 2;
+function loadCoPlayers(tag) {
+  try { return JSON.parse(localStorage.getItem(COPLAYERS_KEY) || '{}')[tag] || { seen: [], players: {}, dismissed: [] }; }
+  catch(e) { return { seen: [], players: {}, dismissed: [] }; }
+}
+function saveCoPlayers(tag, entry) {
+  try {
+    const all = JSON.parse(localStorage.getItem(COPLAYERS_KEY) || '{}');
+    all[tag] = entry;
+    localStorage.setItem(COPLAYERS_KEY, JSON.stringify(all));
+  } catch(e) {}
+}
+function recordCoPlayers(myTag, battles) {
+  if (!myTag) return;
+  const entry = loadCoPlayers(myTag);
+  const seen = new Set(entry.seen);
+  let changed = false;
+  (battles || []).forEach(b => {
+    if (!b.battleTime || seen.has(b.battleTime)) return;
+    const mySide = (b.team || []).some(p => p.tag === myTag) ? (b.team || []) : (b.opponent || []).some(p => p.tag === myTag) ? (b.opponent || []) : null;
+    if (!mySide) return;
+    seen.add(b.battleTime);
+    changed = true;
+    const isFriendly = /friendly|clanMate|casual/i.test(b.type || '');
+    const bump = (p, field) => {
+      if (!p.tag || p.tag === myTag) return;
+      const e = entry.players[p.tag] || (entry.players[p.tag] = { name: p.name, mates: 0, friendlies: 0 });
+      e.name = p.name; e.clan = p.clan?.name || e.clan || '';
+      e[field]++;
+      if (!e.last || b.battleTime > e.last) e.last = b.battleTime;
+    };
+    mySide.forEach(p => bump(p, isFriendly ? 'friendlies' : 'mates'));
+    if (isFriendly) ((mySide === b.team ? b.opponent : b.team) || []).forEach(p => bump(p, 'friendlies'));
+  });
+  if (!changed) return;
+  entry.seen = [...seen].slice(-300);
+  // Bound growth: random one-off teammates pile up, so keep the 300 most recent
+  const tags = Object.keys(entry.players);
+  if (tags.length > 300) {
+    tags.sort((a, b) => (entry.players[b].last || '').localeCompare(entry.players[a].last || ''))
+        .slice(300).forEach(t => delete entry.players[t]);
+  }
+  saveCoPlayers(myTag, entry);
+}
+
+function suggestedFriendsHTML() {
+  const myTag = window._currentProfile?.data?.tag;
+  const head = `<div style="display:flex;align-items:baseline;justify-content:space-between;margin:20px 0 8px">
+      <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Suggested Friends</span>
+      <span style="font-size:11px;color:var(--muted)">2v2 teammates &amp; friendly battles</span>
+    </div>`;
+  if (!myTag) return head + '<div class="empty-msg">Load your profile on the Player tab to get suggestions.</div>';
+  const entry = loadCoPlayers(myTag);
+  const skip = new Set([myTag, ...getFriends().map(f => f.tag), ...getSavedAccounts().map(a => a.tag), ...(entry.dismissed || [])]);
+  const list = Object.entries(entry.players)
+    .filter(([tag, p]) => !skip.has(tag) && (p.friendlies > 0 || p.mates >= SUGGEST_MIN_TEAMMATE_GAMES))
+    .sort((a, b) => (b[1].mates + b[1].friendlies) - (a[1].mates + a[1].friendlies) || (b[1].last || '').localeCompare(a[1].last || ''))
+    .slice(0, 10);
+  if (!list.length) return head + '<div class="empty-msg">No suggestions yet — play a few 2v2s with a friend or a friendly battle.</div>';
+  const why = p => [p.mates ? `🤝 ${p.mates} game${p.mates === 1 ? '' : 's'} as teammate` : '',
+                    p.friendlies ? `⚔️ ${p.friendlies} friendly` : ''].filter(Boolean).join(' · ');
+  return head + list.map(([tag, p]) => `
+    <div onclick="viewFriend('${esc(tag)}')" style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--surface);border:1px dashed var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:pointer">
+      <div style="min-width:0">
+        <div style="font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</div>
+        <div style="font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${why(p)}${p.clan ? ` · 🛡 ${esc(p.clan)}` : ''}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-shrink:0">
+        <button class="btn btn-primary btn-sm" style="font-size:12px;padding:4px 10px" onclick="event.stopPropagation();addSuggestedFriend('${esc(tag)}')">+ Add</button>
+        <span onclick="event.stopPropagation();dismissSuggestion('${esc(tag)}')" style="color:var(--muted);font-size:16px;padding:0 4px;cursor:pointer" title="Hide this suggestion">✕</span>
+      </div>
+    </div>`).join('');
+}
+window.addSuggestedFriend = function(tag) {
+  const myTag = window._currentProfile?.data?.tag;
+  const p = loadCoPlayers(myTag).players[tag];
+  const list = getFriends();
+  if (!p || list.some(f => f.tag === tag)) return;
+  if (list.length >= MAX_FRIENDS) { showFriendMsg(`You can save up to ${MAX_FRIENDS} friends. Remove one first.`, true); return; }
+  list.push({ tag, name: p.name });
+  localStorage.setItem('cr_friends', JSON.stringify(list));
+  _renderFriendsList();
+};
+window.dismissSuggestion = function(tag) {
+  const myTag = window._currentProfile?.data?.tag;
+  if (!myTag) return;
+  const entry = loadCoPlayers(myTag);
+  entry.dismissed = [...new Set([...(entry.dismissed || []), tag])];
+  saveCoPlayers(myTag, entry);
+  _renderFriendsList();
+};
 
 // opts.quiet: refresh in place without a spinner, keeping whatever is already on
 // screen if the fetch fails. Used by the installed-app auto-refresh.
@@ -1427,6 +1530,7 @@ async function loadPlayer(tagOverride, opts = {}) {
     });
     // Persist the full profile so we can render instantly on next app open
     saveProfileCache(data.tag, data, battles);
+    recordCoPlayers(data.tag, battles);
     window._currentProfile = { data, battles };
     syncClanToProfile(data);
   } catch(e) {
@@ -1502,6 +1606,7 @@ async function autoRefreshProfile() {
 
 function renderProfileFromCache(cached) {
   renderProfile(cached.data, cached.battles);
+  recordCoPlayers(cached.data.tag, cached.battles);
   window._currentProfile = { data: cached.data, battles: cached.battles };
   _playerCardsById = {};
   [...(cached.data.cards || []), ...(cached.data.supportCards || [])].forEach(c => { _playerCardsById[c.id] = c; });
@@ -3155,7 +3260,6 @@ function badgeTilesHTML(list) {
 }
 
 // ── Battles pane ──
-let _battleFilter = 'all';
 // ── Evolution / hero slots ──
 // A battle-log deck lists its cards in slot order, and the first three slots are
 // the special ones: evolutions, heroes and champions go there. The form a card was
@@ -3222,39 +3326,44 @@ window.deckImgFallback = function(el) {
 // The Battles tab holds the battle log and the lifetime battle stats, switched
 // by a toggle at the top so neither makes the other longer. The choice survives
 // re-renders (Refresh, background refresh).
-let _battleView = 'log';
-function renderBattles(battles, data) {
-  window._battleData = battles || [];
-  window._battleStatsData = data;
-  _battleFilter = 'all';
+// Both the profile and the friend/clan-member modal have a Battles tab, and both
+// can be in the DOM at once, so state and element ids are per scope ('p'
+// profile, 'f' modal). The view choice survives re-renders; the filter resets.
+const _battleState = {};
+function renderBattles(battles, data, scope = 'p') {
+  _battleState[scope] = { battles: battles || [], data, filter: 'all', view: _battleState[scope]?.view || 'log' };
+  const v = _battleState[scope].view;
   return `
-    <div class="seg" id="battle-view-bar">
-      <button class="${_battleView === 'log' ? 'active' : ''}" onclick="setBattleView('log')">Battle Log</button>
-      <button class="${_battleView === 'stats' ? 'active' : ''}" onclick="setBattleView('stats')">Battle Stats</button>
+    <div class="seg" id="${scope}-battle-view-bar">
+      <button class="${v === 'log' ? 'active' : ''}" onclick="setBattleView('${scope}','log')">Battle Log</button>
+      <button class="${v === 'stats' ? 'active' : ''}" onclick="setBattleView('${scope}','stats')">Battle Stats</button>
     </div>
-    <div id="battle-view">${battleViewHTML()}</div>`;
+    <div id="${scope}-battle-view">${battleViewHTML(scope)}</div>`;
 }
-function battleViewHTML() {
-  if (_battleView === 'stats') return window._battleStatsData ? battleStatsHTML(window._battleStatsData, window._battleData) : '';
-  return window._battleData.length ? _renderBattleList(window._battleData) : '<div class="empty-msg">No battles found.</div>';
+function battleViewHTML(scope) {
+  const st = _battleState[scope];
+  if (st.view === 'stats') return st.data ? battleStatsHTML(st.data, st.battles) : '';
+  return st.battles.length ? _renderBattleList(scope) : '<div class="empty-msg">No battles found.</div>';
 }
-window.setBattleView = function(v) {
-  _battleView = v;
-  document.querySelectorAll('#battle-view-bar button').forEach((b, i) => b.classList.toggle('active', (i === 0) === (v === 'log')));
-  const el = document.getElementById('battle-view');
-  if (el) el.innerHTML = battleViewHTML();
+window.setBattleView = function(scope, v) {
+  const st = _battleState[scope]; if (!st) return;
+  st.view = v;
+  document.querySelectorAll(`#${scope}-battle-view-bar button`).forEach((b, i) => b.classList.toggle('active', (i === 0) === (v === 'log')));
+  const el = document.getElementById(`${scope}-battle-view`);
+  if (el) el.innerHTML = battleViewHTML(scope);
 };
-
-window.setBattleFilter = function(mode) {
-  _battleFilter = mode;
-  const el = document.getElementById('battle-view');
-  if (el && window._battleData) el.innerHTML = _renderBattleList(window._battleData);
+window.setBattleFilter = function(scope, mode) {
+  const st = _battleState[scope]; if (!st) return;
+  st.filter = mode;
+  const el = document.getElementById(`${scope}-battle-view`);
+  if (el) el.innerHTML = _renderBattleList(scope);
 };
 
 // What the battle log records beyond decks and crowns, as a two-column table
 // (your side vs theirs). Towers belong to a side, so they come from its first
 // player; the rest is per player, named in 2v2. Rows with no data are left out.
-function battleDetailsHTML(b, team, opp) {
+// scope 'f' (someone else's log) labels the sides by name instead of "You"
+function battleDetailsHTML(b, team, opp, scope = 'p') {
   const multi = team.length > 1 || opp.length > 1;
   const perPlayer = (players, fn) => players.map(p => {
     const v = fn(p);
@@ -3297,21 +3406,22 @@ function battleDetailsHTML(b, team, opp) {
   return `${boat}
     <div style="display:grid;grid-template-columns:auto minmax(0,1fr) minmax(0,1fr);gap:6px 10px;font-size:12px;align-items:start">
       <div></div>
-      <div style="color:#5b9bff;font-weight:600">${multi ? 'Your team' : 'You'}</div>
+      <div style="color:#5b9bff;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${multi ? (scope === 'p' ? 'Your team' : 'Team') : (scope === 'p' ? 'You' : esc(team[0]?.name || 'Player'))}</div>
       <div style="color:#e9685c;font-weight:600">${multi ? 'Opponents' : 'Opponent'}</div>
       ${rows.map(([label, mine, theirs]) => `
         <div style="color:var(--muted);white-space:nowrap">${label}</div><div style="min-width:0">${mine}</div><div style="min-width:0">${theirs}</div>`).join('')}
     </div>`;
 }
 
-function _renderBattleList(battles) {
+function _renderBattleList(scope) {
+  const { battles, filter } = _battleState[scope];
   const modes = [...new Set(battles.map(b => battleModeLabel(b)))];
   const modeButtons = ['all', ...modes].map(m =>
-    `<button class="filter-btn ${_battleFilter===m?'active':''}" data-mode="${esc(m)}" onclick="setBattleFilter(this.dataset.mode)">${m === 'all' ? 'All Modes' : esc(m)}</button>`
+    `<button class="filter-btn ${filter===m?'active':''}" data-mode="${esc(m)}" onclick="setBattleFilter('${scope}', this.dataset.mode)">${m === 'all' ? 'All Modes' : esc(m)}</button>`
   ).join('');
   const bar = `<div class="filter-bar">${modeButtons}</div>`;
 
-  const filtered = _battleFilter === 'all' ? battles : battles.filter(b => battleModeLabel(b) === _battleFilter);
+  const filtered = filter === 'all' ? battles : battles.filter(b => battleModeLabel(b) === filter);
   if (!filtered.length) return `${bar}<div class="empty-msg">No battles for this filter.</div>`;
 
   const art = buildCardArtMap(battles);
@@ -3348,9 +3458,9 @@ function _renderBattleList(battles) {
       </div>`;
     };
     const deckCols = deckPlayers.map(deckCol).join('');
-    const oppId = `battle-${bi}-opp`;
+    const oppId = `${scope}-battle-${bi}-opp`;
     const showOppDecks = is2v2 && oppPlayers.some(p => (p.cards||[]).length);
-    const details = battleDetailsHTML(b, teamPlayers, oppPlayers);
+    const details = battleDetailsHTML(b, teamPlayers, oppPlayers, scope);
     const foldLabel = showOppDecks ? "Opponents' decks & details" : 'Battle details';
     const oppFold = showOppDecks || details ? `
           <div onclick="toggleCardMax('${oppId}')" style="cursor:pointer;margin-top:10px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);text-align:center;user-select:none">
@@ -3388,9 +3498,10 @@ function _renderBattleList(battles) {
 }
 
 // ── Deck builder pane ──
-let _deckFilter = 'all';
-window._deckMapData = null;
-window._deckBattles = null;
+// Per scope like the Battles tab. The profile's decks come from (and extend) this
+// device's saved history; a friend's only from their current battle log, never
+// saved. The profile's filter survives re-renders; a friend's starts at All.
+const _deckState = {};
 
 const DECK_MODE_LABELS = {
   trail: 'Trophy Road',
@@ -3447,52 +3558,53 @@ function battleModeLabel(b) {
   return deckModeLabel(b.type || '');  // last-resort fallback to the coarse type
 }
 
-function renderDeckBuilder(battles, data) {
-  const playerTag = data.tag;
-  window._deckProfileData = data;
-  if (!battles || !battles.length) return currentDeckHTML(data, [], { upgrade: true }) + '<div class="empty-msg">No battle data to build decks from.</div>';
-  window._deckBattles = battles;
-  window._deckPlayerTag = playerTag;
-
-  // Prefer the full card catalog (always complete) over icons embedded in
-  // individual battle-log records, which are sometimes missing iconUrls.
-  window._cardArtMap = buildCardArtMap(battles);
-
-  const deckMap = buildDeckMapFromBattles(battles, playerTag);
-  window._deckMapData = deckMap;
-  return _renderDeckList(deckMap, battles);
+function renderDeckBuilder(battles, data, scope = 'p') {
+  battles = battles || [];
+  _deckState[scope] = {
+    data, battles,
+    filter: scope === 'p' ? (_deckState.p?.filter || 'all') : 'all',
+    // Prefer the full card catalog (always complete) over icons embedded in
+    // individual battle-log records, which are sometimes missing iconUrls.
+    art: buildCardArtMap(battles),
+    deckMap: buildDeckMapFromBattles(battles, data.tag, { persist: scope === 'p' })
+  };
+  return `<div id="${scope}-decks">${_renderDeckList(scope)}</div>`;
 }
 
-function _renderDeckList(deckMap, battles) {
-  const current = currentDeckHTML(window._deckProfileData, battles, { deckMap, upgrade: true });
+function _renderDeckList(scope) {
+  const st = _deckState[scope];
+  const { deckMap, battles } = st;
+  const mine = scope === 'p';
+  const current = currentDeckHTML(st.data, battles, { deckMap, upgrade: mine });
   const modes = [...new Set(battles.map(b => battleModeLabel(b)))];
   // The filter survives re-renders, but not onto an account (or a refreshed
   // battle log) without that mode — it would have no button to clear it.
-  if (_deckFilter !== 'all' && !modes.includes(_deckFilter)) _deckFilter = 'all';
+  if (st.filter !== 'all' && !modes.includes(st.filter)) st.filter = 'all';
   const entries = Object.values(deckMap);
   let filtered = entries;
-  if (_deckFilter !== 'all') filtered = entries.filter(d => d.modes.includes(_deckFilter));
+  if (st.filter !== 'all') filtered = entries.filter(d => d.modes.includes(st.filter));
   filtered.sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws));
 
   const modeButtons = ['all', ...modes].map(m =>
-    `<button class="filter-btn ${_deckFilter===m?'active':''}" data-mode="${esc(m)}" onclick="setDeckFilter(this.dataset.mode)">${m === 'all' ? 'All Modes' : esc(m)}</button>`
+    `<button class="filter-btn ${st.filter===m?'active':''}" data-mode="${esc(m)}" onclick="setDeckFilter('${scope}', this.dataset.mode)">${m === 'all' ? 'All Modes' : esc(m)}</button>`
   ).join('');
 
+  if (!entries.length) return `${current}<div class="empty-msg">No battle data to build decks from.</div>`;
   if (!filtered.length) return `${current}<div class="filter-bar">${modeButtons}</div><div class="empty-msg">No decks for this filter.</div>`;
 
   const items = filtered.map(d => {
     const total = d.wins + d.losses + d.draws;
     const wr = total ? Math.round(d.wins / total * 100) : 0;
     const avgElixir = d.elixir.length ? (d.elixir.reduce((a,b)=>a+b,0)/d.elixir.length).toFixed(1) : '—';
-    const cardChips = d.cards.map(c => deckTileHTML(c, d.variants[c], window._cardArtMap?.[c], 'deck-list-tile')).join('');
+    const cardChips = d.cards.map(c => deckTileHTML(c, d.variants[c], st.art[c], 'deck-list-tile')).join('');
     const names = d.cards.join(', ');
     const statRow = (lbl, val, cls) =>
       `<div style="margin-bottom:5px;text-align:center"><div class="${cls}" style="font-size:15px;font-weight:700;line-height:1.1">${val}</div><div style="font-size:10px;color:var(--muted)">${lbl}</div></div>`;
     return `
       <div class="deck-item">
-        <div style="display:flex;justify-content:flex-end">
+        ${mine ? `<div style="display:flex;justify-content:flex-end">
           <button class="btn btn-secondary btn-sm" title="Delete this deck's history" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="deleteDeck('${esc(d.key)}')">🗑️</button>
-        </div>
+        </div>` : ''}
         <div style="display:flex;gap:12px;align-items:center">
           <div style="flex:1;min-width:0">
             <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px">${cardChips}</div>
@@ -3515,11 +3627,11 @@ function _renderDeckList(deckMap, battles) {
   return `${current}<div class="filter-bar">${modeButtons}</div>${items}`;
 }
 
-window.setDeckFilter = function(mode) {
-  _deckFilter = mode;
-  if (window._deckMapData && window._deckBattles) {
-    document.getElementById('tab-decks').innerHTML = _renderDeckList(window._deckMapData, window._deckBattles);
-  }
+window.setDeckFilter = function(scope, mode) {
+  const st = _deckState[scope]; if (!st) return;
+  st.filter = mode;
+  const el = document.getElementById(`${scope}-decks`);
+  if (el) el.innerHTML = _renderDeckList(scope);
 };
 
 // Manually remove a deck (and its accumulated win/loss history) from local storage.
@@ -3527,13 +3639,13 @@ window.setDeckFilter = function(mode) {
 // from re-fetching the same recent battle log — only if it's actually played again.
 window.deleteDeck = function(key) {
   if (!confirm('Delete this deck and its win/loss history? This can\'t be undone.')) return;
-  const tag = window._deckPlayerTag;
-  const history = loadDeckHistory(tag);
+  const st = _deckState.p; if (!st) return;
+  const history = loadDeckHistory(st.data.tag);
   delete history.decks[key];
-  saveDeckHistory(tag, history);
-
-  if (window._deckMapData) delete window._deckMapData[key];
-  document.getElementById('tab-decks').innerHTML = _renderDeckList(window._deckMapData || {}, window._deckBattles || []);
+  saveDeckHistory(st.data.tag, history);
+  delete st.deckMap[key];
+  const el = document.getElementById('p-decks');
+  if (el) el.innerHTML = _renderDeckList('p');
 };
 
 // Open the deck directly in Clash Royale (the "Copy Deck" dialog inside the game)

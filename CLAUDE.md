@@ -51,7 +51,7 @@ README.md                         ← setup instructions
 | Calculator   | `screen-calc`    | Offline upgrade cost calculator with card picker |
 | Deck Upgrade | `screen-deckup`  | Cost to upgrade a whole 8-card deck |
 | Clan         | `screen-clan`    | Clan lookup by tag; tabs Members (sortable), River Race (live standings + each member's decks used today), War History (last 10 races, fold-out standings + member contributions) |
-| Friends      | `screen-friends` | Up to 50 saved friends (`MAX_FRIENDS`), mini profile viewer — the same modal opens clan members |
+| Friends      | `screen-friends` | Up to 50 saved friends (`MAX_FRIENDS`) + Suggested Friends; the profile modal (also opened for clan members) has the same tabs as the profile |
 
 There is no `screen-home`; the app opens on the Player screen.
 
@@ -71,7 +71,9 @@ There is no `screen-home`; the app opens on the Player screen.
 | Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries |
 | Account      | `tab-account`      | `/players/{tag}` — XP level, account age, star points, cards found, favourite card, donations, clan wars |
 
-The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, Evolutions, Heroes, Tower Troops, Badges, Account. With no Battles or Decks tab there, the modal's Account tab also shows the current deck and the battle stats. `viewFriend()` also fetches the friend's battle log, only for the Overview's recent-battle stats (a failure there is ignored).
+The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Cards, Evolutions, Heroes, Tower Troops, Decks, Battles, Badges, Account. Its Decks tab uses only the friend's current battle log (never saved, no delete or Upgrade cost button); its battle details label the sides by name instead of "You".
+
+**Suggested friends:** the API has no friends list. `recordCoPlayers()` accumulates who you play *with* per profile tag (`cr_coplayers_v1`, deduped by `battleTime`); a 2v2 teammate seen in 2+ games or anyone from a Friendly battle is suggested (random matchmade teammates almost never repeat). Saved friends, your accounts and dismissed players are left out. `viewFriend()` also fetches the friend's battle log, only for the Overview's recent-battle stats (a failure there is ignored).
 
 ---
 
@@ -97,19 +99,19 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | `renderBadgesPane(data)` / `loadBadgesGrid()` | Badges tab (lazy); builds earned + locked-mastery entries |
 | `_masteryCardFor(badgeName)` | Maps a `Mastery<InternalName>` badge to its catalog card |
 | `setBadgeFilter(val)` | Badge filter: `all` / `mastery` / `other` |
-| `renderBattles(battles, data)` / `setBattleView(v)` / `setBattleFilter(mode)` | Battles tab: log/stats toggle + mode filter |
+| `renderBattles(battles, data, scope)` / `setBattleView(scope, v)` / `setBattleFilter(scope, mode)` | Battles tab: log/stats toggle + mode filter; state in `_battleState[scope]` |
+| `renderDeckBuilder(battles, data, scope)` / `setDeckFilter(scope, mode)` | Decks tab; state in `_deckState[scope]` |
+| `recordCoPlayers(tag, battles)` / `suggestedFriendsHTML()` | Suggested friends from 2v2 teammates and friendly battles |
 | `battleDetailsHTML(b, team, opp)` | A battle's fold-out details table |
 | `currentDeckHTML(data, battles, opts)` / `currentDeckVariants()` | Current in-game deck card (Decks tab top; friend Account tab) |
 | `renderSavedAccounts()` / `menuLookup()` / `showLookupStart(on)` | Accounts menu (opened from the header name) and the start card's account chips |
 | `openCurrentDeckUpgrade()` | Opens Deck Upgrade with the current deck as its custom deck |
 | `clanTab(name)` / `loadClanWar(tag)` / `riverRaceHTML()` / `warHistoryHTML()` | Clan screen tabs; war data fetched on tab open, cached 1 min per clan |
-| `renderDeckBuilder(battles, playerTag)` | Builds the icon map, delegates to `buildDeckMapFromBattles` |
 | `buildDeckMapFromBattles(battles, playerTag)` | Merges new battles into persisted deck history, returns the deck map |
 | `cardVariant(c)` / `deckKeyOf(cards)` | Battle-log card → `'evo'` / `'hero'` / `''`; deck identity including those forms |
 | `buildCardArtMap(battles)` / `deckTileHTML(name, variant, art, cls)` | Card art (plain/evo/hero) by name; one deck tile with evo/hero ring + tag and art fallback |
 | `loadDeckHistory(tag)` / `saveDeckHistory(tag, h)` | Per-tag deck W/L history in `localStorage` |
 | `deleteDeck(key)` | Removes one deck + its history (confirm prompt) |
-| `_renderDeckList(deckMap, battles)` / `setDeckFilter(mode)` | Deck tab rendering + mode filter |
 | `copyDeckLink(names, btn)` | Opens the deck via Supercell's `link.clashroyale.com` deep link; clipboard fallback |
 | `renderUpgradePlanner(data, battles)` | "Suggested upgrades", scoped by account or deck |
 | `renderDeckUpgradeScreen()` / `buildDeckUpSuggestions()` | Deck Upgrade screen |
@@ -163,6 +165,7 @@ The Friends screen has its own parallel tab set (`data-ftab`): Overview, Cards, 
 | `cr_profile_cache` | Last profile + battles, for instant render on open |
 | `cr_clan_cache` | Last clan lookup |
 | `cr_cards_cache_v7` | `{ items, savedAt }` card catalog, monthly expiry + background revalidation |
+| `cr_coplayers_v1` | Per-tag co-players for Suggested Friends: `{ seen, players: { tag: { name, clan, mates, friendlies, last } }, dismissed }` |
 | `cr_deck_history_v1` | Per-tag deck W/L/D history, deduped by `battleTime`. Keys are sorted names with `[evo]`/`[hero]` suffixes; entries without `variants` predate that and are adopted by the first matching card set played again |
 
 ---
@@ -199,7 +202,7 @@ On `/players/{tag}` cards and `currentDeck`, `evolutionLevel` means something el
 ---
 
 ## Profile vs friend modal (gotcha)
-The friend modal (friends **and** clan members) renders the same Overview as the profile, and both are in the DOM at once. Anything the Overview renders needs per-scope state and element ids (`renderOverview(data, battles, scope)`, ids like `${scope}-plan-output`) — a fixed id makes the friend's control drive the profile's hidden copy. Friend deck maps use `buildDeckMapFromBattles(..., { persist: false })` so a friend's decks never enter this device's deck history.
+The friend modal (friends **and** clan members) renders the same Overview as the profile, and both are in the DOM at once. Anything the Overview, Decks or Battles tab renders needs per-scope state and element ids (`renderOverview(data, battles, scope)`, ids like `${scope}-plan-output`) — a fixed id makes the friend's control drive the profile's hidden copy. Friend deck maps use `buildDeckMapFromBattles(..., { persist: false })` so a friend's decks never enter this device's deck history.
 
 `loadPlayer`, `viewFriend` and `loadClan` each take a sequence ticket and drop responses that are no longer the latest, so a slow request (e.g. the installed-app background refresh) can't overwrite a newer one.
 
@@ -260,3 +263,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 19. Added Account and Battle Stats to both Overviews (deckai.app parity), and moved Path of Legends to the 7-league numbering
 20. Moved the stats out of the Overview (Account tab; Battles tab Log/Stats toggle), added per-battle details, and added River Race + War History to the Clan screen
 21. Redesign: compact profile header, tag lookup moved into the Accounts menu, current deck pinned on the Decks tab (tagged `pre-redesign` before it)
+22. Suggested friends, all profile tabs in the friend/clan-member modal, bigger tab buttons
