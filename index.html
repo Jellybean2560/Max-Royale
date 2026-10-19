@@ -2095,10 +2095,14 @@ function renderDeckUpgradeScreen() {
     .sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws))
     .slice(0,10);
   // The deck equipped in-game right now comes first, so it's the default
-  const current = (data.currentDeck || []).length ? [{ cards: data.currentDeck.map(c => c.name), current: true }] : [];
+  const current = (data.currentDeck || []).length ? [{ cards: data.currentDeck.map(c => c.name), current: '1v1' }] : [];
+  const deck2v2 = latest2v2Deck(battles, data.tag);
+  const setKey = names => [...names].sort().join('|');
+  if (deck2v2 && setKey(deck2v2.map(c => c.name)) !== setKey(current[0]?.cards || []))
+    current.push({ cards: deck2v2.map(c => c.name), current: '2v2' });
   const decks = [...current, ...tracked];
   const deckLabel = (d, i) => d.current
-    ? `🃏 Current deck (${d.cards.slice(0,3).map(esc).join(', ')}…)`
+    ? `🃏 Current ${d.current} deck (${d.cards.slice(0,3).map(esc).join(', ')}…)`
     : `Deck #${i + 1 - current.length} · ${d.wins}W ${d.losses}L (${d.cards.slice(0,3).map(esc).join(', ')}…)`;
 
   const targetSel = `
@@ -2394,6 +2398,18 @@ function currentDeckVariants(deck, battles, tag) {
 
 // The equipped deck's key in deck history (sorted names + [evo]/[hero]), so the
 // Decks tab can mark it "In use" — or '' if the API didn't give a deck.
+// currentDeck is only the 1v1 deck slot — the API has nothing for 2v2 — so the
+// 2v2 deck is taken from the latest 2v2 battle: "last played in 2v2", which
+// lags a deck change until the next 2v2 game. Battles arrive newest-first.
+function latest2v2Deck(battles, tag) {
+  for (const b of battles || []) {
+    if ((b.team || []).length < 2) continue;
+    const me = b.team.find(p => p.tag === tag);
+    if (me && (me.cards || []).length === 8) return me.cards;
+  }
+  return null;
+}
+
 function currentDeckKey(data, battles) {
   const deck = data?.currentDeck || [];
   if (!deck.length) return '';
@@ -3623,7 +3639,13 @@ function _renderDeckList(scope) {
   const st = _deckState[scope];
   const { deckMap, battles } = st;
   const mine = scope === 'p';
-  const inUse = currentDeckKey(st.data, battles);
+  const inUse1v1 = currentDeckKey(st.data, battles);
+  const deck2v2 = latest2v2Deck(battles, st.data.tag);
+  const inUse2v2 = deck2v2 ? deckKeyOf(deck2v2) : '';
+  const inUseLabel = key => {
+    const modes = [key === inUse1v1 && '1v1', key === inUse2v2 && '2v2'].filter(Boolean);
+    return modes.length ? `🃏 In use · ${modes.join(' & ')}` : '';
+  };
   const modes = [...new Set(battles.map(b => battleModeLabel(b)))];
   // The filter survives re-renders, but not onto an account (or a refreshed
   // battle log) without that mode — it would have no button to clear it.
@@ -3631,7 +3653,7 @@ function _renderDeckList(scope) {
   const entries = Object.values(deckMap);
   let filtered = entries;
   if (st.filter !== 'all') filtered = entries.filter(d => d.modes.includes(st.filter));
-  filtered.sort((a,b) => ((b.key === inUse) - (a.key === inUse)) || (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws));
+  filtered.sort((a,b) => (!!inUseLabel(b.key) - !!inUseLabel(a.key)) || (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws));
 
   const modeButtons = ['all', ...modes].map(m =>
     `<button class="filter-btn ${st.filter===m?'active':''}" data-mode="${esc(m)}" onclick="setDeckFilter('${scope}', this.dataset.mode)">${m === 'all' ? 'All Modes' : esc(m)}</button>`
@@ -3641,6 +3663,7 @@ function _renderDeckList(scope) {
   if (!filtered.length) return `<div class="filter-bar">${modeButtons}</div><div class="empty-msg">No decks for this filter.</div>`;
 
   const items = filtered.map(d => {
+    const inUse = inUseLabel(d.key);
     const total = d.wins + d.losses + d.draws;
     const wr = total ? Math.round(d.wins / total * 100) : 0;
     const avgElixir = d.elixir.length ? (d.elixir.reduce((a,b)=>a+b,0)/d.elixir.length).toFixed(1) : '—';
@@ -3649,9 +3672,9 @@ function _renderDeckList(scope) {
     const statRow = (lbl, val, cls) =>
       `<div style="margin-bottom:5px;text-align:center"><div class="${cls}" style="font-size:15px;font-weight:700;line-height:1.1">${val}</div><div style="font-size:10px;color:var(--muted)">${lbl}</div></div>`;
     return `
-      <div class="deck-item"${d.key === inUse ? ' style="border-color:var(--accent)"' : ''}>
-        ${mine || d.key === inUse ? `<div style="display:flex;justify-content:space-between;align-items:center;min-height:22px">
-          ${d.key === inUse ? '<span class="badge badge-gold" title="The deck equipped in-game right now">🃏 In use</span>' : '<span></span>'}
+      <div class="deck-item"${inUse ? ' style="border-color:var(--accent)"' : ''}>
+        ${mine || inUse ? `<div style="display:flex;justify-content:space-between;align-items:center;min-height:22px">
+          ${inUse ? `<span class="badge badge-gold" title="1v1: the deck equipped in-game. 2v2: the deck from your latest 2v2 battle.">${inUse}</span>` : '<span></span>'}
           ${mine ? `<button class="btn btn-secondary btn-sm" title="Delete this deck's history" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="deleteDeck('${esc(d.key)}')">🗑️</button>` : ''}
         </div>` : ''}
         <div style="display:flex;gap:12px;align-items:center">

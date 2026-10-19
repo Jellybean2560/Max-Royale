@@ -49,7 +49,7 @@ README.md                         ← setup instructions
 |--------------|------------------|-------------|
 | Player       | `screen-lookup`  | Player profile. A compact header (name ▾, trophies, refresh; King/CL/league line) sits above the tabs; tapping the name opens the Accounts menu (switch, edit, add/look up by tag). The tag box (`#lookup-start`) only shows with no profile on screen: first run or a failed lookup |
 | Calculator   | `screen-calc`    | Offline upgrade cost calculator with card picker |
-| Deck Upgrade | `screen-deckup`  | Cost to upgrade a whole 8-card deck; the equipped deck (`currentDeck`) is the first, default choice |
+| Deck Upgrade | `screen-deckup`  | Cost to upgrade a whole 8-card deck; the current 1v1 and 2v2 decks are the first choices (1v1 is the default) |
 | Clan         | `screen-clan`    | Clan lookup by tag; tabs Members (sortable), River Race (live standings + each member's decks used today), War History (last 10 races, fold-out standings + member contributions) |
 | Friends      | `screen-friends` | Up to 50 saved friends (`MAX_FRIENDS`) + Suggested Friends; the profile modal (also opened for clan members) has the same tabs as the profile |
 
@@ -66,7 +66,7 @@ There is no `screen-home`; the app opens on the Player screen.
 | Evolutions   | `tab-evolutions`   | `/cards` catalog filtered by `iconUrls.evolutionMedium`, matched against player cards |
 | Heroes       | `tab-heroes`       | `/cards` catalog filtered by `iconUrls.heroMedium` |
 | Tower Troops | `tab-towerTroops`  | `data.supportCards` from `/players/{tag}` |
-| Decks        | `tab-decks`        | Battle log + persisted history (the deck equipped in-game is listed first, marked "In use") — W/L/D per unique deck (card set + which cards were played as evo/hero), mode filter, copy/delete |
+| Decks        | `tab-decks`        | Battle log + persisted history (decks in use are listed first, marked "In use · 1v1" / "· 2v2") — W/L/D per unique deck (card set + which cards were played as evo/hero), mode filter, copy/delete |
 | Battles      | `tab-battles`      | Toggle between **Battle Log** (`/battlelog` — decks with evo/hero tiles, crowns, trophy change; each battle folds out details: towers left, elixir leaked, trophies, global rank, tower troop, clan, boat stats; 2v2 also the opponents' decks) and **Battle Stats** (lifetime W/L, streak, est. playtime, recent W/L per mode, Path of Legends, old trophy road, challenges) |
 | Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries |
 | Account      | `tab-account`      | `/players/{tag}` — XP level, account age, star points, cards found, favourite card, donations, clan wars |
@@ -103,7 +103,7 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Cards
 | `renderDeckBuilder(battles, data, scope)` / `setDeckFilter(scope, mode)` | Decks tab; state in `_deckState[scope]` |
 | `recordCoPlayers(tag, battles)` / `suggestedFriendsHTML()` | Suggested friends from 2v2 teammates and friendly battles |
 | `battleDetailsHTML(b, team, opp)` | A battle's fold-out details table |
-| `currentDeckKey(data, battles)` / `currentDeckVariants()` | The equipped deck's deck-history key, for the "In use" mark |
+| `currentDeckKey(data, battles)` / `currentDeckVariants()` / `latest2v2Deck()` | Keys of the decks in use, for the "In use · 1v1 / 2v2" marks |
 | `renderSavedAccounts()` / `menuLookup()` / `showLookupStart(on)` | Accounts menu (opened from the header name) and the start card's account chips |
 | `clanTab(name)` / `loadClanWar(tag)` / `riverRaceHTML()` / `warHistoryHTML()` | Clan screen tabs; war data fetched on tab open, cached 1 min per clan |
 | `buildDeckMapFromBattles(battles, playerTag)` | Merges new battles into persisted deck history, returns the deck map |
@@ -189,7 +189,7 @@ The API **only returns masteries a player has already started** — there are no
 ## Evolution / hero slots (gotcha)
 The first three deck slots are special: evolutions, heroes and champions go there (two evos + one hero/champion, or one evo + two heroes/champions). Battle-log decks list cards **in slot order**, and each card's `evolutionLevel` says which form it was *played* in — `1` = evolution, `2` = hero (`3` only appears in Boat Battle defences). No `evolutionLevel` means the plain card, even if the player owns its evolution. Checked Oct 2026: in 8-card decks it only appears on slots 0–2.
 
-On `/players/{tag}` cards and `currentDeck`, `evolutionLevel` means something else — what the player *owns*, as the same bits (1 = evo, 2 = hero, 3 = both) — so don't reuse `cardVariant()` there. `currentDeckVariants()` derives the equipped form from the slot instead; only a both-forms card in slot 3 is ambiguous, and the battle log settles it when it can. `currentDeck` can be short a card the API doesn't know yet (seen Oct 2026: 7 cards).
+On `/players/{tag}` cards and `currentDeck`, `evolutionLevel` means something else — what the player *owns*, as the same bits (1 = evo, 2 = hero, 3 = both) — so don't reuse `cardVariant()` there. `currentDeckVariants()` derives the equipped form from the slot instead; only a both-forms card in slot 3 is ambiguous, and the battle log settles it when it can. `currentDeck` can be short a card the API doesn't know yet (seen Oct 2026: 7 cards). It is **only the 1v1 deck slot** — there's no 2v2 equivalent, so the 2v2 deck in use is taken from the latest 2v2 battle (lags a deck change until the next 2v2 game).
 
 ## Path of Legends leagues (gotcha)
 `leagueNumber` now runs **1–7**: Master I–III, Champion, Grand Champion, Royal Champion, Ultimate Champion. Supercell dropped the three Challenger leagues; checked Oct 2026, the global #1 and #2 are both league 7. Values 8–10 only appear in results from the old 10-league system (10 = Ultimate Champion), e.g. an old best season. Global rank is only meaningful in Ultimate Champion.
