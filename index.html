@@ -2091,9 +2091,15 @@ function renderDeckUpgradeScreen() {
     _deckUpTag = data.tag;
     _deckUpCustomIds = []; _deckUpSelectedDeckIdx = 0; _deckUpSearch = '';
   }
-  const decks = Object.values(buildDeckMapFromBattles(battles, data.tag))
+  const tracked = Object.values(buildDeckMapFromBattles(battles, data.tag))
     .sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws))
     .slice(0,10);
+  // The deck equipped in-game right now comes first, so it's the default
+  const current = (data.currentDeck || []).length ? [{ cards: data.currentDeck.map(c => c.name), current: true }] : [];
+  const decks = [...current, ...tracked];
+  const deckLabel = (d, i) => d.current
+    ? `🃏 Current deck (${d.cards.slice(0,3).map(esc).join(', ')}…)`
+    : `Deck #${i + 1 - current.length} · ${d.wins}W ${d.losses}L (${d.cards.slice(0,3).map(esc).join(', ')}…)`;
 
   const targetSel = `
     <select onchange="setDeckUpTarget(this.value)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
@@ -2116,7 +2122,7 @@ function renderDeckUpgradeScreen() {
       if (_deckUpSelectedDeckIdx >= decks.length) _deckUpSelectedDeckIdx = 0;
       body = `
         <select onchange="setDeckUpRecent(this.value)" style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:8px 14px;font-size:13px;margin-bottom:12px;appearance:none;-webkit-appearance:none;text-align:center">
-          ${decks.map((d,i) => `<option value="${i}" ${i===_deckUpSelectedDeckIdx?'selected':''}>Deck #${i+1} · ${d.wins}W ${d.losses}L (${d.cards.slice(0,3).map(esc).join(', ')}…)</option>`).join('')}
+          ${decks.map((d,i) => `<option value="${i}" ${i===_deckUpSelectedDeckIdx?'selected':''}>${deckLabel(d, i)}</option>`).join('')}
         </select>`;
       const deck = decks[_deckUpSelectedDeckIdx];
       const names = new Set(deck.cards);
@@ -2386,58 +2392,14 @@ function currentDeckVariants(deck, battles, tag) {
   });
 }
 
-// opts.deckMap: show this deck's tracked W/L; opts.upgrade: add an Upgrade cost
-// button (the profile's Decks tab — friends have no Deck Upgrade screen).
-function currentDeckHTML(data, battles, opts = {}) {
+// The equipped deck's key in deck history (sorted names + [evo]/[hero]), so the
+// Decks tab can mark it "In use" — or '' if the API didn't give a deck.
+function currentDeckKey(data, battles) {
   const deck = data?.currentDeck || [];
   if (!deck.length) return '';
   const variants = currentDeckVariants(deck, battles, data.tag);
-  const key = deck.map((c, i) => variants[i] ? `${c.name}[${variants[i]}]` : c.name).sort().join('|');
-  const rec = opts.deckMap?.[key];
-  const recTotal = rec ? rec.wins + rec.losses + rec.draws : 0;
-  const catalog = Object.fromEntries(allCards.map(c => [c.id, c]));
-  const tiles = deck.map((c, i) => {
-    const cat = catalog[c.id] || {};
-    const art = { medium: c.iconUrls?.medium || cat.iconUrls?.medium,
-                  evo:  EVO_IMG_OVERRIDE[c.name] || c.iconUrls?.evolutionMedium || cat.iconUrls?.evolutionMedium,
-                  hero: c.iconUrls?.heroMedium || cat.iconUrls?.heroMedium };
-    const lvl = toDisplayLevel((c.rarity || 'common').toLowerCase(), c.level);
-    return `<div>${deckTileHTML(c.name, variants[i], art, 'deck-list-tile')}
-      <div style="font-size:10px;text-align:center;color:var(--accent);font-weight:700;margin-top:3px">Lv ${lvl}</div></div>`;
-  });
-  // A card the API doesn't know yet can be left out of currentDeck entirely
-  while (tiles.length < 8) tiles.push(`<div><div class="deck-list-tile deck-tile" title="Not in the API yet"><span class="deck-tile-text" style="color:var(--muted)">?</span></div></div>`);
-  const elixir = deck.reduce((s, c) => s + (c.elixirCost || 0), 0) / deck.length;
-  const tower = (data.currentDeckSupportCards || [])[0];
-  return `
-    <div class="card">
-      <div class="flex-between" style="margin-bottom:10px">
-        <h3 style="margin:0">🃏 Current Deck</h3>
-        ${opts.deckMap ? (recTotal
-          ? `<span style="font-size:13px"><span class="text-green">${rec.wins}W</span> <span class="text-red">${rec.losses}L</span> · <span class="text-accent">${Math.round(rec.wins / recTotal * 100)}%</span></span>`
-          : '<span style="font-size:12px;color:var(--muted)">Not played yet</span>') : ''}
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">${tiles.join('')}</div>
-      <div class="flex-between" style="margin-top:10px;font-size:13px;color:var(--muted)">
-        <span>💧 ${elixir.toFixed(1)} avg elixir${deck.length < 8 ? ` <span style="font-size:11px">(${deck.length} known cards)</span>` : ''}</span>
-        ${tower ? `<span>🏰 ${esc(tower.name)}</span>` : ''}
-      </div>
-      <div style="display:flex;gap:8px;margin-top:10px">
-        <button class="btn btn-secondary btn-sm" style="flex:1;font-size:12px" onclick="copyDeckLink('${esc(deck.map(c => c.name).join(', '))}', this)">📋 Copy Deck</button>
-        ${opts.upgrade ? `<button class="btn btn-secondary btn-sm" style="flex:1;font-size:12px" onclick="openCurrentDeckUpgrade()">⬆️ Upgrade cost</button>` : ''}
-      </div>
-    </div>`;
+  return deck.map((c, i) => variants[i] ? `${c.name}[${variants[i]}]` : c.name).sort().join('|');
 }
-// Open Deck Upgrade with the current deck as its custom deck
-window.openCurrentDeckUpgrade = function() {
-  const data = window._currentProfile?.data;
-  if (!data?.currentDeck) return;
-  const owned = new Set((data.cards || []).map(c => c.id));
-  _deckUpTag = data.tag; _deckUpMode = 'custom'; _deckUpSearch = '';
-  _deckUpCustomIds = data.currentDeck.map(c => c.id).filter(id => owned.has(id)).slice(0, 8);
-  _screenScroll.deckup = 0;
-  goTo('deckup');
-};
 
 function battleStatsHTML(data, battles) {
   const games = data.battleCount || 0;
@@ -3661,7 +3623,7 @@ function _renderDeckList(scope) {
   const st = _deckState[scope];
   const { deckMap, battles } = st;
   const mine = scope === 'p';
-  const current = currentDeckHTML(st.data, battles, { deckMap, upgrade: mine });
+  const inUse = currentDeckKey(st.data, battles);
   const modes = [...new Set(battles.map(b => battleModeLabel(b)))];
   // The filter survives re-renders, but not onto an account (or a refreshed
   // battle log) without that mode — it would have no button to clear it.
@@ -3669,14 +3631,14 @@ function _renderDeckList(scope) {
   const entries = Object.values(deckMap);
   let filtered = entries;
   if (st.filter !== 'all') filtered = entries.filter(d => d.modes.includes(st.filter));
-  filtered.sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws));
+  filtered.sort((a,b) => ((b.key === inUse) - (a.key === inUse)) || (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws));
 
   const modeButtons = ['all', ...modes].map(m =>
     `<button class="filter-btn ${st.filter===m?'active':''}" data-mode="${esc(m)}" onclick="setDeckFilter('${scope}', this.dataset.mode)">${m === 'all' ? 'All Modes' : esc(m)}</button>`
   ).join('');
 
-  if (!entries.length) return `${current}<div class="empty-msg">No battle data to build decks from.</div>`;
-  if (!filtered.length) return `${current}<div class="filter-bar">${modeButtons}</div><div class="empty-msg">No decks for this filter.</div>`;
+  if (!entries.length) return `<div class="empty-msg">No battle data to build decks from.</div>`;
+  if (!filtered.length) return `<div class="filter-bar">${modeButtons}</div><div class="empty-msg">No decks for this filter.</div>`;
 
   const items = filtered.map(d => {
     const total = d.wins + d.losses + d.draws;
@@ -3687,9 +3649,10 @@ function _renderDeckList(scope) {
     const statRow = (lbl, val, cls) =>
       `<div style="margin-bottom:5px;text-align:center"><div class="${cls}" style="font-size:15px;font-weight:700;line-height:1.1">${val}</div><div style="font-size:10px;color:var(--muted)">${lbl}</div></div>`;
     return `
-      <div class="deck-item">
-        ${mine ? `<div style="display:flex;justify-content:flex-end">
-          <button class="btn btn-secondary btn-sm" title="Delete this deck's history" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="deleteDeck('${esc(d.key)}')">🗑️</button>
+      <div class="deck-item"${d.key === inUse ? ' style="border-color:var(--accent)"' : ''}>
+        ${mine || d.key === inUse ? `<div style="display:flex;justify-content:space-between;align-items:center;min-height:22px">
+          ${d.key === inUse ? '<span class="badge badge-gold" title="The deck equipped in-game right now">🃏 In use</span>' : '<span></span>'}
+          ${mine ? `<button class="btn btn-secondary btn-sm" title="Delete this deck's history" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="deleteDeck('${esc(d.key)}')">🗑️</button>` : ''}
         </div>` : ''}
         <div style="display:flex;gap:12px;align-items:center">
           <div style="flex:1;min-width:0">
@@ -3710,7 +3673,7 @@ function _renderDeckList(scope) {
       </div>`;
   }).join('');
 
-  return `${current}<div class="filter-bar">${modeButtons}</div>${items}`;
+  return `<div class="filter-bar">${modeButtons}</div>${items}`;
 }
 
 window.setDeckFilter = function(scope, mode) {
