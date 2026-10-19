@@ -13,7 +13,7 @@ A standalone single-file web app (`index.html`) for Clash Royale players. It rep
 - Fonts: Google Fonts — Rajdhani (headings), Inter (body)
 - No npm, no framework, no build step
 - API calls go through a **Cloudflare Worker** (`https://quiet-frost-f9f0.jellevandenwouwer.workers.dev`) that holds the Clash Royale API key server-side and adds CORS headers. The browser sends **no** auth header and needs no key.
-- Installable PWA — `manifest.json` + `sw.js` (cache-named `max-royale-v4`, bump to force a shell refresh)
+- Installable PWA — `manifest.json` + `sw.js` (cache-named `max-royale-v5`, bump to force a shell refresh)
 - GitHub Actions workflow (`.github/workflows/deploy.yml`) auto-deploys to GitHub Pages on every push to `main`
 
 ---
@@ -49,9 +49,9 @@ README.md                         ← setup instructions
 |--------------|------------------|-------------|
 | Player       | `screen-lookup`  | Player profile. A compact header (name ▾, trophies, refresh; King/CL/league line) sits above the tabs; tapping the name opens the Accounts menu (switch, edit, add/look up by tag). The tag box (`#lookup-start`) only shows with no profile on screen: first run or a failed lookup |
 | Calculator   | `screen-calc`    | Offline upgrade cost calculator with card picker |
-| Deck Upgrade | `screen-deckup`  | Cost to upgrade a whole 8-card deck; the current 1v1 and 2v2 decks are the first choices (1v1 is the default) |
+| Deck Upgrade | `screen-deckup`  | Cost to upgrade a whole 8-card deck; the current 1v1 and 2v2 decks are the first choices (1v1 is the default). Custom Deck takes a pasted deck link (the game's share link or a RoyaleAPI deck URL); a deck shared to the installed app (manifest `share_target`) opens here too |
 | Clan         | `screen-clan`    | Clan lookup by tag; tabs Members (sortable), River Race (live standings + each member's decks used today), War History (last 10 races, fold-out standings + member contributions) |
-| Friends      | `screen-friends` | Up to 50 saved friends (`MAX_FRIENDS`) + Suggested Friends; the profile modal (also opened for clan members) has the same tabs as the profile |
+| Friends      | `screen-friends` | Up to 50 saved friends (`MAX_FRIENDS`) with trophies, clan and last battle, sortable (last played / trophies / name / added) + Suggested Friends; the profile modal (also opened for clan members) has the same tabs as the profile plus Compare |
 
 There is no `screen-home`; the app opens on the Player screen.
 
@@ -67,11 +67,17 @@ There is no `screen-home`; the app opens on the Player screen.
 | Heroes       | `tab-heroes`       | `/cards` catalog filtered by `iconUrls.heroMedium` |
 | Tower Troops | `tab-towerTroops`  | `data.supportCards` from `/players/{tag}` |
 | Decks        | `tab-decks`        | Battle log + persisted history (decks in use are listed first, marked "In use · 1v1" / "· 2v2") — W/L/D per unique deck (card set + which cards were played as evo/hero), mode filter, copy/delete |
-| Battles      | `tab-battles`      | Toggle between **Battle Log** (`/battlelog` — decks with evo/hero tiles, crowns, trophy change; each battle folds out details: towers left, elixir leaked, trophies, global rank, tower troop, clan, boat stats; 2v2 also the opponents' decks) and **Battle Stats** (lifetime W/L, streak, est. playtime, recent W/L per mode, Path of Legends, old trophy road, challenges) |
+| Battles      | `tab-battles`      | Toggle between **Battle Log** (`/battlelog` — decks with evo/hero tiles, crowns, trophy change; each battle folds out details: towers left, elixir leaked, trophies, global rank, tower troop, clan, boat stats; 2v2 also the opponents' decks) and **Battle Stats** (lifetime W/L, streak, est. playtime, recent W/L per mode, Opponent Cards — toughest / best-against cards, Path of Legends, old trophy road, challenges) |
 | Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries |
 | Account      | `tab-account`      | `/players/{tag}` — XP level, account age, star points, cards found, favourite card, donations, clan wars |
 
-The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Cards, Evolutions, Heroes, Tower Troops, Decks, Battles, Badges, Account. Its Decks tab uses only the friend's current battle log (never saved, no delete button); its battle details label the sides by name instead of "You".
+The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compare, Cards, Evolutions, Heroes, Tower Troops, Decks, Battles, Badges, Account. **Compare** (only when a profile is loaded and it's someone else) puts the loaded profile next to them: account stats with the higher value highlighted, then every card's level, filterable by who's ahead. Its Decks tab uses only the friend's current battle log (never saved, no delete button); its battle details label the sides by name instead of "You".
+
+**Friends list stats:** each saved friend in `cr_friends` carries a snapshot (`trophies`, `clan`, `lastBattle`, `statsAt`). Opening the Friends screen refreshes snapshots older than 15 min, four requests at a time (`refreshFriendStats()`); 🔄 refreshes all; opening a friend's profile updates theirs.
+
+**Header age:** the profile header's info line ends in "updated 12 min ago" (`updateProfileAge()`, ticks every 30 s, gold after an hour, "↻ updating…" during a quiet refresh). It reads `window._currentProfile.savedAt`.
+
+**Backup:** the Accounts menu (and the start card, for a fresh device) saves / restores one JSON file of `BACKUP_KEYS` — accounts, friends, deck history, matchups, co-players. Caches are left out. Restoring replaces those keys and reloads the profile.
 
 **Suggested friends:** the API has no friends list. `recordCoPlayers()` accumulates who you play *with* per profile tag (`cr_coplayers_v1`, deduped by `battleTime`); a 2v2 teammate seen in 2+ games or anyone from a Friendly battle is suggested (random matchmade teammates almost never repeat). Saved friends, your accounts and dismissed players are left out. `viewFriend()` also fetches the friend's battle log, only for the Overview's recent-battle stats (a failure there is ignored).
 
@@ -81,7 +87,7 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Cards
 
 | Function | What it does |
 |---|---|
-| `apiGet(path)` | Fetches `<worker>{path}`; no auth header. Throws a friendly message on failure. |
+| `apiGet(path)` | Fetches `<worker>{path}`; no auth header. Retries a 5xx twice (the proxy chain hiccups with nginx 500s and Cloudflare 52x), then throws a friendly message |
 | `normalizeTag(raw)` | Uppercases, strips spaces/`#`, O→0 — the API 404s on lowercase tags. Every tag input goes through it |
 | `loadPlayer(tagOverride, opts)` | Fetches `/players/{tag}`, `/battlelog` and the card catalog in parallel, calls `renderProfile()`. `opts.quiet` refreshes in place: no spinner, keeps the active tab, keeps the old view on error |
 | `isInstalledApp()` | True when launched as an installed PWA rather than a browser tab |
@@ -103,6 +109,13 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Cards
 | `renderDeckBuilder(battles, data, scope)` / `setDeckFilter(scope, mode)` | Decks tab; state in `_deckState[scope]` |
 | `recordCoPlayers(tag, battles)` / `suggestedFriendsHTML()` | Suggested friends from 2v2 teammates and friendly battles |
 | `battleDetailsHTML(b, team, opp)` | A battle's fold-out details table |
+| `recordMatchups(tag, battles)` / `matchupsHTML(data, battles, scope)` | Win rate per opponent card (`cr_matchups_v1`); the friend modal tallies their current log only |
+| `profileLevels(data)` | King level, collection level, evolution and hero counts |
+| `compareHTML(me, them)` / `setCompareFilter(v)` | Friend modal Compare tab |
+| `refreshFriendStats(force)` / `saveFriendStats()` / `sortedFriends()` | Friends list snapshots and sorting |
+| `parseDeckLinkIds(text)` / `importDeckLink(text)` / `takeSharedDeck()` | Deck links into Deck Upgrade's Custom Deck; shared decks on launch |
+| `exportBackup()` / `importBackup(input)` | Backup file |
+| `updateProfileAge()` | The header's "updated X ago" |
 | `currentDeckKey(data, battles)` / `currentDeckVariants()` / `latest2v2Deck()` | Keys of the decks in use, for the "In use · 1v1 / 2v2" marks |
 | `renderSavedAccounts()` / `menuLookup()` / `showLookupStart(on)` | Accounts menu (opened from the header name) and the start card's account chips |
 | `clanTab(name)` / `loadClanWar(tag)` / `riverRaceHTML()` / `warHistoryHTML()` | Clan screen tabs; war data fetched on tab open, cached 1 min per clan |
@@ -161,11 +174,13 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Cards
 |---|---|
 | `cr_player_tag` | Last looked-up player tag |
 | `cr_saved_accounts` | Saved account list (name + tag) |
-| `cr_friends` | Saved friends (max 50) |
+| `cr_friends` | Saved friends (max 50): `{ tag, name, trophies, clan, lastBattle, statsAt }` |
+| `cr_friends_sort` | Friends list sort: `recent` / `trophies` / `name` / `added` |
 | `cr_profile_cache` | Last profile + battles, for instant render on open |
 | `cr_clan_cache` | Last clan lookup |
 | `cr_cards_cache_v7` | `{ items, savedAt }` card catalog, monthly expiry + background revalidation |
 | `cr_coplayers_v1` | Per-tag co-players for Suggested Friends: `{ seen, players: { tag: { name, clan, mates, friendlies, last } }, dismissed }` |
+| `cr_matchups_v1` | Per-tag opponent-card tally: `{ since, battles, seen, cards: { name: [wins, losses, draws] } }`; friendlies and boat battles skipped |
 | `cr_deck_history_v1` | Per-tag deck W/L/D history, deduped by `battleTime`. Keys are sorted names with `[evo]`/`[hero]` suffixes; entries without `variants` predate that and are adopted by the first matching card set played again |
 
 ---
@@ -269,3 +284,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 22. Suggested friends, all profile tabs in the friend/clan-member modal, bigger tab buttons
 23. Pinned header + tab bar, swipe between tabs, selected tab kept in view, tab bar edge fades, re-tap a bottom button to scroll up, per-screen scroll memory
 24. Replaced the Current Deck card with an "In use" mark in the deck list and a Current deck option in Deck Upgrade
+25. Opponent-card matchups, Compare tab, deck links + share target in Deck Upgrade, backup/restore, "updated X ago" header, friends list with trophies/last battle/sorting, API retries

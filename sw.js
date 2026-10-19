@@ -1,4 +1,4 @@
-const CACHE = 'max-royale-v4';
+const CACHE = 'max-royale-v5';
 const SHELL = ['./', 'icon.png', 'manifest.json'];
 
 self.addEventListener('install', e => {

@@ -146,6 +146,21 @@
   .ph-caret { font-size: 12px; color: var(--muted); }
   .ph-icon { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 50%; width: 30px; height: 30px; cursor: pointer; font-size: 14px; line-height: 1; flex-shrink: 0; }
   .ph-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .ph-updated { white-space: nowrap; }
+  .ph-updated.stale { color: var(--accent); }
+  /* Compare tab: label | you | them */
+  .cmp-row { display: grid; grid-template-columns: minmax(0,1fr) 76px 76px; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13px; align-items: center; }
+  .cmp-row > span:not(:first-child) { text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cmp-head { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; font-weight: 600; }
+  .cmp-card { grid-template-columns: 30px minmax(0,1fr) 52px 52px; }
+  .cmp-card > span:nth-child(2) { text-align: left; }
+  .cmp-card img { width: 30px; height: 36px; object-fit: contain; display: block; }
+  .cmp-win { color: var(--green); font-weight: 700; }
+  /* Opponent-card matchups */
+  .mu-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .mu-row img { width: 26px; height: 32px; object-fit: contain; flex-shrink: 0; }
+  .mu-row .mu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mu-sub { font-size: 12px; font-weight: 600; color: var(--muted); margin: 10px 0 2px; }
   .acct-chip { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 16px; padding: 6px 12px; font-size: 13px; font-family: 'Inter', sans-serif; cursor: pointer; }
   .player-tag { color: var(--muted); font-size: 13px; font-family: monospace; }
   .trophies { display: block; margin-top: 6px; font-size: 13px; color: var(--muted); }
@@ -297,8 +312,10 @@
             </div>
           </div>
           <div id="start-accounts"></div>
+          <div style="text-align:center;margin-top:14px"><button class="btn btn-secondary btn-sm" onclick="document.getElementById('backup-file').click()">📂 Restore a backup</button></div>
         </div>
       </div>
+      <input type="file" id="backup-file" accept=".json,application/json" style="display:none" onchange="importBackup(this)">
       <div style="position:relative">
         <div id="saved-accounts" style="display:none;position:absolute;left:0;top:76px;z-index:50;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px;width:280px;max-width:calc(100vw - 32px);box-shadow:0 8px 24px rgba(0,0,0,0.4)"></div>
         <div id="player-result"></div>
@@ -769,11 +786,20 @@ async function apiGet(path) {
   const cleanPath = path.replace(/#/g, '%23');
   const url = `https://quiet-frost-f9f0.jellevandenwouwer.workers.dev${cleanPath}`;
   let res;
-  try {
-    res = await fetch(url);
-  } catch(e) {
-    throw new Error('Connection failed — check your internet connection and try again.');
+  // The proxy chain (Worker → RoyaleAPI proxy → Supercell) now and then answers
+  // a 500 from nginx, 502-504 or Cloudflare's 520-527 for a moment; two quick
+  // retries hide that.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      res = await fetch(url);
+    } catch(e) {
+      throw new Error('Connection failed — check your internet connection and try again.');
+    }
+    if (res.status < 500 || attempt >= 2) break;
+    await new Promise(r => setTimeout(r, 600 * (attempt + 1)));
   }
+  if (res.status >= 500)
+    throw new Error(`The Clash Royale API isn't responding right now (error ${res.status}). Try again in a moment.`);
   if (!res.ok) {
     const txt = await res.text().catch(() => '');
     let msg = '';
@@ -1098,8 +1124,50 @@ function renderSavedAccounts() {
     <div class="flex-row">
       <input type="text" id="account-tag-input" placeholder="#ABC123" style="flex:1;min-width:0" onkeydown="if(event.key==='Enter')menuLookup()">
       <button class="btn btn-primary btn-sm" onclick="menuLookup()">Go</button>
+    </div>
+    <div style="border-top:1px solid var(--border);margin:12px 0 10px"></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Backup: accounts, friends, deck &amp; matchup history</div>
+    <div class="flex-row">
+      <button class="btn btn-secondary btn-sm" style="flex:1" onclick="exportBackup()">💾 Save</button>
+      <button class="btn btn-secondary btn-sm" style="flex:1" onclick="document.getElementById('backup-file').click()">📂 Restore</button>
     </div>`;
 }
+
+// ── Backup / restore ──
+// Deck history, matchups and suggested friends only exist on this device, so a
+// new phone or cleared site data would lose them. A backup is one JSON file of
+// those localStorage keys (caches are left out — they refetch); restoring
+// replaces them.
+const BACKUP_KEYS = ['cr_player_tag', 'cr_saved_accounts', 'cr_friends', 'cr_friends_sort',
+                     'cr_deck_history_v1', 'cr_matchups_v1', 'cr_coplayers_v1'];
+window.exportBackup = function() {
+  const data = {};
+  BACKUP_KEYS.forEach(k => { const v = localStorage.getItem(k); if (v != null) data[k] = v; });
+  const blob = new Blob([JSON.stringify({ app: 'max-royale', version: 1, savedAt: new Date().toISOString(), data })], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `max-royale-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+};
+window.importBackup = async function(input) {
+  const file = input.files?.[0];
+  input.value = '';  // so picking the same file again still fires onchange
+  if (!file) return;
+  let b = null;
+  try { b = JSON.parse(await file.text()); } catch(e) {}
+  if (b?.app !== 'max-royale' || !b.data || typeof b.data !== 'object') { alert("That file isn't a Max Royale backup."); return; }
+  const when = b.savedAt ? new Date(b.savedAt).toLocaleString() : 'an unknown date';
+  if (!confirm(`Restore the backup from ${when}?\n\nThis replaces the accounts, friends and deck history on this device.`)) return;
+  BACKUP_KEYS.forEach(k => typeof b.data[k] === 'string' ? localStorage.setItem(k, b.data[k]) : localStorage.removeItem(k));
+  document.getElementById('saved-accounts').style.display = 'none';
+  renderSavedAccounts();
+  const tag = localStorage.getItem('cr_player_tag');
+  if (tag) loadPlayer(tag, { quiet: tag === window._currentProfile?.data?.tag });
+  alert('Backup restored.');
+};
 window.menuLookup = function() {
   const input = document.getElementById('account-tag-input');
   if (!normalizeTag(input?.value)) return;
@@ -1145,7 +1213,7 @@ async function addFriend() {
   showFriendMsg('Checking tag…', false);
   try {
     const p = await apiGet('/players/' + encodeURIComponent(tag));
-    list.push({ tag: p.tag, name: p.name });
+    list.push({ tag: p.tag, name: p.name, trophies: p.trophies, clan: p.clan?.name || '' });
     localStorage.setItem('cr_friends', JSON.stringify(list));
     document.getElementById('friend-tag').value = '';
     showFriendMsg('', false);
@@ -1188,6 +1256,7 @@ async function viewFriend(tag) {
     ]);
     if (seq !== _friendSeq) return;
     [_friendData, _friendBattles] = [data, battles];
+    saveFriendStats(data.tag, data, battles);
     body.innerHTML = `
       <div class="lookup-header" style="margin-bottom:12px">
         <div class="player-name">${esc(_friendData.name)}</div>
@@ -1198,6 +1267,7 @@ async function viewFriend(tag) {
       </div>
       <div class="tab-bar ftab-sticky">
         <button class="tab-btn active" data-ftab="overview" onclick="friendTab('overview')">Overview</button>
+        ${canCompare(_friendData) ? `<button class="tab-btn" data-ftab="compare" onclick="friendTab('compare')">Compare</button>` : ''}
         <button class="tab-btn" data-ftab="cards" onclick="friendTab('cards')">Cards</button>
         <button class="tab-btn" data-ftab="evolutions" onclick="friendTab('evolutions')">Evolutions</button>
         <button class="tab-btn" data-ftab="heroes" onclick="friendTab('heroes')">Heroes</button>
@@ -1225,6 +1295,83 @@ function closeFriendModal() {
   _friendData = null;
   _friendBattles = [];
 }
+// ── Compare: the loaded profile next to the friend / clan member ──
+const canCompare = d => { const me = window._currentProfile?.data; return !!(me && d && me.tag !== d.tag); };
+let _cmpFilter = 'them';
+function compareHTML(me, them) {
+  const a = profileLevels(me), b = profileLevels(them);
+  const disp = c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level);
+  const maxed = d => (d.cards || []).filter(c => disp(c) >= MAX_LEVEL).length;
+  const winRate = d => d.battleCount ? Math.round(d.wins / d.battleCount * 100) : 0;
+  const pol = d => d.currentPathOfLegendSeasonResult?.leagueNumber ? d.currentPathOfLegendSeasonResult : d.lastPathOfLegendSeasonResult;
+  // [label, my value, their value, display]; the higher value is highlighted
+  const rows = [
+    ['Trophies', me.trophies, them.trophies],
+    ['Best Trophies', me.bestTrophies, them.bestTrophies],
+    ['King Level', a.king, b.king],
+    ['Collection Level', a.cl, b.cl],
+    ['Cards Found', cardsFoundCounts(me).found, cardsFoundCounts(them).found],
+    [`Level ${MAX_LEVEL} Cards`, maxed(me), maxed(them)],
+    ['Evolutions', a.evos, b.evos],
+    ['Heroes', a.heroes, b.heroes],
+    ['Path of Legends', pol(me)?.leagueNumber || 0, pol(them)?.leagueNumber || 0, (v, d) => v ? polLeagueName(pol(d)) : '—'],
+    ['Wins', me.wins, them.wins],
+    ['Win Rate', winRate(me), winRate(them), v => v + '%'],
+    ['3-Crown Wins', me.threeCrownWins, them.threeCrownWins],
+    ['Account Age', accountAgeDays(me), accountAgeDays(them), v => v ? fmtAge(v) : '—'],
+    ['Total Donations', me.totalDonations, them.totalDonations],
+  ];
+  const cell = (v, other, d, show) => `<span class="${(v || 0) > (other || 0) ? 'cmp-win' : ''}">${show ? show(v, d) : fmtNum(v)}</span>`;
+  const counts = compareCardRows(me, them).reduce((n, r) => (n[r.diff > 0 ? 'them' : r.diff < 0 ? 'me' : 'same']++, n), { them: 0, me: 0, same: 0 });
+  return `
+    <div class="card">
+      <h3 style="margin-bottom:6px">⚖️ You vs ${esc(them.name)}</h3>
+      <div class="cmp-row cmp-head"><span></span><span>${esc(me.name)}</span><span>${esc(them.name)}</span></div>
+      ${rows.map(([label, x, y, show]) => `<div class="cmp-row"><span>${label}</span>${cell(x, y, me, show)}${cell(y, x, them, show)}</div>`).join('')}
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:6px">🃏 Card Levels</h3>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">${esc(them.name)} is ahead on ${counts.them} card${counts.them === 1 ? '' : 's'}, you on ${counts.me}; ${counts.same} level.</div>
+      <div class="filter-bar" id="f-cmp-bar" style="margin-bottom:8px">
+        <button class="filter-btn active" data-v="them" onclick="setCompareFilter('them')">They're ahead (${counts.them})</button>
+        <button class="filter-btn" data-v="me" onclick="setCompareFilter('me')">You're ahead (${counts.me})</button>
+        <button class="filter-btn" data-v="all" onclick="setCompareFilter('all')">All</button>
+      </div>
+      <div id="f-cmp-list">${compareCardListHTML(me, them)}</div>
+    </div>`;
+}
+// Every catalog card (plus anything either player has that the catalog lacks);
+// diff > 0 means they're higher. A card you don't have counts as level 0.
+function compareCardRows(me, them) {
+  const lvl = d => Object.fromEntries((d.cards || []).map(c => [c.name, toDisplayLevel((c.rarity||'common').toLowerCase(), c.level)]));
+  const mine = lvl(me), theirs = lvl(them);
+  const byName = {};
+  [...allCards, ...(me.cards || []), ...(them.cards || [])].forEach(c => { if (c.name && !byName[c.name]) byName[c.name] = c; });
+  return Object.values(byName).map(c => ({ c, me: mine[c.name] || 0, them: theirs[c.name] || 0 }))
+    .filter(r => r.me || r.them)
+    .map(r => ({ ...r, diff: r.them - r.me }));
+}
+function compareCardListHTML(me, them) {
+  let rows = compareCardRows(me, them);
+  if (_cmpFilter === 'them') rows = rows.filter(r => r.diff > 0).sort((x, y) => y.diff - x.diff || x.c.name.localeCompare(y.c.name));
+  else if (_cmpFilter === 'me') rows = rows.filter(r => r.diff < 0).sort((x, y) => x.diff - y.diff || x.c.name.localeCompare(y.c.name));
+  else rows.sort((x, y) => y.diff - x.diff || x.c.name.localeCompare(y.c.name));
+  if (!rows.length) return '<div class="empty-msg">No cards here.</div>';
+  const lv = (v, other) => `<span class="${v > other ? 'cmp-win' : ''}">${v ? 'Lv ' + v : '—'}</span>`;
+  return `<div class="cmp-row cmp-card cmp-head"><span></span><span></span><span>You</span><span>Them</span></div>`
+    + rows.map(r => `<div class="cmp-row cmp-card">
+      ${r.c.iconUrls?.medium ? `<img src="${r.c.iconUrls.medium}" alt="" loading="lazy">` : '<span></span>'}
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${RARITY_COLOR[(r.c.rarity||'common').toLowerCase()] || 'var(--text)'}">${esc(r.c.name)}</span>
+      ${lv(r.me, r.them)}${lv(r.them, r.me)}
+    </div>`).join('');
+}
+window.setCompareFilter = function(v) {
+  _cmpFilter = v;
+  document.querySelectorAll('#f-cmp-bar button').forEach(b => b.classList.toggle('active', b.dataset.v === v));
+  const el = document.getElementById('f-cmp-list');
+  if (el && _friendData && canCompare(_friendData)) el.innerHTML = compareCardListHTML(window._currentProfile.data, _friendData);
+};
+
 // Friend modal filter state (self-contained so it never touches the main profile)
 let _fCardStatus = 'all', _fCardRarity = 'all', _fCardSort = DEFAULT_CARD_SORT, _fCardSearch = '';
 let _fEvoFilter = 'all', _fHeroFilter = 'all';
@@ -1237,6 +1384,7 @@ function friendTab(name) {
   revealTab(document.querySelector(`#friend-modal-body .tab-btn[data-ftab="${name}"]`));
   const pane = document.getElementById('friend-pane');
   if (name === 'overview')    pane.innerHTML = renderOverview(d, _friendBattles, 'f');
+  if (name === 'compare')   { _cmpFilter = 'them'; pane.innerHTML = compareHTML(window._currentProfile.data, d); }
   if (name === 'cards')     { _fCardStatus='all'; _fCardRarity='all'; _fCardSort=DEFAULT_CARD_SORT; _fCardSearch=''; pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
   if (name === 'evolutions'){ _fEvoFilter='all';  pane.innerHTML = friendCollectShell('evolution'); friendRenderCollect('evolution'); }
   if (name === 'heroes')    { _fHeroFilter='all'; pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
@@ -1451,6 +1599,59 @@ function renderFriends() {
   if (!wrap) return;
   _friendsEditMode = false;  // always start in view mode when (re)opening
   _renderFriendsList();
+  refreshFriendStats();
+}
+
+// Each saved friend keeps a small snapshot — trophies, clan, last battle — so the
+// list can show and sort by them. Opening the Friends screen refreshes snapshots
+// older than 15 min, four at a time; 🔄 refreshes them all.
+const FRIEND_STATS_MAX_AGE_MS = 15 * 60 * 1000;
+let _friendStatsProgress = null;  // { done, total } while refreshing
+function saveFriendStats(tag, p, battles) {
+  const list = getFriends(), f = list.find(x => x.tag === tag);
+  if (!f || !p) return;
+  f.name = p.name; f.trophies = p.trophies; f.clan = p.clan?.name || '';
+  f.lastBattle = (battles || [])[0]?.battleTime || f.lastBattle || '';
+  f.statsAt = Date.now();
+  localStorage.setItem('cr_friends', JSON.stringify(list));
+}
+async function refreshFriendStats(force = false) {
+  if (_friendStatsProgress) return;
+  const due = getFriends().filter(f => force || !f.statsAt || Date.now() - f.statsAt > FRIEND_STATS_MAX_AGE_MS).map(f => f.tag);
+  if (!due.length) return;
+  _friendStatsProgress = { done: 0, total: due.length };
+  _renderFriendsList();
+  const worker = async () => {
+    while (due.length) {
+      const tag = due.shift(), path = '/players/' + encodeURIComponent(tag);
+      try {
+        const [p, log] = await Promise.all([apiGet(path), apiGet(path + '/battlelog').catch(() => null)]);
+        saveFriendStats(tag, p, log);
+      } catch(e) {}
+      _friendStatsProgress.done++;
+      if (currentScreen === 'friends') _renderFriendsList();
+    }
+  };
+  await Promise.all([worker(), worker(), worker(), worker()]);
+  _friendStatsProgress = null;
+  if (currentScreen === 'friends') _renderFriendsList();
+}
+const FRIEND_SORTS = { recent: 'Last played', trophies: 'Trophies', name: 'Name', added: 'Added' };
+function friendSortMode() {
+  try { const v = localStorage.getItem('cr_friends_sort'); return FRIEND_SORTS[v] ? v : 'recent'; }
+  catch(e) { return 'recent'; }
+}
+window.setFriendSort = function(v) {
+  try { localStorage.setItem('cr_friends_sort', v); } catch(e) {}
+  _renderFriendsList();
+};
+function sortedFriends(list) {
+  const by = friendSortMode();
+  if (by === 'added') return list;
+  return [...list].sort(
+    by === 'trophies' ? (a, b) => (b.trophies ?? -1) - (a.trophies ?? -1) :
+    by === 'name'     ? (a, b) => (a.name || '').localeCompare(b.name || '') :
+                        (a, b) => (b.lastBattle || '').localeCompare(a.lastBattle || ''));
 }
 function _renderFriendsList() {
   const wrap = document.getElementById('friends-list');
@@ -1460,23 +1661,39 @@ function _renderFriendsList() {
     wrap.innerHTML = `<div class="empty-msg">No friends saved yet. Add a player tag above (up to ${MAX_FRIENDS}).</div>` + suggestedFriendsHTML();
     return;
   }
+  const prog = _friendStatsProgress;
+  const sort = friendSortMode();
   const header = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Saved Friends</span>
-      <span onclick="toggleFriendsEdit()" style="cursor:pointer;font-size:16px;opacity:${_friendsEditMode?1:0.6}" title="Edit friends">⚙️</span>
+      <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Saved Friends · ${list.length}/${MAX_FRIENDS}</span>
+      <span style="display:flex;align-items:center;gap:12px">
+        ${prog ? `<span style="font-size:11px;color:var(--muted)">updating ${prog.done}/${prog.total}…</span>`
+               : `<span onclick="refreshFriendStats(true)" style="cursor:pointer;font-size:15px;opacity:0.6" title="Refresh trophies and last battles">🔄</span>`}
+        <span onclick="toggleFriendsEdit()" style="cursor:pointer;font-size:16px;opacity:${_friendsEditMode?1:0.6}" title="Edit friends">⚙️</span>
+      </span>
+    </div>
+    <div class="filter-bar" style="margin-bottom:10px">
+      ${Object.entries(FRIEND_SORTS).map(([v, label]) => `<button class="filter-btn ${sort === v ? 'active' : ''}" onclick="setFriendSort('${v}')">${label}</button>`).join('')}
     </div>`;
-  const rows = list.map(f => `
+  const DAY = 24 * 60 * 60 * 1000;
+  const rows = sortedFriends(list).map(f => {
+    const active = f.lastBattle && Date.now() - parseApiTime(f.lastBattle) < DAY;
+    return `
     <div ${_friendsEditMode ? '' : `onclick="viewFriend('${f.tag}')"`} style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px;cursor:${_friendsEditMode?'default':'pointer'}">
       <div style="min-width:0">
         <div style="font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</div>
-        <div style="font-size:12px;color:var(--muted);font-family:monospace">${esc(f.tag)}</div>
+        <div style="font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${f.clan ? `🛡 ${esc(f.clan)}` : `<span style="font-family:monospace">${esc(f.tag)}</span>`}</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
         ${_friendsEditMode
           ? `<span onclick="removeFriend('${f.tag}',event)" style="color:var(--red);font-weight:700;font-size:16px;padding:0 4px;cursor:pointer" title="Remove">🗑</span>`
-          : '<span class="text-accent" style="font-size:13px;font-weight:600">View →</span>'}
+          : `<div style="text-align:right">
+              <div style="color:var(--accent);font-weight:700;font-size:14px">${f.trophies != null ? '🏆 ' + fmtNum(f.trophies) : ''}</div>
+              <div style="font-size:11px;color:${active ? 'var(--green)' : 'var(--muted)'}" title="Last battle">${f.lastBattle ? `${active ? '● ' : ''}played ${formatBattleTime(f.lastBattle)}` : ''}</div>
+            </div>`}
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   wrap.innerHTML = header + rows + suggestedFriendsHTML();
 }
 
@@ -1567,9 +1784,10 @@ window.addSuggestedFriend = function(tag) {
   const list = getFriends();
   if (!p || list.some(f => f.tag === tag)) return;
   if (list.length >= MAX_FRIENDS) { showFriendMsg(`You can save up to ${MAX_FRIENDS} friends. Remove one first.`, true); return; }
-  list.push({ tag, name: p.name });
+  list.push({ tag, name: p.name, clan: p.clan || '' });
   localStorage.setItem('cr_friends', JSON.stringify(list));
   _renderFriendsList();
+  refreshFriendStats();
 };
 window.dismissSuggestion = function(tag) {
   const myTag = window._currentProfile?.data?.tag;
@@ -1594,6 +1812,8 @@ async function loadPlayer(tagOverride, opts = {}) {
   document.getElementById('player-tag').value = tag;
   const el = document.getElementById('player-result');
   if (!opts.quiet) { el.innerHTML = '<div class="spinner"></div>'; showLookupStart(false); }
+  _profileRefreshing = !!opts.quiet;
+  updateProfileAge();
   try {
     const [data, battles] = await Promise.all([
       apiGet('/players/' + encodeURIComponent(tag)),
@@ -1601,6 +1821,8 @@ async function loadPlayer(tagOverride, opts = {}) {
       maybeLoadCards()
     ]);
     if (seq !== _loadPlayerSeq) return;
+    _profileRefreshing = false;
+    recordMatchups(data.tag, battles);
     if (opts.quiet) renderProfilePreservingView(data, battles);
     else renderProfile(data, battles);
     // Save this account (name + tag) so the user can switch between accounts
@@ -1613,10 +1835,13 @@ async function loadPlayer(tagOverride, opts = {}) {
     // Persist the full profile so we can render instantly on next app open
     saveProfileCache(data.tag, data, battles);
     recordCoPlayers(data.tag, battles);
-    window._currentProfile = { data, battles };
+    window._currentProfile = { data, battles, savedAt: Date.now() };
+    updateProfileAge();
     syncClanToProfile(data);
   } catch(e) {
     if (seq !== _loadPlayerSeq) return;
+    _profileRefreshing = false;
+    updateProfileAge();
     // A quiet refresh keeps the profile already on screen — a dropped connection
     // shouldn't replace good data with an error. With no profile showing (it
     // superseded a lookup whose spinner is still up), say what went wrong.
@@ -1687,9 +1912,10 @@ async function autoRefreshProfile() {
 }
 
 function renderProfileFromCache(cached) {
+  recordMatchups(cached.data.tag, cached.battles);
+  window._currentProfile = { data: cached.data, battles: cached.battles, savedAt: cached.savedAt };
   renderProfile(cached.data, cached.battles);
   recordCoPlayers(cached.data.tag, cached.battles);
-  window._currentProfile = { data: cached.data, battles: cached.battles };
   _playerCardsById = {};
   [...(cached.data.cards || []), ...(cached.data.supportCards || [])].forEach(c => { _playerCardsById[c.id] = c; });
   syncClanToProfile(cached.data, { fromCache: true });
@@ -1759,19 +1985,7 @@ function renderProfile(data, battles) {
   const li = data.leagueStatistics;
   const league = li ? (leagueEmoji[Math.min((li.currentSeason.trophies||0) / 500 | 0, 12)] || '') : '';
 
-  // Compute collection level here so the header can show it
-  const _cards    = data.cards || [];
-  const _evoIds   = new Set(allCards.filter(c => c.iconUrls?.evolutionMedium).map(c => c.id));
-  const _heroIds  = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
-  const _cardCL   = _cards.reduce((s, c) => s + toDisplayLevel((c.rarity||'common').toLowerCase(), c.level), 0);
-  const _evoCount = _cards.filter(c => {
-    if (!_evoIds.has(c.id)) return false;
-    const evo = c.evolutionLevel || 0, maxEvo = c.maxEvolutionLevel || 0;
-    return _heroIds.has(c.id) ? maxEvo > 0 && evo >= maxEvo : evo > 0;
-  }).length;
-  const _heroCount   = _cards.filter(c => _heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length;
-  const _troopCL     = (data.supportCards||[]).reduce((s, c) => s + toDisplayLevel((c.rarity||'common').toLowerCase(), c.level), 0);
-  const _profileCL   = _cardCL + _evoCount * 5 + _heroCount * 5 + _troopCL;
+  const { king: _king, cl: _profileCL } = profileLevels(data);
 
   showLookupStart(false);
   // One compact block, the same on every tab: the name opens the Accounts menu
@@ -1780,11 +1994,11 @@ function renderProfile(data, battles) {
             : data.bestPathOfLegendSeasonResult;
   const mt = data.currentMergeTacticsSeasonResult || data.lastMergeTacticsSeasonResult || data.bestMergeTacticsSeasonResult;
   const sub = [
-    `👑 King ${calcKingTowerLevel(_cards.map(c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level)))}`,
+    `👑 King ${_king}`,
     `📊 CL ${fmtNum(_profileCL)}`,
     pol?.leagueNumber ? `⚔️ ${polLeagueName(pol)}${isUltimateLeague(pol.leagueNumber) && pol.rank ? ` #${fmtNum(pol.rank)}` : ''}` : '',
     mt?.leagueNumber && MT_LEAGUES[mt.leagueNumber] ? `🧩 ${MT_LEAGUES[mt.leagueNumber]}` : ''
-  ].filter(Boolean).join(' · ');
+  ].filter(Boolean).map(t => `<span style="white-space:nowrap">${t}</span>`).join(' · ');
   el.innerHTML = `
     <div class="ph-sticky">
     <div class="ph-head">
@@ -1795,7 +2009,7 @@ function renderProfile(data, battles) {
           <button class="ph-icon" onclick="loadPlayer(localStorage.getItem('cr_player_tag'))" title="Refresh">🔄</button>
         </div>
       </div>
-      <div class="ph-sub">${sub}</div>
+      <div class="ph-sub">${sub}<span id="ph-updated" class="ph-updated"></span></div>
     </div>
 
     <div class="tab-bar">
@@ -1823,7 +2037,51 @@ function renderProfile(data, battles) {
     <div id="tab-account" class="tab-pane" style="display:none">${accountStatsHTML(data)}</div>
   `;
   updateTabFade(el.querySelector('.tab-bar'));
+  updateProfileAge();
 }
+
+// King level and collection level as the profile header shows them: CL is every
+// card's level, +5 per evolution and per hero, plus the tower troops' levels.
+function profileLevels(data) {
+  const cards = data.cards || [];
+  const disp = c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level);
+  const evoIds  = new Set(allCards.filter(c => c.iconUrls?.evolutionMedium).map(c => c.id));
+  const heroIds = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
+  const evos = cards.filter(c => {
+    if (!evoIds.has(c.id)) return false;
+    const evo = c.evolutionLevel || 0, maxEvo = c.maxEvolutionLevel || 0;
+    return heroIds.has(c.id) ? maxEvo > 0 && evo >= maxEvo : evo > 0;
+  }).length;
+  const heroes = cards.filter(c => heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length;
+  const cl = cards.reduce((s, c) => s + disp(c), 0) + evos * 5 + heroes * 5
+           + (data.supportCards||[]).reduce((s, c) => s + disp(c), 0);
+  return { king: calcKingTowerLevel(cards.map(disp)), cl, evos, heroes };
+}
+
+// "updated 12 min ago" at the end of the header's info line, so stale data is
+// obvious — a browser tab never refreshes by itself. Turns gold after an hour.
+function fmtAgo(ms) {
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.floor(h / 24);
+  return `${d} day${d > 1 ? 's' : ''} ago`;
+}
+let _profileRefreshing = false;
+function updateProfileAge() {
+  const el = document.getElementById('ph-updated');
+  if (!el) return;
+  const at = window._currentProfile?.savedAt;
+  el.classList.remove('stale');
+  if (_profileRefreshing) { el.textContent = ' · ↻ updating…'; return; }
+  if (!at) { el.textContent = ''; return; }
+  el.textContent = ` · updated ${fmtAgo(Date.now() - at)}`;
+  el.classList.toggle('stale', Date.now() - at > 60 * 60 * 1000);
+  el.title = 'Last refreshed ' + new Date(at).toLocaleString();
+}
+setInterval(updateProfileAge, 30000);
 
 function esc(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
@@ -2194,6 +2452,50 @@ function refreshCustomDeckSections() {
   if (input)   input.value = _deckUpSearch;
 }
 
+// Card ids in a deck link — the game's share link
+// (link.clashroyale.com/…copyDeck?deck=26000000;27000001;…) or any text holding
+// them. Deck cards are 26… troops, 27… buildings, 28… spells; tower troop ids
+// (159…) don't match. Falls back to a RoyaleAPI deck URL, which names the cards:
+// royaleapi.com/decks/stats/hog-rider,musketeer-ev1,…
+function parseDeckLinkIds(text) {
+  const ids = [...new Set((String(text || '').match(/\b2[678]\d{6}\b/g) || []).map(Number))];
+  if (ids.length) return ids.slice(0, 8);
+  const slugs = String(text || '').match(/decks\/stats\/([^\/?#\s]+)/)?.[1];
+  if (!slugs) return [];
+  const slug = n => n.toLowerCase().replace(/\./g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const bySlug = Object.fromEntries(allCards.map(c => [slug(c.name), c.id]));
+  return [...new Set(decodeURIComponent(slugs).split(',').map(x => bySlug[x.replace(/-(ev\d+|hero)$/, '')]).filter(Boolean))].slice(0, 8);
+}
+window.importDeckLink = function(text) {
+  const msg = document.getElementById('deckup-link-msg');
+  const say = (t, err) => { if (msg) { msg.textContent = t; msg.style.color = err ? 'var(--red)' : 'var(--muted)'; } };
+  const data = window._currentProfile?.data;
+  if (!data) return;
+  const ids = parseDeckLinkIds(text);
+  if (!ids.length) { say("That doesn't look like a deck link.", true); return; }
+  const owned = new Set((data.cards || []).map(c => c.id));
+  const missing = ids.filter(id => !owned.has(id)).map(id => allCards.find(c => c.id === id)?.name || `card ${id}`);
+  _deckUpCustomIds = ids.filter(id => owned.has(id));
+  _deckUpSearch = '';
+  const input = document.getElementById('deckup-link-input');
+  if (input) input.value = '';
+  refreshCustomDeckSections();
+  say(missing.length ? `✓ Deck loaded. Not unlocked yet: ${missing.join(', ')}` : '✓ Deck loaded.', false);
+};
+
+// A deck shared to the installed app (manifest share_target) arrives as
+// ?title=&text=&url= — open it in Deck Upgrade once the profile is on screen.
+function takeSharedDeck() {
+  const q = new URLSearchParams(location.search);
+  const text = ['title', 'text', 'url'].map(k => q.get(k) || '').join(' ').trim();
+  if (!text) return;
+  history.replaceState(null, '', location.pathname);
+  if (!parseDeckLinkIds(text).length) return;
+  _deckUpMode = 'custom';
+  goTo('deckup');
+  importDeckLink(text);
+}
+
 function buildDeckUpSlots(selectedCards) {
   return Array.from({length:8}, (_,i) => {
     const c = selectedCards[i];
@@ -2230,6 +2532,12 @@ function buildDeckUpSuggestions(data) {
 function renderCustomDeckBuilder(data) {
   const selectedCards = _deckUpCustomIds.map(id => data.cards.find(c => c.id === id)).filter(Boolean);
   return `
+    <div class="flex-row" style="margin-bottom:6px">
+      <input type="text" id="deckup-link-input" placeholder="🔗 Paste a deck link…" autocomplete="off" style="flex:1;min-width:0;font-size:13px;padding:8px 12px"
+        onpaste="setTimeout(() => importDeckLink(this.value), 0)" onkeydown="if(event.key==='Enter')importDeckLink(this.value)">
+      <button class="btn btn-secondary btn-sm" onclick="importDeckLink(document.getElementById('deckup-link-input').value)">Load</button>
+    </div>
+    <div id="deckup-link-msg" style="font-size:12px;color:var(--muted);margin-bottom:12px">From the game's Share / Copy deck, or a RoyaleAPI deck page.</div>
     <div id="deckup-count" style="font-size:12px;color:var(--muted);margin-bottom:8px">${_deckUpCustomIds.length} / 8 cards selected</div>
     <div id="deckup-slots" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px">${buildDeckUpSlots(selectedCards)}</div>
     <button id="deckup-clear" class="btn btn-secondary btn-sm" style="margin-bottom:12px;display:${_deckUpCustomIds.length?'inline-flex':'none'}" onclick="clearDeckUp()">↺ Clear deck</button>
@@ -2417,7 +2725,76 @@ function currentDeckKey(data, battles) {
   return deck.map((c, i) => variants[i] ? `${c.name}[${variants[i]}]` : c.name).sort().join('|');
 }
 
-function battleStatsHTML(data, battles) {
+// ── Opponent cards: how you do against each card ──
+// Every non-friendly battle counts once for each card on the other side (both
+// opponents' decks in 2v2). Boat battles are left out — their "opponent" is a
+// defence, not a player. Tallied per tag like deck history, deduped by
+// battleTime, so it grows past the ~30-battle window.
+const MATCHUPS_KEY = 'cr_matchups_v1';
+const MATCHUP_MIN_GAMES = 4;
+function tallyMatchups(entry, battles) {
+  const seen = new Set(entry.seen);
+  let changed = false;
+  (battles || []).forEach(b => {
+    if (!b.battleTime || seen.has(b.battleTime)) return;
+    seen.add(b.battleTime);
+    if (/friendly|clanMate|boat/i.test(b.type || '')) return;
+    const opp = b.opponent || [];
+    const names = new Set(opp.flatMap(p => (p.cards || []).map(c => c.name)));
+    if (!names.size) return;
+    const t = (b.team || [])[0]?.crowns || 0, o = opp[0]?.crowns || 0;
+    const i = t > o ? 0 : t < o ? 1 : 2;  // [wins, losses, draws]
+    names.forEach(n => (entry.cards[n] || (entry.cards[n] = [0, 0, 0]))[i]++);
+    entry.battles++;
+    changed = true;
+  });
+  entry.seen = [...seen].slice(-300);
+  return changed;
+}
+const newMatchups = () => ({ since: Date.now(), battles: 0, seen: [], cards: {} });
+function loadMatchups(tag) {
+  try { return JSON.parse(localStorage.getItem(MATCHUPS_KEY) || '{}')[tag] || null; }
+  catch(e) { return null; }
+}
+function recordMatchups(tag, battles) {
+  if (!tag) return;
+  try {
+    const all = JSON.parse(localStorage.getItem(MATCHUPS_KEY) || '{}');
+    const entry = all[tag] || newMatchups();
+    if (!tallyMatchups(entry, battles)) return;
+    all[tag] = entry;
+    localStorage.setItem(MATCHUPS_KEY, JSON.stringify(all));
+  } catch(e) {}
+}
+// scope 'p' reads the saved tally; 'f' (a friend) counts their current log only
+function matchupsHTML(data, battles, scope) {
+  let m = scope === 'p' ? loadMatchups(data.tag) : null;
+  if (!m) { m = newMatchups(); tallyMatchups(m, battles); }
+  const since = scope === 'p' && m.since ? ` since ${new Date(m.since).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}` : '';
+  const head = `<div style="${OV_SECTION_STYLE}">Opponent Cards <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· ${m.battles} battle${m.battles === 1 ? '' : 's'}${since}</span></div>`;
+  const rows = Object.entries(m.cards)
+    .map(([name, [w, l, d]]) => ({ name, w, l, d, n: w + l + d, rate: w / Math.max(w + l + d, 1) }))
+    .filter(r => r.n >= MATCHUP_MIN_GAMES);
+  if (!rows.length) return head + `<div style="font-size:12px;color:var(--muted)">Not enough battles yet — a card shows up here once ${scope === 'p' ? "you've" : "they've"} faced it ${MATCHUP_MIN_GAMES} times.</div>`;
+  const art = buildCardArtMap(battles);
+  const row = r => {
+    const cls = r.rate < 0.45 ? 'text-red' : r.rate > 0.55 ? 'text-green' : '';
+    return `<div class="mu-row">
+      ${art[r.name]?.medium ? `<img src="${art[r.name].medium}" alt="" loading="lazy">` : ''}
+      <span class="mu-name">${esc(r.name)} <span class="text-muted" style="font-size:11px">· ${r.n}×</span></span>
+      <span style="font-size:12px;white-space:nowrap"><span class="text-green">${r.w}W</span> <span class="text-red">${r.l}L</span>${r.d ? ` <span class="text-muted">${r.d}D</span>` : ''}</span>
+      <span class="${cls}" style="font-weight:700;width:40px;text-align:right">${Math.round(r.rate * 100)}%</span>
+    </div>`;
+  };
+  const toughest = rows.filter(r => r.rate < 0.5).sort((a, b) => a.rate - b.rate || b.n - a.n).slice(0, 6);
+  const easiest  = rows.filter(r => r.rate > 0.5).sort((a, b) => b.rate - a.rate || b.n - a.n).slice(0, 6);
+  return head
+    + `<div class="mu-sub">😈 Toughest</div>${toughest.map(row).join('') || `<div style="font-size:12px;color:var(--muted)">No card beats ${scope === 'p' ? 'you' : 'them'} more often than not 💪</div>`}`
+    + (easiest.length ? `<div class="mu-sub">😎 Best against</div>${easiest.map(row).join('')}` : '')
+    + `<div style="font-size:11px;color:var(--muted);margin-top:6px">Win rate in battles where the other side played the card · faced ${MATCHUP_MIN_GAMES}+ times · friendlies and boat battles left out</div>`;
+}
+
+function battleStatsHTML(data, battles, scope = 'p') {
   const games = data.battleCount || 0;
   const tourn = data.tournamentBattleCount || 0;
   const days = accountAgeDays(data);
@@ -2442,6 +2819,8 @@ function battleStatsHTML(data, battles) {
       <div style="font-size:11px;color:var(--muted);margin:-2px 0 6px;text-align:right">${fmtHours((games - tourn) * EST_MINUTES_PER_GAME)} trophy road &amp; challenges · ${fmtHours(tourn * EST_MINUTES_PER_GAME)} tournaments · ~${EST_MINUTES_PER_GAME} min a game</div>
 
       ${recentBattlesByModeHTML(battles)}
+
+      ${matchupsHTML(data, battles, scope)}
 
       ${pol.length ? `<div style="${OV_SECTION_STYLE}">Path of Legends</div>
       ${pol.map(([label, r]) => { const detail = polLeagueDetail(r);
@@ -3406,7 +3785,7 @@ function renderBattles(battles, data, scope = 'p') {
 }
 function battleViewHTML(scope) {
   const st = _battleState[scope];
-  if (st.view === 'stats') return st.data ? battleStatsHTML(st.data, st.battles) : '';
+  if (st.view === 'stats') return st.data ? battleStatsHTML(st.data, st.battles, scope) : '';
   return st.battles.length ? _renderBattleList(scope) : '<div class="empty-msg">No battles found.</div>';
 }
 window.setBattleView = function(scope, v) {
@@ -4055,6 +4434,7 @@ function renderMembers(members) {
 restoreSavedTag();
 calcUpdate();
 // Restore last-used player tag into the input
+let _startup = Promise.resolve();  // resolves once the startup profile is on screen
 const _savedTag = localStorage.getItem('cr_player_tag');
 if (_savedTag) {
   document.getElementById('player-tag').value = _savedTag;
@@ -4063,14 +4443,15 @@ if (_savedTag) {
   // in the background.
   const _cachedProfile = loadProfileCache(_savedTag);
   if (_cachedProfile) {
-    maybeLoadCards().then(() => {
+    _startup = maybeLoadCards().then(() => {
       renderProfileFromCache(_cachedProfile);
       if (isInstalledApp()) autoRefreshProfile();
     });
   } else if (isInstalledApp()) {
-    loadPlayer(_savedTag);  // nothing cached to show — just load it
+    _startup = loadPlayer(_savedTag);  // nothing cached to show — just load it
   }
 }
+_startup.then(takeSharedDeck);
 
 // Android keeps an installed app alive in the background, so reopening it usually
 // resumes this page rather than reloading it. Refresh on foreground too, otherwise
