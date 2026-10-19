@@ -147,12 +147,16 @@
   .ph-icon { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 50%; width: 30px; height: 30px; cursor: pointer; font-size: 14px; line-height: 1; flex-shrink: 0; }
   .ph-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .ph-updated { white-space: nowrap; }
-  /* Card and badge art fades in as it arrives instead of popping in; a soft tile
-     holds its place meanwhile. .ld is set by the image load listener in the script. */
-  img[loading="lazy"]:not(.ld) { background: var(--surface2); border-radius: 6px; color: transparent; }
-  img.ld { animation: img-in .18s ease-out; }
+  /* Slow card and badge art: a soft tile holds its place, then it fades in. Only
+     when it's really slow — an image still loading after 150 ms gets the tile, and
+     only those fade (.ld-fade) — so art stored on the device appears instantly,
+     without a flash, when flicking through tabs. .ld / .ld-fade are set by the
+     image load listener in the script. */
+  img[loading="lazy"]:not(.ld) { color: transparent; animation: img-wait 1ms .15s forwards; }
+  @keyframes img-wait { to { background-color: var(--surface2); border-radius: 6px; } }
+  img.ld-fade { animation: img-in .18s ease-out; }
   @keyframes img-in { from { opacity: 0; } to { opacity: 1; } }
-  @media (prefers-reduced-motion: reduce) { img.ld { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { img.ld-fade { animation: none; } }
   .ph-updated.stale { color: var(--accent); }
   /* Compare tab: label | you | them */
   .cmp-row { display: grid; grid-template-columns: minmax(0,1fr) 76px 76px; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13px; align-items: center; }
@@ -4478,7 +4482,15 @@ attachTabSwipe(document.getElementById('friend-modal-body'),
 // view fetches it again, e.g. evolution art Supercell published late.
 // load / error don't bubble, so listen in the capture phase.
 const SW_IMG_HOSTS = /^https:\/\/(api-assets\.clashroyale\.com|raw\.githubusercontent\.com)\//;
-document.addEventListener('load', e => { if (e.target.tagName === 'IMG') e.target.classList.add('ld'); }, true);
+document.addEventListener('load', e => {
+  const img = e.target;
+  if (img.tagName !== 'IMG') return;
+  // The placeholder tile only shows once an image has waited 150 ms (img-wait):
+  // fade in just those, so stored images don't flash
+  const waited = img.loading === 'lazy' && getComputedStyle(img).backgroundColor !== 'rgba(0, 0, 0, 0)';
+  img.classList.add('ld');
+  if (waited) img.classList.add('ld-fade');
+}, true);
 document.addEventListener('error', e => {
   const img = e.target;
   if (img.tagName !== 'IMG') return;

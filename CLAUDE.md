@@ -229,7 +229,7 @@ Card / evo / hero art (`api-assets.clashroyale.com`) and badge art (`raw.githubu
 - **Changed art:** new art at a new URL is just a new entry (the catalog's background revalidation brings the new URL in). Art replaced at the *same* URL is caught by a background re-check every `IMG_RECHECK_MS` (3 days), using `cache: 'no-cache'` so the server can answer 304 cheaply.
 - **Bookkeeping:** `./__img-meta` in the same cache holds `{ url: { fetched, used } }`. Entries unused for 60 days, or beyond 1000, are pruned.
 - **Opaque responses:** those hosts send no CORS headers, so the worker can't see a 404. The page's capture-phase `error` listener posts `img-broken` and the worker deletes that copy, so missing art (e.g. a new evo) is fetched again on the next view. Keep that listener.
-- The page also asks for `navigator.storage.persist()`. Lazy images show a placeholder tile until loaded, then fade in (`img.ld`, set by a capture-phase `load` listener).
+- The page also asks for `navigator.storage.persist()`. A lazy image still loading after 150 ms shows a placeholder tile and fades in when it arrives (`.ld-fade`, decided by a capture-phase `load` listener); images that load faster, i.e. stored ones, just appear. Fading every image made tab switches flash — don't go back to that.
 
 ## Known limitations / things to be aware of
 - The Clash Royale API only returns the last **~25–30 battles**. Deck stats work around this by accumulating history in `localStorage` (not retroactive — it only counts battles seen since the feature shipped).
