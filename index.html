@@ -1481,7 +1481,7 @@ window.setCompareFilter = function(v) {
 // Friend modal filter state (self-contained so it never touches the main profile)
 let _fCardStatus = 'all', _fCardRarity = 'all', _fCardSort = DEFAULT_CARD_SORT, _fCardSearch = '';
 let _fEvoFilter = 'all', _fHeroFilter = 'all';
-let _fBadgeFilter = 'all', _fBadgeEntries = [];
+let _fBadgeFilter = 'all', _fBadgeEntries = [], _fBadgeSort = 'progress';
 
 let _fTab = '';
 function friendTab(name) {
@@ -1498,7 +1498,7 @@ function friendTab(name) {
   if (name === 'evolutions'){ _fEvoFilter='all';  pane.innerHTML = friendCollectShell('evolution'); friendRenderCollect('evolution'); }
   if (name === 'heroes')    { _fHeroFilter='all'; pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
   if (name === 'towerTroops') pane.innerHTML = friendTroopHTML(d);
-  if (name === 'badges')    { _fBadgeFilter='all'; pane.innerHTML = friendBadgesShell(d); friendRenderBadges(); }
+  if (name === 'badges')    { _fBadgeFilter='all'; _fBadgeSort='progress'; pane.innerHTML = friendBadgesShell(d); friendRenderBadges(); }
   if (name === 'decks')       pane.innerHTML = renderDeckBuilder(_friendBattles, d, 'f');
   if (name === 'battles')     pane.innerHTML = renderBattles(_friendBattles, d, 'f');
   if (name === 'account')     pane.innerHTML = accountStatsHTML(d);
@@ -1512,9 +1512,11 @@ function friendBadgesShell(data) {
   if (!_fBadgeEntries.length) return '<div class="empty-msg">No badge data available from the API.</div>';
   return `
     ${badgeFilterBarHTML('f-badge-filter', 'friendSetBadge', _fBadgeFilter)}
+    ${badgeSortHTML('friendSetBadgeSort', _fBadgeSort)}
     <div id="f-badge-count" style="font-size:13px;color:var(--muted);margin-bottom:12px"></div>
     <div id="f-badge-grid"></div>`;
 }
+window.friendSetBadgeSort = function(v) { _fBadgeSort = v; friendRenderBadges(); };
 window.friendSetBadge = function(val) {
   _fBadgeFilter = val;
   document.querySelectorAll('#f-badge-filter .filter-btn').forEach(b =>
@@ -1524,7 +1526,7 @@ window.friendSetBadge = function(val) {
 function friendRenderBadges() {
   const container = document.getElementById('f-badge-grid');
   if (!container) return;
-  const list = filterSortBadges(_fBadgeEntries, _fBadgeFilter);
+  const list = filterSortBadges(_fBadgeEntries, _fBadgeFilter, _fBadgeSort);
   const countEl = document.getElementById('f-badge-count');
   if (countEl) countEl.textContent = badgeCountText(list, _fBadgeFilter);
   container.innerHTML = badgeTilesHTML(list);
@@ -3652,6 +3654,7 @@ function humanizeBadgeName(name) {
 function renderBadgesPane(data) {
   _badgesData = data.badges || [];
   _badgeFilter = 'all';
+  _badgeSort = 'progress';
   return `<div id="badges-grid"><div class="spinner"></div></div>`;
 }
 
@@ -3709,8 +3712,9 @@ function _masteryCardFor(badgeName) {
   return allCards.find(c => _normBadgeKey(c.name) === key) || null;
 }
 
-let _badgeFilter = 'all';
+let _badgeFilter = 'all', _badgeSort = 'progress';
 let _badgeEntries = [];
+window.setBadgeSort = function(v) { _badgeSort = v; _renderBadgeCards(); };
 
 function setBadgeFilter(val) {
   _badgeFilter = val;
@@ -3775,11 +3779,26 @@ function _badgeCompare(a, b) {
       || a.name.localeCompare(b.name);
 }
 
-function filterSortBadges(entries, filter) {
+// How close a badge is to its next step, 0-1 (-1: maxed or not started).
+// Achievements report real progress toward their next level (BattleWins
+// 4781/5000). Masteries don't — the API only says which level is reached, not
+// how far the current task is — so they count levels done of the card's total.
+function badgeNextShare(x) {
+  if (!x.earned || x.atMax) return -1;
+  if (x.isMastery) return x.masteryTotal ? x.masteryDone / x.masteryTotal : -1;
+  return x.target ? Math.min(x.progress / x.target, 1) : -1;
+}
+const BADGE_SORT_LABELS = { progress: 'Most progress', next: 'Closest to next level' };
+function filterSortBadges(entries, filter, sort = 'progress') {
   let list = entries;
   if (filter === 'mastery') list = list.filter(b => b.isMastery);
   if (filter === 'other')   list = list.filter(b => !b.isMastery);
-  return [...list].sort(_badgeCompare);
+  return [...list].sort(sort === 'next' ? (a, b) => (badgeNextShare(b) - badgeNextShare(a)) || _badgeCompare(a, b) : _badgeCompare);
+}
+function badgeSortHTML(setter, active) {
+  return `<select onchange="${setter}(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:12px">
+      ${Object.entries(BADGE_SORT_LABELS).map(([v, l]) => `<option value="${v}"${active === v ? ' selected' : ''}>Sort: ${l}</option>`).join('')}
+    </select>`;
 }
 
 function badgeCountText(list, filter) {
@@ -3805,6 +3824,7 @@ async function loadBadgesGrid() {
 
   grid.innerHTML = `
     ${badgeFilterBarHTML('badge-filter-bar', 'setBadgeFilter', _badgeFilter)}
+    ${badgeSortHTML('setBadgeSort', _badgeSort)}
     <div id="badge-count" style="font-size:13px;color:var(--muted);margin-bottom:12px"></div>
     <div id="badge-cards-grid"></div>`;
   _renderBadgeCards();
@@ -3813,7 +3833,7 @@ async function loadBadgesGrid() {
 function _renderBadgeCards() {
   const container = document.getElementById('badge-cards-grid');
   if (!container) return;
-  const list = filterSortBadges(_badgeEntries, _badgeFilter);
+  const list = filterSortBadges(_badgeEntries, _badgeFilter, _badgeSort);
   const countEl = document.getElementById('badge-count');
   if (countEl) countEl.textContent = badgeCountText(list, _badgeFilter);
   container.innerHTML = badgeTilesHTML(list);
@@ -3847,6 +3867,7 @@ function badgeTilesHTML(list) {
         : (b.level > 0 ? `Lvl ${b.level}${b.maxLevel ? '/' + b.maxLevel : ''}` : '');
       // Bar for any mastery still climbing, and for other badges with real progress.
       const showBar = b.isMastery ? !b.atMax : !!b.target;
+      const nearly = pct >= 90 && showBar;
       return `
         <div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:10px 6px;${b.earned ? '' : 'opacity:0.35;filter:grayscale(1)'}">
           ${b.icon
@@ -3854,7 +3875,8 @@ function badgeTilesHTML(list) {
             : `<div style="width:56px;height:56px"></div>`}
           <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(humanizeBadgeName(b.name))}</span>
           ${levelLabel ? `<span style="font-size:9px;color:var(--accent);font-weight:600">${levelLabel}</span>` : ''}
-          ${showBar ? `<div class="progress-wrap" style="width:100%;margin-top:2px"><div class="progress-bar" style="width:${pct}%;background:var(--accent)"></div></div>` : ''}
+          ${showBar ? `<div class="progress-wrap" style="width:100%;margin-top:2px"><div class="progress-bar" style="width:${pct}%;background:${nearly ? 'var(--green)' : 'var(--accent)'}"></div></div>` : ''}
+          ${!b.isMastery && b.target ? `<span style="font-size:9px;color:${nearly ? 'var(--green)' : 'var(--muted)'}">${fmtNum(b.progress)} / ${fmtNum(b.target)}</span>` : ''}
         </div>`;
     }).join('')}
   </div>`;

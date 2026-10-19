@@ -68,7 +68,7 @@ There is no `screen-home`; the app opens on the Player screen.
 | Tower Troops | `tab-towerTroops`  | `data.supportCards` from `/players/{tag}` |
 | Decks        | `tab-decks`        | Battle log + persisted history — W/L/D per unique deck (card set + which cards were played as evo/hero), last played, sort (most played — decks in use pinned first, marked "In use · 1v1" / "· 2v2" — / best win rate, 3+ games first / recently played), mode filter, Copy Deck + Upgrade Cost (opens it as a custom deck in Deck Upgrade, costed with *your* cards — also from a friend's deck), delete |
 | Battles      | `tab-battles`      | Toggle between **Battle Log** (`/battlelog` — grouped by day with a W/L/trophy summary per day, Wins/Losses toggle + mode filter; decks with evo/hero tiles, crowns, trophy change; each battle folds out details: towers left, elixir leaked, trophies, global rank, tower troop, clan, boat stats; 2v2 also the opponents' decks) and **Battle Stats** (lifetime W/L, streak, est. playtime, recent W/L per mode, Opponent Cards — toughest / best-against cards, Path of Legends, old trophy road, challenges) |
-| Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries |
+| Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries; sort Most progress / Closest to next level (`badgeNextShare()`); achievements show progress / target, bars turn green at 90%+ |
 | Account      | `tab-account`      | `/players/{tag}` — XP level, account age, star points, cards found, favourite card, donations, clan wars |
 
 The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compare, Cards, Evolutions, Heroes, Tower Troops, Decks, Battles, Badges, Account, Clan. **Clan** (only when they're in a clan you aren't already looking at — not your own clan, the clan on the Clan screen you opened them from, or the clan of the modal profile you came from; `showClanTab()`) shows the clan header and members — tap one to open them — and a button into the Clan screen for River Race / War History. **Compare** (only when a profile is loaded and it's someone else) puts the loaded profile next to them: account stats with the higher value highlighted, then every card's level, filterable by who's ahead. Its Decks tab uses only the friend's current battle log (never saved, no delete button); its battle details label the sides by name instead of "You".
@@ -197,6 +197,9 @@ The API returns relative levels (e.g. legendary starts at 1 in the API). `toDisp
 
 ---
 
+## Badge progress (gotcha)
+Achievement badges (`BattleWins`, `YearsPlayed`, …) report real progress toward their next level in `progress` / `target` (4781 / 5000). **Mastery badges don't**: their `progress` is just the level reached and `target` the next level number (Valkyrie: progress 9, target 10) — the API has no progress on the current mastery task. So "Closest to next level" ranks masteries by levels done of the card's total, and only achievements show numbers.
+
 ## Card mastery badges (gotcha)
 Badges in `data.badges` are named `Mastery<InternalName>` using **Supercell's internal card names**, which for 27 cards differ from the display name — `MasteryAxeMan` is Executioner, `MasteryRageBarbarian` is Lumberjack, `MasteryZapMachine` is Sparky. `MASTERY_NAME_OVERRIDES` maps every current mismatch; unlisted names fall back to a normalized display-name match, so new cards keep working if their internal name matches.
 
@@ -298,3 +301,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 26. Card art stored on the device (cache-first, re-checked every 3 days), image placeholders + fade-in
 27. Clan tab in the profile modal; Back steps through modal profiles and closes the modal instead of the app
 28. Overview numbers open the matching list; battle log grouped by day with summaries and a Wins/Losses filter; deck sorting, last played and an Upgrade Cost button
+29. Badges: "Closest to next level" sort, progress numbers on achievements, green bars when nearly done
