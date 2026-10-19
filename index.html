@@ -147,6 +147,12 @@
   .ph-icon { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 50%; width: 30px; height: 30px; cursor: pointer; font-size: 14px; line-height: 1; flex-shrink: 0; }
   .ph-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .ph-updated { white-space: nowrap; }
+  /* Card and badge art fades in as it arrives instead of popping in; a soft tile
+     holds its place meanwhile. .ld is set by the image load listener in the script. */
+  img[loading="lazy"]:not(.ld) { background: var(--surface2); border-radius: 6px; color: transparent; }
+  img.ld { animation: img-in .18s ease-out; }
+  @keyframes img-in { from { opacity: 0; } to { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { img.ld { animation: none; } }
   .ph-updated.stale { color: var(--accent); }
   /* Compare tab: label | you | them */
   .cmp-row { display: grid; grid-template-columns: minmax(0,1fr) 76px 76px; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13px; align-items: center; }
@@ -614,7 +620,7 @@ function unownedCardRowHTML(c) {
   return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px;opacity:0.35;filter:grayscale(1)">
     <div class="flex-between">
       <div style="display:flex;align-items:center;gap:10px">
-        ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
+        ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy" decoding="async">` : ''}
         <div>
           <span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br>
           <span style="font-size:11px;color:${RARITY_COLOR[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
@@ -1360,7 +1366,7 @@ function compareCardListHTML(me, them) {
   const lv = (v, other) => `<span class="${v > other ? 'cmp-win' : ''}">${v ? 'Lv ' + v : '—'}</span>`;
   return `<div class="cmp-row cmp-card cmp-head"><span></span><span></span><span>You</span><span>Them</span></div>`
     + rows.map(r => `<div class="cmp-row cmp-card">
-      ${r.c.iconUrls?.medium ? `<img src="${r.c.iconUrls.medium}" alt="" loading="lazy">` : '<span></span>'}
+      ${r.c.iconUrls?.medium ? `<img src="${r.c.iconUrls.medium}" alt="" loading="lazy" decoding="async">` : '<span></span>'}
       <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${RARITY_COLOR[(r.c.rarity||'common').toLowerCase()] || 'var(--text)'}">${esc(r.c.name)}</span>
       ${lv(r.me, r.them)}${lv(r.them, r.me)}
     </div>`).join('');
@@ -1474,7 +1480,7 @@ function friendRenderCards() {
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
       <div class="flex-between mb8">
         <div style="display:flex;align-items:center;gap:10px">
-          ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
+          ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy" decoding="async">` : ''}
           <div><span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br><span style="font-size:11px;color:${RARITY_COLOR[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>${stars}</div>
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
@@ -1542,7 +1548,7 @@ function friendRenderCollect(kind) {
   grid.innerHTML = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
     ${list.map(c => { const has = owns(c);
       return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;border:1px solid ${has?color:'transparent'};${has?'':'opacity:0.35;filter:grayscale(1)'}">
-        <img src="${imgOf(c)}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy">
+        <img src="${imgOf(c)}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy" decoding="async">
         <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(c.name)}</span>
         <span style="font-size:9px;color:${color};font-weight:600;min-height:11px">${has?label:''}</span>
       </div>`; }).join('')}
@@ -1573,7 +1579,7 @@ function friendTroopHTML(data) {
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
       <div class="flex-between mb8">
         <div style="display:flex;align-items:center;gap:10px">
-          ${img ? `<img src="${img}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
+          ${img ? `<img src="${img}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy" decoding="async">` : ''}
           <div><span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br><span style="font-size:11px;color:var(--muted)">${r.charAt(0).toUpperCase()+r.slice(1)}</span></div>
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px"><span style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;color:var(--accent)">Lv ${disp}</span>${statusLabel}</div>
@@ -2503,7 +2509,7 @@ function buildDeckUpSlots(selectedCards) {
     const r = (c.rarity||'common').toLowerCase();
     const disp = toDisplayLevel(r, c.level);
     return `<div onclick="removeDeckUpCard(${c.id})" style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:4px;cursor:pointer;position:relative;aspect-ratio:0.83;display:flex;flex-direction:column;align-items:center;justify-content:space-between;overflow:hidden">
-      ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="max-width:100%;max-height:calc(100% - 16px);width:auto;height:auto;object-fit:contain;display:block" loading="lazy">` : '<div></div>'}
+      ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="max-width:100%;max-height:calc(100% - 16px);width:auto;height:auto;object-fit:contain;display:block" loading="lazy" decoding="async">` : '<div></div>'}
       <div style="font-size:10px;font-weight:700;color:var(--accent);text-align:center;width:100%">Lv ${disp}</div>
       <span style="position:absolute;top:2px;right:4px;color:var(--red);font-size:14px;font-weight:700">×</span>
     </div>`;
@@ -2780,7 +2786,7 @@ function matchupsHTML(data, battles, scope) {
   const row = r => {
     const cls = r.rate < 0.45 ? 'text-red' : r.rate > 0.55 ? 'text-green' : '';
     return `<div class="mu-row">
-      ${art[r.name]?.medium ? `<img src="${art[r.name].medium}" alt="" loading="lazy">` : ''}
+      ${art[r.name]?.medium ? `<img src="${art[r.name].medium}" alt="" loading="lazy" decoding="async">` : ''}
       <span class="mu-name">${esc(r.name)} <span class="text-muted" style="font-size:11px">· ${r.n}×</span></span>
       <span style="font-size:12px;white-space:nowrap"><span class="text-green">${r.w}W</span> <span class="text-red">${r.l}L</span>${r.d ? ` <span class="text-muted">${r.d}D</span>` : ''}</span>
       <span class="${cls}" style="font-weight:700;width:40px;text-align:right">${Math.round(r.rate * 100)}%</span>
@@ -3101,7 +3107,7 @@ function renderCards() {
     return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
       <div class="flex-between mb8">
         <div style="display:flex;align-items:center;gap:10px">
-          ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
+          ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy" decoding="async">` : ''}
           <div>
             <span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br>
             <span style="font-size:11px;color:${RARITY_COLOR[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
@@ -3276,7 +3282,7 @@ function _renderEvoCards() {
     ${cards.map(c => {
       const hasEvo = _evoHasEvolution(c);
       return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;border:1px solid ${hasEvo ? 'var(--blue)' : 'transparent'};${hasEvo ? '' : 'opacity:0.35;filter:grayscale(1)'}">
-        <img src="${evoImg(c)}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy" onerror="cardImgFallback(this)" onload="if(this.naturalWidth<4)cardImgFallback(this)">
+        <img src="${evoImg(c)}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy" decoding="async" onerror="cardImgFallback(this)" onload="if(this.naturalWidth<4)cardImgFallback(this)">
         <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(c.name)}</span>
         <span style="font-size:9px;color:var(--blue);font-weight:600;min-height:11px">${hasEvo ? '⚡ Evolved' : ''}</span>
       </div>`;
@@ -3336,7 +3342,7 @@ function _renderHeroCards() {
     ${cards.map(c => {
       const hasHero = !!_heroMap[c.id];
       return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;border:1px solid ${hasHero ? 'var(--purple)' : 'transparent'};${hasHero ? '' : 'opacity:0.35;filter:grayscale(1)'}">
-        <img src="${c.iconUrls.heroMedium}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy" onerror="cardImgFallback(this)" onload="if(this.naturalWidth<4)cardImgFallback(this)">
+        <img src="${c.iconUrls.heroMedium}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy" decoding="async" onerror="cardImgFallback(this)" onload="if(this.naturalWidth<4)cardImgFallback(this)">
         <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(c.name)}</span>
         <span style="font-size:9px;color:var(--purple);font-weight:600;min-height:11px">${hasHero ? '🦸 Hero' : ''}</span>
       </div>`;
@@ -3423,7 +3429,7 @@ async function loadTowerTroopsGrid() {
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:8px">
           <div class="flex-between mb8">
             <div style="display:flex;align-items:center;gap:10px">
-              ${c.imgUrl ? `<img src="${c.imgUrl}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy">` : ''}
+              ${c.imgUrl ? `<img src="${c.imgUrl}" alt="${esc(c.name)}" style="width:52px;height:64px;object-fit:contain;flex-shrink:0" loading="lazy" decoding="async">` : ''}
               <div>
                 <span style="font-weight:600;font-size:15px">${esc(c.name)}</span><br>
                 <span style="font-size:11px;color:${rarityColor[c.r]||'var(--muted)'}">${c.r.charAt(0).toUpperCase()+c.r.slice(1)}</span>
@@ -3692,7 +3698,7 @@ function badgeTilesHTML(list) {
       return `
         <div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:10px 6px;${b.earned ? '' : 'opacity:0.35;filter:grayscale(1)'}">
           ${b.icon
-            ? `<img src="${b.icon}" ${b.fallbackIcon ? `data-fallback="${esc(b.fallbackIcon)}"` : ''} alt="${esc(b.name)}" style="width:56px;height:56px;object-fit:contain" loading="lazy" onerror="badgeImgFallback(this)">`
+            ? `<img src="${b.icon}" ${b.fallbackIcon ? `data-fallback="${esc(b.fallbackIcon)}"` : ''} alt="${esc(b.name)}" style="width:56px;height:56px;object-fit:contain" loading="lazy" decoding="async" onerror="badgeImgFallback(this)">`
             : `<div style="width:56px;height:56px"></div>`}
           <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(humanizeBadgeName(b.name))}</span>
           ${levelLabel ? `<span style="font-size:9px;color:var(--accent);font-weight:600">${levelLabel}</span>` : ''}
@@ -3753,7 +3759,7 @@ function deckTileHTML(name, variant, art, cls) {
   const vCls = variant ? ` v-${variant}` : '';
   const tag = variant ? `<span class="variant-tag v-${variant}">${VARIANT_LABEL[variant]}</span>` : '';
   const body = src
-    ? `<img src="${src}" alt="${esc(title)}" loading="lazy"${src !== plain && plain ? ` data-fallback="${plain}"` : ''} onerror="deckImgFallback(this)" onload="if(this.naturalWidth<4)deckImgFallback(this)">`
+    ? `<img src="${src}" alt="${esc(title)}" loading="lazy" decoding="async"${src !== plain && plain ? ` data-fallback="${plain}"` : ''} onerror="deckImgFallback(this)" onload="if(this.naturalWidth<4)deckImgFallback(this)">`
     : `<span class="deck-tile-text">${esc(name)}</span>`;
   return `<div class="${cls} deck-tile${vCls}" title="${esc(title)}">${body}${tag}</div>`;
 }
@@ -4465,6 +4471,23 @@ attachTabSwipe(document.getElementById('player-result'),
   () => [...document.querySelectorAll('#player-result .tab-btn[data-tab]')], b => switchTab(b.dataset.tab));
 attachTabSwipe(document.getElementById('friend-modal-body'),
   () => [...document.querySelectorAll('#friend-modal-body .tab-btn[data-ftab]')], b => friendTab(b.dataset.ftab));
+
+// Images: mark them loaded (ends the placeholder, starts the fade-in), and tell
+// the service worker when a stored card/badge image fails to display — it can't
+// see download errors itself (see sw.js), so it drops that copy and the next
+// view fetches it again, e.g. evolution art Supercell published late.
+// load / error don't bubble, so listen in the capture phase.
+const SW_IMG_HOSTS = /^https:\/\/(api-assets\.clashroyale\.com|raw\.githubusercontent\.com)\//;
+document.addEventListener('load', e => { if (e.target.tagName === 'IMG') e.target.classList.add('ld'); }, true);
+document.addEventListener('error', e => {
+  const img = e.target;
+  if (img.tagName !== 'IMG') return;
+  img.classList.add('ld');
+  if (SW_IMG_HOSTS.test(img.src)) navigator.serviceWorker?.controller?.postMessage({ type: 'img-broken', url: img.src });
+}, true);
+// Ask the browser not to evict stored data (images, deck history) under storage
+// pressure; installed apps usually get this granted without a prompt.
+try { navigator.storage?.persist?.().catch(() => {}); } catch(e) {}
 
 // Register service worker for PWA (standalone fullscreen install)
 if ('serviceWorker' in navigator) {

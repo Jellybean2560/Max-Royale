@@ -13,7 +13,7 @@ A standalone single-file web app (`index.html`) for Clash Royale players. It rep
 - Fonts: Google Fonts — Rajdhani (headings), Inter (body)
 - No npm, no framework, no build step
 - API calls go through a **Cloudflare Worker** (`https://quiet-frost-f9f0.jellevandenwouwer.workers.dev`) that holds the Clash Royale API key server-side and adds CORS headers. The browser sends **no** auth header and needs no key.
-- Installable PWA — `manifest.json` + `sw.js` (cache-named `max-royale-v5`, bump to force a shell refresh)
+- Installable PWA — `manifest.json` + `sw.js` (shell cache `max-royale-v5`, bump to force a shell refresh; card art in `max-royale-img-v1`, which survives app updates — see *Image cache*)
 - GitHub Actions workflow (`.github/workflows/deploy.yml`) auto-deploys to GitHub Pages on every push to `main`
 
 ---
@@ -224,6 +224,13 @@ The friend modal (friends **and** clan members) renders the same Overview as the
 ## Scrolling (gotcha)
 The page itself never scrolls: `html, body` are `overflow: hidden` and **`#content` is the scroller**. Use `document.getElementById('content').scrollTop`, never `window.scrollY` / `window.scrollTo` (both silently do nothing). The profile header + tab bar (`.ph-sticky`) and the friend modal's tab bar (`.ftab-sticky`; the modal card uses `overflow: clip`, not `hidden`, so sticky works) stay pinned. Programmatic scrolls are instant on purpose — `behavior: 'smooth'` never ran in testing.
 
+## Image cache (gotcha)
+Card / evo / hero art (`api-assets.clashroyale.com`) and badge art (`raw.githubusercontent.com`) are 300px PNGs of ~160 KB with no Cache-Control, so the browser cache dropped them and reopening the app re-downloaded them. `sw.js` now serves them **cache-first** from `max-royale-img-v1`:
+- **Changed art:** new art at a new URL is just a new entry (the catalog's background revalidation brings the new URL in). Art replaced at the *same* URL is caught by a background re-check every `IMG_RECHECK_MS` (3 days), using `cache: 'no-cache'` so the server can answer 304 cheaply.
+- **Bookkeeping:** `./__img-meta` in the same cache holds `{ url: { fetched, used } }`. Entries unused for 60 days, or beyond 1000, are pruned.
+- **Opaque responses:** those hosts send no CORS headers, so the worker can't see a 404. The page's capture-phase `error` listener posts `img-broken` and the worker deletes that copy, so missing art (e.g. a new evo) is fetched again on the next view. Keep that listener.
+- The page also asks for `navigator.storage.persist()`. Lazy images show a placeholder tile until loaded, then fade in (`img.ld`, set by a capture-phase `load` listener).
+
 ## Known limitations / things to be aware of
 - The Clash Royale API only returns the last **~25–30 battles**. Deck stats work around this by accumulating history in `localStorage` (not retroactive — it only counts battles seen since the feature shipped).
 - Deck history is per-browser/per-device and never leaves the device, so different users of the deployed app never see each other's stats.
@@ -285,3 +292,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 23. Pinned header + tab bar, swipe between tabs, selected tab kept in view, tab bar edge fades, re-tap a bottom button to scroll up, per-screen scroll memory
 24. Replaced the Current Deck card with an "In use" mark in the deck list and a Current deck option in Deck Upgrade
 25. Opponent-card matchups, Compare tab, deck links + share target in Deck Upgrade, backup/restore, "updated X ago" header, friends list with trophies/last battle/sorting, API retries
+26. Card art stored on the device (cache-first, re-checked every 3 days), image placeholders + fade-in
