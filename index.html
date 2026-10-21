@@ -827,9 +827,16 @@ async function apiGet(path) {
     const txt = await res.text().catch(() => '');
     let msg = '';
     try { msg = JSON.parse(txt).message; } catch(e) { msg = txt.slice(0, 300); }
-    throw new Error(`API error ${res.status}${msg ? ': ' + msg : ''}`);
+    const err = new Error(`API error ${res.status}${msg ? ': ' + msg : ''}`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
+}
+// A lookup's error in words: a 404 means the tag doesn't exist, anything else
+// (no connection, API down) says so instead of blaming the tag
+function lookupErrorText(e, what, tag) {
+  return e.status === 404 ? `No ${what} found with tag ${normalizeTag(tag)}. Check the tag and try again.` : e.message;
 }
 
 // Clash Royale tags are uppercase and only use 0289PYLQGRJCUV — never the letter
@@ -1016,6 +1023,13 @@ function calcUpdate() {
   const minL = MIN_LEVEL[rarity];
   const maxL = minL + LEVEL_DATA[rarity].length;
 
+  // Nothing to cost: say so instead of quietly showing a different upgrade
+  // (a maxed card used to show 15 → 16, a lower target the next level up)
+  if (current >= maxL || Math.min(maxL, target) <= Math.max(minL, current)) {
+    document.getElementById('calc-result').innerHTML = `<div class="calc-result"><div class="empty-msg" style="padding:8px 0">${
+      current >= maxL ? `✓ Already at the max level (${maxL}) — nothing left to upgrade.` : `Pick a target level above the current level (${Math.max(minL, current)}).`}</div></div>`;
+    return;
+  }
   const clampedCurrent = Math.max(minL, Math.min(maxL - 1, current));
   const clampedTarget = Math.max(clampedCurrent + 1, Math.min(maxL, target));
 
@@ -1242,7 +1256,7 @@ async function addFriend() {
     showFriendMsg('', false);
     renderFriends();
   } catch(e) {
-    showFriendMsg('Could not find that player tag.', true);
+    showFriendMsg(lookupErrorText(e, 'player', tag), true);
   }
 }
 function showFriendMsg(text, isError) {
@@ -1920,8 +1934,6 @@ async function loadPlayer(tagOverride, opts = {}) {
   const tag = normalizeTag(tagOverride || document.getElementById('player-tag').value);
   if (!tag) return;
   const seq = ++_loadPlayerSeq;
-  // Save tag so it survives page reload
-  localStorage.setItem('cr_player_tag', tag);
   document.getElementById('player-tag').value = tag;
   const el = document.getElementById('player-result');
   if (!opts.quiet) { el.innerHTML = '<div class="spinner"></div>'; showLookupStart(false); }
@@ -1935,6 +1947,9 @@ async function loadPlayer(tagOverride, opts = {}) {
     ]);
     if (seq !== _loadPlayerSeq) return;
     _profileRefreshing = false;
+    // Saved only once the tag proved real: a mistyped tag must not become the
+    // account the app reopens on
+    localStorage.setItem('cr_player_tag', data.tag);
     recordMatchups(data.tag, battles);
     if (opts.quiet) renderProfilePreservingView(data, battles);
     else renderProfile(data, battles);
@@ -1959,8 +1974,18 @@ async function loadPlayer(tagOverride, opts = {}) {
     // shouldn't replace good data with an error. With no profile showing (it
     // superseded a lookup whose spinner is still up), say what went wrong.
     if (!opts.quiet || !document.getElementById('tab-overview')) {
-      el.innerHTML = `<div class="error-msg">${esc(e.message)}</div>`;
-      showLookupStart(true);
+      const msg = esc(lookupErrorText(e, 'player', tag));
+      const prev = window._currentProfile;
+      if (prev) {
+        // A mistyped tag or a failed refresh: put the profile you had back, with
+        // the error above it (tap to dismiss)
+        renderProfile(prev.data, prev.battles);
+        updateProfileAge();
+        el.insertAdjacentHTML('afterbegin', `<div class="error-msg" onclick="this.remove()" style="cursor:pointer;margin-bottom:10px">${msg} <span style="opacity:.6">✕</span></div>`);
+      } else {
+        el.innerHTML = `<div class="error-msg">${msg}</div>`;
+        showLookupStart(true);
+      }
     }
   }
 }
@@ -2695,7 +2720,7 @@ function renderDeckBreakdown(cards) {
         ${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="" style="width:32px;height:40px;object-fit:contain;flex-shrink:0">` : ''}
         <span style="display:flex;flex-direction:column;min-width:0">
           <span style="font-weight:600;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)}</span>
-          <span style="font-size:11px;color:${RARITY_COLOR_MAP[c.r]||'var(--muted)'}">${RARITY_DISPLAY_NAME[c.r]||c.r} · Lv ${c.disp}${c.disp>=target?' (maxed)':' → '+target}</span>
+          <span style="font-size:11px;color:${RARITY_COLOR_MAP[c.r]||'var(--muted)'}">${RARITY_DISPLAY_NAME[c.r]||c.r} · Lv ${c.disp}${c.disp>=MAX_LEVEL?' (maxed)':c.disp>=target?' (at target)':' → '+target}</span>
         </span>
       </span>
       <span style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;font-size:12px">
@@ -4419,7 +4444,7 @@ async function loadClan() {
     saveClanCache(tag, data);
   } catch(e) {
     if (seq !== _loadClanSeq) return;
-    el.innerHTML = `<div class="error-msg">${esc(e.message)}</div>`;
+    el.innerHTML = `<div class="error-msg">${esc(lookupErrorText(e, 'clan', tag))}</div>`;
   }
 }
 

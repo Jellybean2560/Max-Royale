@@ -91,7 +91,8 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compa
 |---|---|
 | `apiGet(path)` | Fetches `<worker>{path}`; no auth header. Retries a 5xx twice (the proxy chain hiccups with nginx 500s and Cloudflare 52x), then throws a friendly message |
 | `normalizeTag(raw)` | Uppercases, strips spaces/`#`, O→0 — the API 404s on lowercase tags. Every tag input goes through it |
-| `loadPlayer(tagOverride, opts)` | Fetches `/players/{tag}`, `/battlelog` and the card catalog in parallel, calls `renderProfile()`. `opts.quiet` refreshes in place: no spinner, keeps the active tab, keeps the old view on error |
+| `loadPlayer(tagOverride, opts)` | Fetches `/players/{tag}`, `/battlelog` and the card catalog in parallel, calls `renderProfile()`. `opts.quiet` refreshes in place: no spinner, keeps the active tab, keeps the old view on error. A failed lookup puts the previous profile back with the error above it, and `cr_player_tag` is only written on success — a mistyped tag must never become the account the app reopens on |
+| `lookupErrorText(e, what, tag)` | "No player/clan found with tag …" for a 404 (`apiGet` errors carry `.status`), the real message otherwise |
 | `isInstalledApp()` | True when launched as an installed PWA rather than a browser tab |
 | `autoRefreshProfile()` | Installed-app background refresh of the cached profile, throttled to 2 min |
 | `renderProfile(data, battles)` | Renders the header + every profile tab |
@@ -175,7 +176,7 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compa
 
 | Key | Holds |
 |---|---|
-| `cr_player_tag` | Last looked-up player tag |
+| `cr_player_tag` | Last successfully loaded player tag |
 | `cr_saved_accounts` | Saved account list (name + tag) |
 | `cr_friends` | Saved friends (max 50): `{ tag, name, trophies, clan, lastBattle, statsAt }` |
 | `cr_friends_sort` | Friends list sort: `recent` / `trophies` / `name` / `added` |
@@ -302,3 +303,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 27. Clan tab in the profile modal; Back steps through modal profiles and closes the modal instead of the app
 28. Overview numbers open the matching list; battle log grouped by day with summaries and a Wins/Losses filter; deck sorting, last played and an Upgrade Cost button
 29. Badges: "Closest to next level" sort, progress numbers on achievements, green bars when nearly done
+30. Full test pass fixes: a mistyped tag keeps your profile (and isn't remembered), clear "not found" messages, the Calculator says when a card is maxed or the target is too low, Deck Upgrade says "at target" instead of "maxed"
