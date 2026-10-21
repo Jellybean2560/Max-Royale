@@ -1163,7 +1163,7 @@ function renderSavedAccounts() {
       <button class="btn btn-primary btn-sm" onclick="menuLookup()">Go</button>
     </div>
     <div style="border-top:1px solid var(--border);margin:12px 0 10px"></div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Backup: accounts, friends, deck &amp; matchup history</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Backup: accounts, friends, deck, matchup &amp; trophy history</div>
     <div class="flex-row">
       <button class="btn btn-secondary btn-sm" style="flex:1" onclick="exportBackup()">💾 Save</button>
       <button class="btn btn-secondary btn-sm" style="flex:1" onclick="document.getElementById('backup-file').click()">📂 Restore</button>
@@ -1176,7 +1176,7 @@ function renderSavedAccounts() {
 // those localStorage keys (caches are left out — they refetch); restoring
 // replaces them.
 const BACKUP_KEYS = ['cr_player_tag', 'cr_saved_accounts', 'cr_friends', 'cr_friends_sort',
-                     'cr_deck_history_v1', 'cr_matchups_v1', 'cr_coplayers_v1'];
+                     'cr_deck_history_v1', 'cr_matchups_v1', 'cr_coplayers_v1', 'cr_trophy_history_v1'];
 window.exportBackup = function() {
   const data = {};
   BACKUP_KEYS.forEach(k => { const v = localStorage.getItem(k); if (v != null) data[k] = v; });
@@ -1284,10 +1284,18 @@ let _friendSeq = 0;
 let _modalStack = [];
 let _modalProfiles = {};  // tag → [data, battles] while the modal is open, for Back
 let _modalTabs = {};      // tag → the tab it was on, so Back returns to it
+// History entries outlive a reload (an app update reloads the page, maybe with a
+// profile open), but _modalStack doesn't — so each entry carries this page load's
+// id, and one from an earlier load counts as "no modal". Without it, closing the
+// next profile stepped back onto the stale entry and the modal stayed open.
+const _modalSession = Math.random().toString(36).slice(2);
+const modalDepth = state => state?.modalSession === _modalSession ? state.modal : 0;
+if (history.state?.modal) history.replaceState(null, '');
+const pushModalEntry = () => history.pushState({ modal: _modalStack.length, modalSession: _modalSession }, '');
 async function viewFriend(tag, { fromHistory = false } = {}) {
   if (!fromHistory) {
-    if (!_modalStack.length) { _modalStack = [tag]; history.pushState({ modal: 1 }, ''); }
-    else if (_modalStack[_modalStack.length - 1] !== tag) { _modalStack.push(tag); history.pushState({ modal: _modalStack.length }, ''); }
+    if (!_modalStack.length) { _modalStack = [tag]; pushModalEntry(); }
+    else if (_modalStack[_modalStack.length - 1] !== tag) { _modalStack.push(tag); pushModalEntry(); }
   }
   const back = document.getElementById('friend-modal-back');
   if (back) back.style.display = _modalStack.length > 1 ? '' : 'none';
@@ -1343,12 +1351,13 @@ async function viewFriend(tag, { fromHistory = false } = {}) {
 }
 function closeFriendModal() {
   // Unwind this modal's history entries; the popstate handler hides it
-  if (_modalStack.length && history.state?.modal) history.go(-history.state.modal);
+  const depth = modalDepth(history.state);
+  if (_modalStack.length && depth) history.go(-depth);
   else hideFriendModal();
 }
 window.addEventListener('popstate', e => {
   if (!_modalStack.length) return;
-  const depth = e.state?.modal || 0;
+  const depth = modalDepth(e.state);
   if (depth === 0) hideFriendModal();
   else if (depth < _modalStack.length) {
     _modalStack.length = depth;
@@ -1515,7 +1524,7 @@ function friendTab(name) {
   if (name === 'badges')    { _fBadgeFilter='all'; _fBadgeSort='progress'; pane.innerHTML = friendBadgesShell(d); friendRenderBadges(); }
   if (name === 'decks')       pane.innerHTML = renderDeckBuilder(_friendBattles, d, 'f');
   if (name === 'battles')     pane.innerHTML = renderBattles(_friendBattles, d, 'f');
-  if (name === 'account')     pane.innerHTML = accountStatsHTML(d);
+  if (name === 'account')     pane.innerHTML = accountStatsHTML(d, _friendBattles, 'f');
   if (name === 'clan')        friendClanTab();
   document.getElementById('friend-modal').scrollTop = 0;
 }
@@ -1951,6 +1960,7 @@ async function loadPlayer(tagOverride, opts = {}) {
     // account the app reopens on
     localStorage.setItem('cr_player_tag', data.tag);
     recordMatchups(data.tag, battles);
+    recordTrophies(data, battles);
     if (opts.quiet) renderProfilePreservingView(data, battles);
     else renderProfile(data, battles);
     // Save this account (name + tag) so the user can switch between accounts
@@ -2051,6 +2061,7 @@ async function autoRefreshProfile() {
 
 function renderProfileFromCache(cached) {
   recordMatchups(cached.data.tag, cached.battles);
+  recordTrophies(cached.data, cached.battles, cached.savedAt);
   window._currentProfile = { data: cached.data, battles: cached.battles, savedAt: cached.savedAt };
   renderProfile(cached.data, cached.battles);
   recordCoPlayers(cached.data.tag, cached.battles);
@@ -2172,7 +2183,7 @@ function renderProfile(data, battles) {
     <div id="tab-battles" class="tab-pane" style="display:none">${renderBattles(battles, data)}</div>
     <div id="tab-badges" class="tab-pane" style="display:none">${renderBadgesPane(data)}</div>
     <div id="tab-decks" class="tab-pane" style="display:none">${renderDeckBuilder(battles, data)}</div>
-    <div id="tab-account" class="tab-pane" style="display:none">${accountStatsHTML(data)}</div>
+    <div id="tab-account" class="tab-pane" style="display:none">${accountStatsHTML(data, battles, 'p')}</div>
   `;
   updateTabFade(el.querySelector('.tab-bar'));
   updateProfileAge();
@@ -2799,11 +2810,12 @@ function cardsFoundCounts(data) {
            total: (allCards.length || cards.length) + evoIds.size + heroIds.size + troopsTotal };
 }
 
-function accountStatsHTML(data) {
+function accountStatsHTML(data, battles, scope = 'p') {
   const { found: foundCount, total: foundTotal } = cardsFoundCounts(data);
   const fav = data.currentFavouriteCard;
   const days = accountAgeDays(data);
   return `
+    ${trophyHistoryHTML(data, battles, scope)}
     <div class="card">
       <h3 style="margin-bottom:6px">👤 Account</h3>
       ${ovRow('Experience Level', `Lv ${fmtNum(data.expLevel)}`)}
@@ -2822,6 +2834,176 @@ function accountStatsHTML(data) {
       ${ovRow('War Day Wins', fmtNum(data.warDayWins))}
     </div>`;
 }
+
+// ── Trophy history ──
+// The API only knows today's numbers, so the history is built up on this device:
+// a point whenever a refresh finds a new value, plus one for every ladder or Path
+// of Legends battle still in the log (startingTrophies + trophyChange — exact, and
+// dated to the battle, so the first look already has the last ~30 games). Path of
+// Legends battles carry the ranked rating, not Trophy Road trophies, so that's a
+// series of its own. Points are [time ms, value], oldest first.
+const TROPHY_HISTORY_KEY = 'cr_trophy_history_v1';
+const TROPHY_POINTS_MAX = 1000;
+const TROPHY_SERIES = { road: 'Trophies', pol: 'Path of Legends' };
+const TROPHY_RANGES = { 7: '7 days', 30: '30 days', all: 'All' };
+function trophyPointsFromBattles(battles) {
+  const pts = { road: [], pol: [] };
+  (battles || []).forEach(b => {
+    const me = (b.team || [])[0];
+    if (!b.battleTime || me?.trophyChange == null || me.startingTrophies == null) return;
+    const series = b.type === 'pathOfLegend' ? 'pol' : b.type === 'PvP' ? 'road' : '';
+    if (series) pts[series].push([parseApiTime(b.battleTime).getTime(), me.startingTrophies + me.trophyChange, me.startingTrophies]);
+  });
+  // Battles arrive newest-first: the oldest one also gives the value before it
+  for (const s in pts) {
+    const oldest = pts[s][pts[s].length - 1];
+    if (oldest) pts[s].push([oldest[0] - 60000, oldest[2]]);
+    pts[s] = pts[s].map(([t, v]) => [t, v]);
+  }
+  return pts;
+}
+// The value right now, from the profile: Trophy Road always, the Path of Legends
+// rating only once the season result has one
+function trophyNow(data) {
+  return { road: data.trophies, pol: data.currentPathOfLegendSeasonResult?.trophies || null };
+}
+function mergeTrophyPoints(list, pts) {
+  const byTime = new Map(list);
+  pts.forEach(([t, v]) => byTime.set(t, v));
+  return [...byTime].sort((a, b) => a[0] - b[0]).slice(-TROPHY_POINTS_MAX);
+}
+// The battles' points and the profile's value (as of `at`, when it was fetched)
+// added to a history; persist reads and saves this device's history for the tag
+function trophyHistory(data, battles, { persist = false, at = Date.now() } = {}) {
+  let all = {};
+  if (persist) try { all = JSON.parse(localStorage.getItem(TROPHY_HISTORY_KEY) || '{}'); } catch(e) {}
+  const entry = all[data.tag] || { road: [], pol: [] };
+  const fromBattles = trophyPointsFromBattles(battles), now = trophyNow(data);
+  for (const s of ['road', 'pol']) {
+    let list = mergeTrophyPoints(entry[s] || [], fromBattles[s]);
+    if (now[s] != null && (!list.length || list[list.length - 1][1] !== now[s])) list = mergeTrophyPoints(list, [[at, now[s]]]);
+    entry[s] = list;
+  }
+  if (persist) try { all[data.tag] = entry; localStorage.setItem(TROPHY_HISTORY_KEY, JSON.stringify(all)); } catch(e) {}
+  return entry;
+}
+function recordTrophies(data, battles, at) { if (data?.tag) trophyHistory(data, battles, { persist: true, at }); }
+
+const _trophyState = {};
+// scope 'p' reads the saved history; 'f' (a friend) gets their current log only
+function trophyHistoryHTML(data, battles, scope) {
+  let hist = null;
+  if (scope === 'p') try { hist = JSON.parse(localStorage.getItem(TROPHY_HISTORY_KEY) || '{}')[data.tag] || null; } catch(e) {}
+  if (!hist) hist = trophyHistory(data, battles);
+  const prev = _trophyState[scope]?.tag === data.tag ? _trophyState[scope] : null;
+  const has = s => (hist[s] || []).length > 0;
+  const moves = s => new Set((hist[s] || []).map(p => p[1])).size > 1;
+  // Path of Legends first when it's the one that moves (Trophy Road is often done)
+  const series = prev && has(prev.series) ? prev.series : has('pol') && (moves('pol') || !moves('road')) ? 'pol' : 'road';
+  _trophyState[scope] = { tag: data.tag, hist, series, range: prev?.range || '30' };
+  return `<div class="card" id="${scope}-trophy">${trophyCardBody(scope)}</div>`;
+}
+function trophyCardBody(scope) {
+  const st = _trophyState[scope], all = st.hist[st.series] || [];
+  const now = Date.now();
+  const from = st.range === 'all' ? (all[0]?.[0] ?? now) : now - st.range * 864e5;
+  // Points in range, led by the value carried in from before it, and drawn on to now
+  const before = all.filter(p => p[0] < from).pop();
+  let pts = all.filter(p => p[0] >= from);
+  if (before) pts.unshift([from, before[1]]);
+  if (pts.length) pts.push([now, pts[pts.length - 1][1]]);
+  const cur = all.length ? all[all.length - 1][1] : null;
+  const change = pts.length ? cur - pts[0][1] : 0;
+  // The toggle only when both series have a history to draw
+  const both = (st.hist.road || []).length > 1 && (st.hist.pol || []).length > 1;
+  const icon = st.series === 'pol' ? '⚔️' : '🏆';
+  const rangeLabel = st.range === 'all' ? `since ${new Date(all[0]?.[0] || now).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : `in ${TROPHY_RANGES[st.range]}`;
+  const vals = pts.map(p => p[1]);
+  const chart = trophyChartSVG(scope, pts);
+  return `
+    <h3 style="margin-bottom:10px">📈 Trophy History</h3>
+    ${both ? `<div class="seg" style="margin-bottom:10px">
+      ${Object.entries(TROPHY_SERIES).map(([s, l]) => `<button class="${st.series === s ? 'active' : ''}" onclick="setTrophySeries('${scope}','${s}')">${l}</button>`).join('')}
+    </div>` : ''}
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-bottom:2px">
+      <span style="font-size:24px;font-weight:700;font-family:'Rajdhani',sans-serif">${icon} ${fmtNum(cur)}</span>
+      <span style="font-size:13px;white-space:nowrap"><span class="${change > 0 ? 'text-green' : change < 0 ? 'text-red' : 'text-muted'}" style="font-weight:700">${change > 0 ? '+' : ''}${fmtNum(change)}</span> <span class="text-muted">${rangeLabel}</span></span>
+    </div>
+    <div id="${scope}-trophy-readout" style="font-size:11px;color:var(--muted);min-height:16px;margin-bottom:4px">${st.chart ? `High ${fmtNum(Math.max(...vals))} · Low ${fmtNum(Math.min(...vals))}` : ''}</div>
+    ${chart}
+    <div class="filter-bar" style="margin:10px 0 0">
+      ${Object.entries(TROPHY_RANGES).map(([r, l]) => `<button class="filter-btn ${st.range === r ? 'active' : ''}" onclick="setTrophyRange('${scope}','${r}')">${l}</button>`).join('')}
+    </div>
+    ${scope === 'p' ? `<div style="font-size:11px;color:var(--muted);margin-top:8px">Built up on this device from refreshes and your ${st.series === 'pol' ? 'ranked' : 'ladder'} battles, so it grows the more you use the app.</div>` : ''}`;
+}
+// A line over the range, with three recessive gridlines; touch or hover shows the
+// value at that moment in the readout above.
+function trophyChartSVG(scope, pts) {
+  const W = 320, H = 120, L = 40, R = 6, T = 6, B = 18;
+  if (new Set(pts.map(p => p[0])).size < 2 || pts.length < 3) {
+    _trophyState[scope].chart = null;
+    return `<div class="empty-msg" style="padding:14px 0;font-size:12px">Not enough history yet — the graph fills in as you play${scope === 'p' ? ' and refresh' : ''}.</div>`;
+  }
+  const t0 = pts[0][0], t1 = pts[pts.length - 1][0];
+  let lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1]));
+  if (hi - lo < 10) { lo -= 5; hi += 5; }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const x = t => L + (t - t0) / (t1 - t0) * (W - L - R);
+  const y = v => T + (hi - v) / (hi - lo) * (H - T - B);
+  const xy = pts.map(([t, v]) => [x(t), y(v), t, v]);
+  _trophyState[scope].chart = { xy, W };
+  const line = xy.map(([px, py], i) => `${i ? 'L' : 'M'}${px.toFixed(1)},${py.toFixed(1)}`).join('');
+  const area = `${line}L${xy[xy.length - 1][0].toFixed(1)},${H - B}L${L},${H - B}Z`;
+  const grid = [hi - pad, (hi + lo) / 2, lo + pad].map(v => `
+    <line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--border)" stroke-width="1"/>
+    <text x="${L - 6}" y="${(y(v) + 3.5).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)">${fmtNum(Math.round(v))}</text>`).join('');
+  const day = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;touch-action:pan-y" role="img" aria-label="Trophy history line chart"
+         onpointermove="trophyHover(event,'${scope}')" onpointerdown="trophyHover(event,'${scope}')" onpointerleave="trophyHover(null,'${scope}')">
+      ${grid}
+      <path d="${area}" fill="var(--accent)" opacity=".12"/>
+      <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      <text x="${L}" y="${H - 4}" font-size="10" fill="var(--muted)">${day(t0)}</text>
+      <text x="${W - R}" y="${H - 4}" font-size="10" fill="var(--muted)" text-anchor="end">Now</text>
+      <g id="${scope}-trophy-hover" style="display:none">
+        <line y1="${T}" y2="${H - B}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="2 2"/>
+        <circle r="4" fill="var(--accent)" stroke="var(--surface)" stroke-width="2"/>
+      </g>
+    </svg>`;
+}
+window.trophyHover = function(e, scope) {
+  const st = _trophyState[scope], g = document.getElementById(`${scope}-trophy-hover`);
+  const out = document.getElementById(`${scope}-trophy-readout`);
+  if (!st?.chart || !g || !out) return;
+  if (!e) { g.style.display = 'none'; out.innerHTML = out.dataset.idle || out.innerHTML; return; }
+  if (!out.dataset.idle) out.dataset.idle = out.innerHTML;
+  const svg = e.currentTarget, r = svg.getBoundingClientRect();
+  const px = (e.clientX - r.left) / r.width * st.chart.W;
+  // The last real point at or before the pointer (the line holds its value until the next one)
+  const xy = st.chart.xy;
+  let i = xy.findIndex(p => p[0] > px) - 1;
+  if (i < 0) i = px < xy[0][0] ? 0 : xy.length - 1;
+  const [cx, cy, t, v] = xy[i], prevV = i ? xy[i - 1][3] : v;
+  g.style.display = '';
+  g.querySelector('line').setAttribute('x1', cx); g.querySelector('line').setAttribute('x2', cx);
+  g.querySelector('circle').setAttribute('cx', cx); g.querySelector('circle').setAttribute('cy', cy);
+  const when = i === xy.length - 1 ? 'Now' : new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const d = v - prevV;
+  out.innerHTML = `<span style="color:var(--text);font-weight:600">${fmtNum(v)}</span>${d ? ` <span class="${d > 0 ? 'text-green' : 'text-red'}">${d > 0 ? '+' : ''}${fmtNum(d)}</span>` : ''} · ${when}`;
+};
+window.setTrophySeries = function(scope, s) {
+  const st = _trophyState[scope]; if (!st) return;
+  st.series = s;
+  const el = document.getElementById(`${scope}-trophy`);
+  if (el) el.innerHTML = trophyCardBody(scope);
+};
+window.setTrophyRange = function(scope, r) {
+  const st = _trophyState[scope]; if (!st) return;
+  st.range = r;
+  const el = document.getElementById(`${scope}-trophy`);
+  if (el) el.innerHTML = trophyCardBody(scope);
+};
 
 // W/L per game mode over the battle log (~30 most recent games).
 function recentBattlesByModeHTML(battles) {
@@ -2873,6 +3055,20 @@ function latest2v2Deck(battles, tag) {
     if (me && (me.cards || []).length === 8) return me.cards;
   }
   return null;
+}
+
+// The equipped 1v1 deck as a Decks tab entry with no games, for when it isn't in
+// the deck history yet (a new deck, or one only played on another device)
+function equippedDeckEntry(data, battles, key) {
+  const deck = data?.currentDeck || [];
+  if (deck.length !== 8) return null;
+  const forms = currentDeckVariants(deck, battles, data.tag), variants = {};
+  deck.forEach((c, i) => { if (forms[i]) variants[c.name] = forms[i]; });
+  const costs = deck.map(c => c.elixirCost ?? allCards.find(x => x.name === c.name)?.elixirCost).filter(n => n != null);
+  return {
+    key, cards: deck.map(c => c.name), variants, wins: 0, losses: 0, draws: 0, modes: [], last: '', unplayed: true,
+    elixir: costs.length === 8 ? [costs.reduce((a, b) => a + b, 0) / 8] : []
+  };
 }
 
 function currentDeckKey(data, battles) {
@@ -4272,7 +4468,9 @@ function _renderDeckList(scope) {
   // The filter survives re-renders, but not onto an account (or a refreshed
   // battle log) without that mode — it would have no button to clear it.
   if (st.filter !== 'all' && !modes.includes(st.filter)) st.filter = 'all';
-  const entries = Object.values(deckMap);
+  // The equipped 1v1 deck shows even before this device has seen a game with it
+  const equipped = inUse1v1 && !deckMap[inUse1v1] ? equippedDeckEntry(st.data, battles, inUse1v1) : null;
+  const entries = Object.values(deckMap).concat(equipped ? [equipped] : []);
   let filtered = entries;
   if (st.filter !== 'all') filtered = entries.filter(d => d.modes.includes(st.filter));
   filtered.sort(DECK_SORTS[st.sort] ? DECK_SORTS[st.sort] : DECK_SORTS.played);
@@ -4305,13 +4503,16 @@ function _renderDeckList(scope) {
             ${inUse ? `<span class="badge badge-gold" title="1v1: the deck equipped in-game. 2v2: the deck from your latest 2v2 battle.">${inUse}</span>` : ''}
             ${d.last ? `<span style="font-size:11px;color:var(--muted);white-space:nowrap" title="Last played">🕓 ${formatBattleTime(d.last)}</span>` : ''}
           </span>
-          ${mine ? `<button class="btn btn-secondary btn-sm" title="Delete this deck's history" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="deleteDeck('${esc(d.key)}')">🗑️</button>` : ''}
+          ${mine && !d.unplayed ? `<button class="btn btn-secondary btn-sm" title="Delete this deck's history" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="deleteDeck('${esc(d.key)}')">🗑️</button>` : ''}
         </div>` : ''}
         <div style="display:flex;gap:12px;align-items:center">
           <div style="flex:1;min-width:0">
             <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px">${cardChips}</div>
           </div>
           <div style="flex:1;min-width:0">
+            ${d.unplayed ? `
+            ${statRow('Avg Elixir', avgElixir, 'text-blue')}
+            <div style="font-size:12px;color:var(--muted);text-align:center;line-height:1.4;margin-top:6px">No games with it yet${mine ? ' on this device' : ''} — wins and losses show up once ${mine ? 'you play' : 'they play'} it.</div>` : `
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 8px">
               ${statRow('Wins', d.wins, 'text-green')}
               ${statRow('Losses', d.losses, 'text-red')}
@@ -4319,7 +4520,7 @@ function _renderDeckList(scope) {
               ${statRow('Avg Elixir', avgElixir, 'text-blue')}
             </div>
             ${statRow('Win Rate', wr + '%', 'text-accent')}
-            <div class="progress-wrap" style="margin-top:2px"><div class="progress-bar" style="width:${wr}%;background:var(--green)"></div></div>
+            <div class="progress-wrap" style="margin-top:2px"><div class="progress-bar" style="width:${wr}%;background:var(--green)"></div></div>`}
           </div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">

@@ -66,20 +66,20 @@ There is no `screen-home`; the app opens on the Player screen.
 | Evolutions   | `tab-evolutions`   | `/cards` catalog filtered by `iconUrls.evolutionMedium`, matched against player cards |
 | Heroes       | `tab-heroes`       | `/cards` catalog filtered by `iconUrls.heroMedium` |
 | Tower Troops | `tab-towerTroops`  | `data.supportCards` from `/players/{tag}` |
-| Decks        | `tab-decks`        | Battle log + persisted history — W/L/D per unique deck (card set + which cards were played as evo/hero), last played, sort (most played — decks in use pinned first, marked "In use · 1v1" / "· 2v2" — / best win rate, 3+ games first / recently played), mode filter, Copy Deck + Upgrade Cost (opens it as a custom deck in Deck Upgrade, costed with *your* cards — also from a friend's deck), delete |
+| Decks        | `tab-decks`        | Battle log + persisted history — the equipped 1v1 deck is listed even with no games yet (`equippedDeckEntry()`, "No games with it yet", no delete) — W/L/D per unique deck (card set + which cards were played as evo/hero), last played, sort (most played — decks in use pinned first, marked "In use · 1v1" / "· 2v2" — / best win rate, 3+ games first / recently played), mode filter, Copy Deck + Upgrade Cost (opens it as a custom deck in Deck Upgrade, costed with *your* cards — also from a friend's deck), delete |
 | Battles      | `tab-battles`      | Toggle between **Battle Log** (`/battlelog` — grouped by day with a W/L/trophy summary per day, Wins/Losses toggle + mode filter; decks with evo/hero tiles, crowns, trophy change; each battle folds out details: towers left, elixir leaked, trophies, global rank, tower troop, clan, boat stats; 2v2 also the opponents' decks) and **Battle Stats** (lifetime W/L, streak, est. playtime, recent W/L per mode, Opponent Cards — toughest / best-against cards, Path of Legends, old trophy road, challenges) |
 | Badges       | `tab-badges`       | `data.badges` — earned badges + synthesised locked card masteries; sort Most progress / Closest to next level (`badgeNextShare()`); achievements show progress / target, bars turn green at 90%+ |
-| Account      | `tab-account`      | `/players/{tag}` — XP level, account age, star points, cards found, favourite card, donations, clan wars |
+| Account      | `tab-account`      | Trophy History graph on top (see *Trophy history*), then `/players/{tag}` — XP level, account age, star points, cards found, favourite card, donations, clan wars |
 
 The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compare, Cards, Evolutions, Heroes, Tower Troops, Decks, Battles, Badges, Account, Clan. **Clan** (only when they're in a clan you aren't already looking at — not your own clan, the clan on the Clan screen you opened them from, or the clan of the modal profile you came from; `showClanTab()`) shows the clan header and members — tap one to open them — and a button into the Clan screen for River Race / War History. **Compare** (only when a profile is loaded and it's someone else) puts the loaded profile next to them: account stats with the higher value highlighted, then every card's level, filterable by who's ahead. Its Decks tab uses only the friend's current battle log (never saved, no delete button); its battle details label the sides by name instead of "You".
 
-**Modal history:** every profile opened in the modal pushes a history entry (`_modalStack`, `state.modal` = depth), so Android Back / the ← button steps back through profiles (restoring the tab each was on, from `_modalProfiles` without refetching) and finally closes the modal instead of leaving the app. `closeFriendModal()` unwinds those entries; `hideFriendModal()` is the actual close — don't hide the modal any other way or the history gets out of step.
+**Modal history:** every profile opened in the modal pushes a history entry (`_modalStack`, `state.modal` = depth, plus `state.modalSession` — entries left over from an earlier page load, e.g. an update reload with a profile open, count as depth 0 via `modalDepth()`), so Android Back / the ← button steps back through profiles (restoring the tab each was on, from `_modalProfiles` without refetching) and finally closes the modal instead of leaving the app. `closeFriendModal()` unwinds those entries; `hideFriendModal()` is the actual close — don't hide the modal any other way or the history gets out of step.
 
 **Friends list stats:** each saved friend in `cr_friends` carries a snapshot (`trophies`, `clan`, `lastBattle`, `statsAt`). Opening the Friends screen refreshes snapshots older than 15 min, four requests at a time (`refreshFriendStats()`); 🔄 refreshes all; opening a friend's profile updates theirs.
 
 **Header age:** the profile header's info line ends in "updated 12 min ago" (`updateProfileAge()`, ticks every 30 s, gold after an hour, "↻ updating…" during a quiet refresh). It reads `window._currentProfile.savedAt`.
 
-**Backup:** the Accounts menu (and the start card, for a fresh device) saves / restores one JSON file of `BACKUP_KEYS` — accounts, friends, deck history, matchups, co-players. Caches are left out. Restoring replaces those keys and reloads the profile.
+**Backup:** the Accounts menu (and the start card, for a fresh device) saves / restores one JSON file of `BACKUP_KEYS` — accounts, friends, deck history, matchups, co-players, trophy history. Caches are left out. Restoring replaces those keys and reloads the profile.
 
 **Suggested friends:** the API has no friends list. `recordCoPlayers()` accumulates who you play *with* per profile tag (`cr_coplayers_v1`, deduped by `battleTime`); a 2v2 teammate seen in 2+ games or anyone from a Friendly battle is suggested (random matchmade teammates almost never repeat). Saved friends, your accounts and dismissed players are left out. `viewFriend()` also fetches the friend's battle log, only for the Overview's recent-battle stats (a failure there is ignored).
 
@@ -113,6 +113,7 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compa
 | `recordCoPlayers(tag, battles)` / `suggestedFriendsHTML()` | Suggested friends from 2v2 teammates and friendly battles |
 | `battleDetailsHTML(b, team, opp)` | A battle's fold-out details table |
 | `recordMatchups(tag, battles)` / `matchupsHTML(data, battles, scope)` | Win rate per opponent card (`cr_matchups_v1`); the friend modal tallies their current log only |
+| `recordTrophies(data, battles, at)` / `trophyHistoryHTML(data, battles, scope)` / `setTrophySeries()` / `setTrophyRange()` | Trophy History card; state per scope in `_trophyState` |
 | `profileLevels(data)` | King level, collection level, evolution and hero counts |
 | `compareHTML(me, them)` / `setCompareFilter(v)` | Friend modal Compare tab |
 | `friendClanTab()` / `clanHeaderHTML(data)` / `memberRowsHTML(members, sort, highlightTag)` | Friend modal Clan tab; header and member rows shared with the Clan screen |
@@ -185,6 +186,7 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compa
 | `cr_cards_cache_v7` | `{ items, savedAt }` card catalog, monthly expiry + background revalidation |
 | `cr_coplayers_v1` | Per-tag co-players for Suggested Friends: `{ seen, players: { tag: { name, clan, mates, friendlies, last } }, dismissed }` |
 | `cr_matchups_v1` | Per-tag opponent-card tally: `{ since, battles, seen, cards: { name: [wins, losses, draws] } }`; friendlies and boat battles skipped |
+| `cr_trophy_history_v1` | Per-tag `{ road: [[ms, trophies]], pol: [[ms, rating]] }`, oldest first, max 1000 points per series |
 | `cr_deck_history_v1` | Per-tag deck W/L/D history (+ `last` played battleTime), deduped by `battleTime`. Keys are sorted names with `[evo]`/`[hero]` suffixes; entries without `variants` predate that and are adopted by the first matching card set played again |
 
 ---
@@ -197,6 +199,9 @@ Stored in `LEVEL_DATA` — arrays of `{cards, gold}` per level transition for ea
 The API returns relative levels (e.g. legendary starts at 1 in the API). `toDisplayLevel()` converts to display level (1–16).
 
 ---
+
+## Trophy history (gotcha)
+The API only has today's trophies, so `cr_trophy_history_v1` is built up on the device (`recordTrophies()` in `loadPlayer` and on the cached render, dated to the data's `savedAt`): a point when a refresh finds a new value, plus one per battle still in the log — `startingTrophies + trophyChange`, back-dated to the battle, and the oldest battle's `startingTrophies` too. **`pathOfLegend` battles carry the ranked rating (~2,800), not Trophy Road trophies**, so they're a separate series; only `type === 'PvP'` battles feed Trophy Road. Other types lie too: tournament battles report wins (1, 2, 3…) as `startingTrophies`, friendlies/boat battles the unchanged road trophies. Trophy Road barely moves for high players, so the card opens on Path of Legends when that's the series that moves. A friend's graph uses their battle log only, never saved.
 
 ## Badge progress (gotcha)
 Achievement badges (`BattleWins`, `YearsPlayed`, …) report real progress toward their next level in `progress` / `target` (4781 / 5000). **Mastery badges don't**: their `progress` is just the level reached and `target` the next level number (Valkyrie: progress 9, target 10) — the API has no progress on the current mastery task. So "Closest to next level" ranks masteries by levels done of the card's total, and only achievements show numbers.
@@ -304,3 +309,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 28. Overview numbers open the matching list; battle log grouped by day with summaries and a Wins/Losses filter; deck sorting, last played and an Upgrade Cost button
 29. Badges: "Closest to next level" sort, progress numbers on achievements, green bars when nearly done
 30. Full test pass fixes: a mistyped tag keeps your profile (and isn't remembered), clear "not found" messages, the Calculator says when a card is maxed or the target is too low, Deck Upgrade says "at target" instead of "maxed"
+31. Trophy History graph (Trophy Road / Path of Legends, 7 / 30 days / all, touch for values) in the Account tab; the equipped 1v1 deck always listed in Decks; modal history survives a reload
