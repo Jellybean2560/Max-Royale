@@ -897,8 +897,26 @@ const CARDS_CACHE_KEY = 'cr_cards_cache_v7';
 // have hero / evolution art published. Comparing this tells us whether a background
 // refresh actually changed anything worth re-rendering for.
 function _cardsSignature(items) {
-  return items.map(c => `${c.id}${c.iconUrls?.heroMedium ? 'h' : ''}${c.iconUrls?.evolutionMedium ? 'e' : ''}`).join(',');
+  return items.map(c => `${c.id}:${c.maxEvolutionLevel || 0}${c.iconUrls?.heroMedium ? 'h' : ''}${c.iconUrls?.evolutionMedium ? 'e' : ''}`).join(',');
 }
+
+// Whether a catalog card has an evolution / hero form. The catalog's
+// maxEvolutionLevel says so (bit 1 = evolution, bit 2 = hero, 3 = both) as soon
+// as the form ships, while its art can lag weeks behind — counting by art alone
+// left a new evolution out of every count and tab until the picture appeared.
+// The art is still accepted, in case a card ever has art but no level.
+function hasEvoForm(c)  { return !!((c.maxEvolutionLevel || 0) & 1) || !!c.iconUrls?.evolutionMedium; }
+function hasHeroForm(c) { return !!((c.maxEvolutionLevel || 0) & 2) || !!c.iconUrls?.heroMedium; }
+// What a player owns, from their card's evolutionLevel — the same bits: 1 =
+// evolution, 2 = hero, 3 = both. Checked Oct 2026 across ~500 cards of six
+// accounts: evolution-only cards read 1, hero-only 2, the four dual cards 2 or 3.
+// (The old rule read dual cards as "evolution only at the max level, hero at
+// anything above 0"; it gave the same answers for those four, but would have
+// turned an owned evolution into a hero the day an evolution card gains a hero.)
+function ownsEvo(pc)  { return !!((pc?.evolutionLevel || 0) & 1); }
+function ownsHero(pc) { return !!((pc?.evolutionLevel || 0) & 2); }
+// Form art, or the plain card while Supercell hasn't published the form's art yet
+const heroImg = c => c.iconUrls?.heroMedium || c.iconUrls?.medium || '';
 
 // Every cache-key bump leaves the previous catalog behind in localStorage. Drop
 // them so old versions don't sit there eating quota forever.
@@ -913,6 +931,7 @@ try {
 let _towerTroopTotal = 0;
 function _storeCards(items, supportItems) {
   allCards = items.sort((a,b) => a.name.localeCompare(b.name));
+  _cardsCheckedAt = Date.now();
   if (supportItems?.length) _towerTroopTotal = supportItems.length;
   try { localStorage.setItem(CARDS_CACHE_KEY, JSON.stringify({ items: allCards, supportCount: _towerTroopTotal, savedAt: Date.now() })); } catch(e) {}
 }
@@ -944,9 +963,11 @@ async function maybeLoadCards() {
 // (still zero-latency) and refreshed in the background; if the catalog really did
 // change, re-render the profile so the counts and new tabs pick it up.
 let _cardsRevalidating = false;
+let _cardsCheckedAt = 0;  // when the catalog last came from the network
 async function revalidateCards() {
   if (_cardsRevalidating) return;
   _cardsRevalidating = true;
+  _cardsCheckedAt = Date.now();
   try {
     const res = await apiGet('/cards'), items = res.items || [];
     if (!items.length) return;
@@ -955,7 +976,16 @@ async function revalidateCards() {
     if (_cardsSignature(allCards) + '/' + _towerTroopTotal !== before) redrawForCatalogChange();
   } catch(e) {
     // Offline or blocked — the cached catalog is still good enough to render.
+  } finally {
+    _cardsRevalidating = false;
   }
+}
+// The check above runs when the app starts; an installed app can stay open for
+// days, so every profile refresh (manual or the background one) checks again,
+// at most once an hour.
+const CARDS_RECHECK_MS = 60 * 60 * 1000;
+function recheckCardsIfStale() {
+  if (allCards.length && Date.now() - _cardsCheckedAt > CARDS_RECHECK_MS) revalidateCards();
 }
 
 // Re-render the open profile in place, keeping the user on the tab they were on.
@@ -1667,12 +1697,11 @@ window.friendSetHero = function(v) { _fHeroFilter = v;
 function friendRenderCollect(kind) {
   const grid = document.getElementById('f-collect-grid'); if (!grid || !_friendData) return;
   const isEvo = kind === 'evolution';
-  const catalog = allCards.filter(c => isEvo ? c.iconUrls?.evolutionMedium : c.iconUrls?.heroMedium);
-  const heroIdSet = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
+  const catalog = allCards.filter(isEvo ? hasEvoForm : hasHeroForm);
   const pm = {}; (_friendData.cards||[]).forEach(c => pm[c.id] = c);
-  const owns = c => { const pc = pm[c.id]; if (!pc) return false; const evo = pc.evolutionLevel||0, me = pc.maxEvolutionLevel||0; return isEvo ? (heroIdSet.has(c.id) ? (me>0 && evo>=me) : evo>0) : evo>0; };
+  const owns = c => isEvo ? ownsEvo(pm[c.id]) : ownsHero(pm[c.id]);
   const color = isEvo ? 'var(--blue)' : 'var(--purple)', label = isEvo ? '⚡ Evolved' : '🦸 Hero', noun = isEvo ? 'evolutions' : 'hero forms';
-  const imgOf = c => isEvo ? (typeof evoImg==='function' ? evoImg(c) : c.iconUrls.evolutionMedium) : c.iconUrls.heroMedium;
+  const imgOf = c => isEvo ? evoImg(c) : heroImg(c);
   const filter = isEvo ? _fEvoFilter : _fHeroFilter;
   const ownedCount = catalog.filter(owns).length;
   const countEl = document.getElementById('f-collect-count');
@@ -1950,6 +1979,7 @@ async function loadPlayer(tagOverride, opts = {}) {
   if (!tag) return;
   const seq = ++_loadPlayerSeq;
   document.getElementById('player-tag').value = tag;
+  recheckCardsIfStale();
   const el = document.getElementById('player-result');
   if (!opts.quiet) { el.innerHTML = '<div class="spinner"></div>'; showLookupStart(false); }
   _profileRefreshing = !!opts.quiet;
@@ -2200,14 +2230,10 @@ function renderProfile(data, battles) {
 function profileLevels(data) {
   const cards = data.cards || [];
   const disp = c => toDisplayLevel((c.rarity||'common').toLowerCase(), c.level);
-  const evoIds  = new Set(allCards.filter(c => c.iconUrls?.evolutionMedium).map(c => c.id));
-  const heroIds = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
-  const evos = cards.filter(c => {
-    if (!evoIds.has(c.id)) return false;
-    const evo = c.evolutionLevel || 0, maxEvo = c.maxEvolutionLevel || 0;
-    return heroIds.has(c.id) ? maxEvo > 0 && evo >= maxEvo : evo > 0;
-  }).length;
-  const heroes = cards.filter(c => heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length;
+  const evoIds  = new Set(allCards.filter(hasEvoForm).map(c => c.id));
+  const heroIds = new Set(allCards.filter(hasHeroForm).map(c => c.id));
+  const evos = cards.filter(c => evoIds.has(c.id) && ownsEvo(c)).length;
+  const heroes = cards.filter(c => heroIds.has(c.id) && ownsHero(c)).length;
   const cl = cards.reduce((s, c) => s + disp(c), 0) + evos * 5 + heroes * 5
            + (data.supportCards||[]).reduce((s, c) => s + disp(c), 0);
   return { king: calcKingTowerLevel(cards.map(disp)), cl, evos, heroes };
@@ -2804,14 +2830,10 @@ const fmtSeasonId = id => { const [y, m] = (id || '').split('-'); return m ? `${
 // Overview's Evolutions & Heroes counts.
 function cardsFoundCounts(data) {
   const cards = data.cards || [], troops = data.supportCards || [];
-  const evoIds  = new Set(allCards.filter(c => c.iconUrls?.evolutionMedium).map(c => c.id));
-  const heroIds = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
-  const evos = cards.filter(c => {
-    if (!evoIds.has(c.id)) return false;
-    const evo = c.evolutionLevel || 0, maxEvo = c.maxEvolutionLevel || 0;
-    return heroIds.has(c.id) ? maxEvo > 0 && evo >= maxEvo : evo > 0;
-  }).length;
-  const heroes = cards.filter(c => heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length;
+  const evoIds  = new Set(allCards.filter(hasEvoForm).map(c => c.id));
+  const heroIds = new Set(allCards.filter(hasHeroForm).map(c => c.id));
+  const evos = cards.filter(c => evoIds.has(c.id) && ownsEvo(c)).length;
+  const heroes = cards.filter(c => heroIds.has(c.id) && ownsHero(c)).length;
   const kinds = {
     cards:  [cards.length, Math.max(allCards.length, cards.length)],
     evos:   [evos, evoIds.size],
@@ -3239,23 +3261,12 @@ function renderOverview(data, battles, scope = 'p') {
   const totalGoldReady  = upgradableNow.reduce((s, c) => s + (c.nextStep?.gold || 0), 0);
   const cardsTotal      = allCards.length || cards.length;
   const cardsNotFound   = Math.max(cardsTotal - cards.length, 0);
-  const evoIds          = new Set(allCards.filter(c => c.iconUrls?.evolutionMedium).map(c => c.id));
-  const heroIds         = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
-  // For dual cards (both evolutionMedium AND heroMedium), evolutionLevel tracks
-  // hero stages (1…maxEvolutionLevel). Owning the evolution form pushes
-  // evolutionLevel *above* maxEvolutionLevel. Pure evolution cards just need > 0.
+  const evoIds          = new Set(allCards.filter(hasEvoForm).map(c => c.id));
+  const heroIds         = new Set(allCards.filter(hasHeroForm).map(c => c.id));
   const evolvedCount    = evoIds.size > 0
-    ? cards.filter(c => {
-        if (!evoIds.has(c.id)) return false;
-        const evo    = c.evolutionLevel    || 0;
-        const maxEvo = c.maxEvolutionLevel || 0;
-        if (heroIds.has(c.id)) return maxEvo > 0 && evo >= maxEvo; // dual card
-        return evo > 0; // evolution-only card
-      }).length
-    : cards.filter(c => (c.evolutionLevel||0) > 0).length;
-  const heroCount       = heroIds.size > 0
-    ? cards.filter(c => heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length
-    : 0;
+    ? cards.filter(c => evoIds.has(c.id) && ownsEvo(c)).length
+    : cards.filter(ownsEvo).length;
+  const heroCount       = cards.filter(c => heroIds.has(c.id) && ownsHero(c)).length;
   const supportCards    = data.supportCards || [];
   // Enrich tower troops for Upgrade Insights
   const troopEnriched   = supportCards.map(c => {
@@ -3607,7 +3618,7 @@ function toggleCardMax(id) {
 // a fix can be added in one line if Supercell ships another bad image.)
 const EVO_IMG_OVERRIDE = {};
 function evoImg(c) {
-  return EVO_IMG_OVERRIDE[c.name] || c.iconUrls.evolutionMedium;
+  return EVO_IMG_OVERRIDE[c.name] || c.iconUrls?.evolutionMedium || c.iconUrls?.medium || '';
 }
 // Called onerror OR onload (for 1×1 transparent placeholders that "succeed")
 function cardImgFallback(el) {
@@ -3633,18 +3644,11 @@ async function loadEvolutionsGrid() {
   if (!grid || !grid.querySelector('.spinner')) return;
   try {
     await maybeLoadCards();
-    _evoCatalog = allCards.filter(c => c.iconUrls?.evolutionMedium);
+    _evoCatalog = allCards.filter(hasEvoForm);
     if (!_evoCatalog.length) { grid.innerHTML = '<div class="empty-msg">No evolution data available.</div>'; return; }
-    const heroIdSet = new Set(allCards.filter(c => c.iconUrls?.heroMedium).map(c => c.id));
     const playerCardMap = {};
     _evoPlayerCards.forEach(c => { playerCardMap[c.id] = c; });
-    _evoHasEvolution = c => {
-      const pc = playerCardMap[c.id];
-      if (!pc) return false;
-      const evo = pc.evolutionLevel || 0, maxEvo = pc.maxEvolutionLevel || 0;
-      if (heroIdSet.has(c.id)) return maxEvo > 0 && evo >= maxEvo;
-      return evo > 0;
-    };
+    _evoHasEvolution = c => ownsEvo(playerCardMap[c.id]);
     const ownedCount = _evoCatalog.filter(_evoHasEvolution).length;
     grid.innerHTML = `
       <div style="font-size:13px;color:var(--muted);margin-bottom:8px">${ownedCount} / ${_evoCatalog.length} evolutions unlocked</div>
@@ -3701,10 +3705,10 @@ async function loadHeroesGrid() {
   if (!grid || !grid.querySelector('.spinner')) return;
   try {
     await maybeLoadCards();
-    _heroCatalog = allCards.filter(c => c.iconUrls?.heroMedium);
+    _heroCatalog = allCards.filter(hasHeroForm);
     if (!_heroCatalog.length) { grid.innerHTML = '<div class="empty-msg">No hero data available.</div>'; return; }
     _heroMap = {};
-    _heroPlayerCards.forEach(c => { _heroMap[c.id] = (c.evolutionLevel || 0) > 0; });
+    _heroPlayerCards.forEach(c => { _heroMap[c.id] = ownsHero(c); });
     const ownedCount = _heroCatalog.filter(c => _heroMap[c.id]).length;
     grid.innerHTML = `
       <div style="font-size:13px;color:var(--muted);margin-bottom:8px">${ownedCount} / ${_heroCatalog.length} hero forms unlocked</div>
@@ -3736,7 +3740,7 @@ function _renderHeroCards() {
     ${cards.map(c => {
       const hasHero = !!_heroMap[c.id];
       return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;border:1px solid ${hasHero ? 'var(--purple)' : 'transparent'};${hasHero ? '' : 'opacity:0.35;filter:grayscale(1)'}">
-        <img src="${c.iconUrls.heroMedium}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy" decoding="async" onerror="cardImgFallback(this)" onload="if(this.naturalWidth<4)cardImgFallback(this)">
+        <img src="${heroImg(c)}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy" decoding="async" onerror="cardImgFallback(this)" onload="if(this.naturalWidth<4)cardImgFallback(this)">
         <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(c.name)}</span>
         <span style="font-size:9px;color:var(--purple);font-weight:600;min-height:11px">${hasHero ? '🦸 Hero' : ''}</span>
       </div>`;
