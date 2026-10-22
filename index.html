@@ -908,9 +908,13 @@ try {
     .forEach(k => localStorage.removeItem(k));
 } catch(e) {}
 
-function _storeCards(items) {
+// How many tower troops exist (the catalog's supportItems), so "found" counts can
+// show one as missing; 0 until a catalog with it has loaded
+let _towerTroopTotal = 0;
+function _storeCards(items, supportItems) {
   allCards = items.sort((a,b) => a.name.localeCompare(b.name));
-  try { localStorage.setItem(CARDS_CACHE_KEY, JSON.stringify({ items: allCards, savedAt: Date.now() })); } catch(e) {}
+  if (supportItems?.length) _towerTroopTotal = supportItems.length;
+  try { localStorage.setItem(CARDS_CACHE_KEY, JSON.stringify({ items: allCards, supportCount: _towerTroopTotal, savedAt: Date.now() })); } catch(e) {}
 }
 
 async function maybeLoadCards() {
@@ -920,12 +924,14 @@ async function maybeLoadCards() {
     const cached = JSON.parse(localStorage.getItem(CARDS_CACHE_KEY) || 'null');
     if (cached && Array.isArray(cached.items) && cached.items.length && cached.savedAt >= _mostRecentMonthlyCacheCutoff()) {
       allCards = cached.items;
+      _towerTroopTotal = cached.supportCount || 0;
       revalidateCards(); // may be mid-season stale — see below
       return;
     }
   } catch(e) {}
   try {
-    _storeCards((await apiGet('/cards')).items || []);
+    const res = await apiGet('/cards');
+    _storeCards(res.items || [], res.supportItems);
   } catch(e) {
     // silent — card picker is optional
   }
@@ -942,11 +948,11 @@ async function revalidateCards() {
   if (_cardsRevalidating) return;
   _cardsRevalidating = true;
   try {
-    const items = (await apiGet('/cards')).items || [];
+    const res = await apiGet('/cards'), items = res.items || [];
     if (!items.length) return;
-    const before = _cardsSignature(allCards);
-    _storeCards(items);
-    if (_cardsSignature(allCards) !== before) redrawForCatalogChange();
+    const before = _cardsSignature(allCards) + '/' + _towerTroopTotal;
+    _storeCards(items, res.supportItems);
+    if (_cardsSignature(allCards) + '/' + _towerTroopTotal !== before) redrawForCatalogChange();
   } catch(e) {
     // Offline or blocked — the cached catalog is still good enough to render.
   }
@@ -1726,7 +1732,7 @@ function friendTroopHTML(data) {
         </div>` : ''}
     </div>`;
   }).join('');
-  return `<div style="font-size:13px;color:var(--muted);margin-bottom:12px">${troops.length} / ${troops.length} tower troops unlocked</div>${rows}`;
+  return `<div style="font-size:13px;color:var(--muted);margin-bottom:12px">${troops.length} / ${Math.max(_towerTroopTotal, troops.length)} tower troops unlocked</div>${rows}`;
 }
 let _friendsEditMode = false;
 function toggleFriendsEdit() { _friendsEditMode = !_friendsEditMode; _renderFriendsList(); }
@@ -2794,7 +2800,8 @@ const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
 const fmtSeasonId = id => { const [y, m] = (id || '').split('-'); return m ? `${MONTHS[+m - 1]} ${y}` : ''; };
 
 // Everything found — cards + evolutions + heroes + tower troops — against the
-// catalog. Same ownership rules as the Overview's Evolutions & Heroes counts.
+// catalog, in total and per kind as [found, total]. Same ownership rules as the
+// Overview's Evolutions & Heroes counts.
 function cardsFoundCounts(data) {
   const cards = data.cards || [], troops = data.supportCards || [];
   const evoIds  = new Set(allCards.filter(c => c.iconUrls?.evolutionMedium).map(c => c.id));
@@ -2805,13 +2812,20 @@ function cardsFoundCounts(data) {
     return heroIds.has(c.id) ? maxEvo > 0 && evo >= maxEvo : evo > 0;
   }).length;
   const heroes = cards.filter(c => heroIds.has(c.id) && (c.evolutionLevel||0) > 0).length;
-  const troopsTotal = allCards.filter(c => c.iconUrls?.towerProjectileMedium).length || troops.length;
-  return { found: cards.length + evos + heroes + troops.length,
-           total: (allCards.length || cards.length) + evoIds.size + heroIds.size + troopsTotal };
+  const kinds = {
+    cards:  [cards.length, Math.max(allCards.length, cards.length)],
+    evos:   [evos, evoIds.size],
+    heroes: [heroes, heroIds.size],
+    troops: [troops.length, Math.max(_towerTroopTotal, troops.length)],
+  };
+  const sum = i => Object.values(kinds).reduce((s, k) => s + k[i], 0);
+  return { found: sum(0), total: sum(1), ...kinds };
 }
 
 function accountStatsHTML(data, battles, scope = 'p') {
-  const { found: foundCount, total: foundTotal } = cardsFoundCounts(data);
+  const found = cardsFoundCounts(data);
+  // Per kind, so a missing evolution doesn't read as missing cards
+  const foundRow = (label, [n, total]) => ovRow(label, `${n} / ${total}${n >= total ? ' <span class="text-green">✓</span>' : ''}`);
   const fav = data.currentFavouriteCard;
   const days = accountAgeDays(data);
   return `
@@ -2822,8 +2836,13 @@ function accountStatsHTML(data, battles, scope = 'p') {
       ${days ? ovRow('Account Age', fmtAge(days)) : ''}
       ${ovRow('Highest Trophies', `🏆 ${fmtNum(data.bestTrophies)}`)}
       ${ovRow('Star Points', `⭐ ${fmtNum(data.starPoints)}`)}
-      ${ovRow('Cards Found', `${foundCount} / ${foundTotal}`)}
-      ${fav ? `<div class="stat-row"><span class="stat-label">Favourite Card</span><span class="stat-value" style="display:flex;align-items:center;gap:6px">${fav.iconUrls?.medium?`<img src="${fav.iconUrls.medium}" alt="" style="width:26px;height:32px;object-fit:contain">`:''}${esc(fav.name)}</span></div>` : ''}
+      ${fav ?`<div class="stat-row"><span class="stat-label">Favourite Card</span><span class="stat-value" style="display:flex;align-items:center;gap:6px">${fav.iconUrls?.medium?`<img src="${fav.iconUrls.medium}" alt="" style="width:26px;height:32px;object-fit:contain">`:''}${esc(fav.name)}</span></div>` : ''}
+
+      <div style="${OV_SECTION_STYLE}">Collection <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· ${found.found} / ${found.total} found</span></div>
+      ${foundRow('Cards', found.cards)}
+      ${foundRow('Evolutions', found.evos)}
+      ${foundRow('Heroes', found.heroes)}
+      ${foundRow('Tower Troops', found.troops)}
 
       <div style="${OV_SECTION_STYLE}">Donations</div>
       ${ovRow('Cards Donated', fmtNum(data.totalDonations))}
@@ -3851,7 +3870,7 @@ async function loadTowerTroopsGrid() {
 
     grid.innerHTML = `
       <div style="font-size:13px;color:var(--muted);margin-bottom:12px">
-        ${troops.length} / ${troops.length} tower troops unlocked
+        ${troops.length} / ${Math.max(_towerTroopTotal, troops.length)} tower troops unlocked
       </div>
       ${troopRows}`;
   } catch(e) {
@@ -4306,6 +4325,11 @@ function _renderBattleList(scope) {
   };
 
   const art = buildCardArtMap(battles);
+  // Average elixir of a battle deck, e.g. "3.4"; '' when the cards carry no costs
+  const avgElixirText = cards => {
+    const costs = (cards || []).map(c => c.elixirCost).filter(n => n != null);
+    return costs.length ? (costs.reduce((a, b) => a + b, 0) / costs.length).toFixed(1) : '';
+  };
   const deckRow = (p) => (p.cards||[]).map(c => deckTileHTML(c.name, cardVariant(c), art[c.name], 'deck-card-chip')).join('');
   return bar + filtered.map((b, bi) => {
     const teamPlayers = b.team || [];
@@ -4335,7 +4359,10 @@ function _renderBattleList(scope) {
       return `<div style="flex:1;min-width:0;text-align:center">
         ${showLabels ? `<div style="font-size:11px;color:${labelColor};font-weight:600;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name||'?')}</div>` : ''}
         <div style="display:grid;grid-template-columns:repeat(4,38px);gap:4px;justify-content:center;margin-top:4px">${deckRow(p)}</div>
-        <button class="btn btn-secondary btn-sm" style="margin-top:6px;font-size:11px;padding:3px 9px" onclick="copyDeckLink('${esc(names)}',this)">📋 Copy</button>
+        <div style="display:flex;justify-content:center;align-items:center;gap:8px;margin-top:6px">
+          ${avgElixirText(p.cards) ? `<span class="text-blue" title="Average elixir cost" style="font-size:12px;font-weight:700;white-space:nowrap">💧 ${avgElixirText(p.cards)}</span>` : ''}
+          <button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 9px" onclick="copyDeckLink('${esc(names)}',this)">📋 Copy</button>
+        </div>
       </div>`;
     };
     const deckCols = deckPlayers.map(deckCol).join('');
