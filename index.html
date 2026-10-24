@@ -4657,6 +4657,15 @@ function metaParsed(m) {
   return _metaParsed;
 }
 
+// A saved copy is fetched again after 30 min, or as soon as the collector's
+// next recompute (data.next) has happened
+const metaStale = c => !c?.data || Date.now() - c.savedAt >= META_MAX_AGE_MS
+  || (c.data.next && Date.now() > c.data.next + 2 * 60e3 && c.savedAt < c.data.next + 2 * 60e3);
+// "Updated 2 h ago · next in ~40 min"
+function metaUpdatedText(d) {
+  const next = d.next ? d.next - Date.now() : null;
+  return `Updated ${fmtAgo(Date.now() - d.updated)}${next == null ? '' : next > 60e3 ? ` · next in ~${next < 3600e3 ? Math.round(next / 60e3) + ' min' : Math.round(next / 3600e3) + ' h'}` : ' · updating now'}`;
+}
 // GET a collector endpoint as { data, savedAt }, saved to localStorage
 async function fetchMetaJSON(url, cacheKey) {
   let res;
@@ -4676,8 +4685,7 @@ async function renderMetaScreen() {
   await maybeLoadCards();
   if (_meta?.data) drawMeta();
   else el.innerHTML = '<div class="spinner"></div>';
-  if (_meta && Date.now() - _meta.savedAt < META_MAX_AGE_MS) return;
-  if (_metaLoading) return;
+  if (!metaStale(_meta) || _metaLoading) return;
   _metaLoading = true;
   try {
     _meta = await fetchMetaJSON(META_URL, META_CACHE_KEY);
@@ -4722,7 +4730,7 @@ function drawMeta() {
     <div class="card" style="font-size:13px;line-height:1.5">
       Ranked matches of the <b>global top 1,000</b> Path of Legends players${young ? `, collected since ${dateOf(m.started)}` : `, last ${m.window_days} days`}:
       <b>${fmtNum(m.matches)}</b> matches.
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">Updated ${fmtAgo(Date.now() - m.updated)}${young ? ` · still collecting — the numbers settle once there's a full week of matches` : ''}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">${metaUpdatedText(m)}${young ? ` · still collecting — the numbers settle once there's a full week of matches` : ''}</div>
     </div>
     <div class="seg" style="margin-bottom:10px">
       ${[['decks', 'Decks'], ['cards', 'Cards'], ['players', 'Players'], ['you', 'You']].map(([v, l]) => `<button class="${view === v ? 'active' : ''}" onclick="setMetaView('${v}')">${l}</button>`).join('')}
@@ -4932,7 +4940,7 @@ async function loadMetaTop() {
   if (!_metaTop) {
     try { _metaTop = JSON.parse(localStorage.getItem(META_TOP_CACHE_KEY) || 'null'); } catch(e) {}
   }
-  if ((_metaTop && Date.now() - _metaTop.savedAt < META_MAX_AGE_MS) || _metaTopLoading) return;
+  if ((_metaTop?.data && !metaStale(_metaTop)) || _metaTopLoading) return;
   _metaTopLoading = true;
   try {
     _metaTop = await fetchMetaJSON(META_TOP_URL, META_TOP_CACHE_KEY);
@@ -4949,7 +4957,7 @@ function metaPlayersHTML() {
     loadMetaTop();
     return '<div class="spinner"></div>';
   }
-  if (Date.now() - _metaTop.savedAt >= META_MAX_AGE_MS) loadMetaTop();  // quietly refresh
+  if (metaStale(_metaTop)) loadMetaTop();  // quietly refresh
   const t = _metaTop.data;
   if (t.empty || !t.players?.length) return `<div class="empty-msg">The top players list isn't ready yet — check back in a few hours.</div>`;
   const mine = new Set(getSavedAccounts().map(a => a.tag));
@@ -4960,7 +4968,7 @@ function metaPlayersHTML() {
   if (!list.length) return `<div class="empty-msg">No top player matches "${esc(_metaTopQuery.trim())}".</div>`;
   const art = buildCardArtMap([]);
   const shown = list.slice(0, _metaShown);
-  return `<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Main deck: their most played ranked deck in the last ${t.window_days} days. Updated ${fmtAgo(Date.now() - t.updated)}.</div>`
+  return `<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Main deck: their most played ranked deck in the last ${t.window_days} days. ${metaUpdatedText(t)}.</div>`
     + shown.map(([tag, name, clan, rank, rating, deck, deckGames, games, wins]) => {
       const label = mine.has(tag) ? 'You' : friends.has(tag) ? 'Friend' : '';
       const cards = deck ? metaDeckCards(deck) : [];

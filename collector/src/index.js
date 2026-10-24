@@ -10,10 +10,10 @@
 //  - D1 free tier: 100k rows written and 5M read a day. Inserts go in one query
 //    each (rows passed as one JSON parameter — D1 allows only 100 bound
 //    parameters), matches are stored once (no extra index) and kept 30 days,
-//    and the stats are computed every 6 hours, not per request (each run reads
-//    the week's matches four times, and the week before twice more once there
-//    is one for trends: ~2.5M rows a day at ~15k matches a day). The top players'
-//    main decks take two more passes. Every heavy query's rows_read is counted
+//    and the stats are computed every 1–12 hours as their cost allows, not per
+//    request. Each run reads the week's matches once per side plus the distinct
+//    decks (~200k rows at 25k matches), and the week before again once there is
+//    one for trends; the top players' main decks take another pass. Every heavy query's rows_read is counted
 //    per UTC day, and a job that would push the day past READ_BUDGET waits for
 //    tomorrow instead of running into D1's limit.
 //
@@ -23,7 +23,6 @@
 
 const MINUTE = 60e3, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 const BOARD_EVERY = 6 * HOUR;       // leaderboard refresh
-const STATS_EVERY = 6 * HOUR;       // recompute /meta
 const PRUNE_EVERY = DAY;
 const KEEP_DAYS = 30;               // matches older than this are deleted
 const WINDOW_DAYS = 7;              // the stats cover this many days
@@ -32,7 +31,13 @@ const RETRY_AFTER = 30 * MINUTE;    // a failed periodic job or battle log waits
 const MIN_INTERVAL = 30 * MINUTE;
 const MAX_INTERVAL = 12 * HOUR;
 const TOP_DECKS = 300;              // enough to search by card and find similar decks
-const TOP_EVERY = 6 * HOUR;         // recompute /top (main deck per player)
+// /meta and /top are recomputed as often as their cost allows: each job gets a
+// daily share of the read budget and runs every (24 h × last run's reads / share),
+// kept between 1 and 12 hours — hourly while the window is young and runs are
+// cheap, less often once a full week (and the week before, for trends) is read
+const STATS_SHARE = 2.5e6, TOP_SHARE = 1e6;
+const MIN_REFRESH = HOUR, MAX_REFRESH = 12 * HOUR;
+const refreshEvery = (reads, share) => Math.min(MAX_REFRESH, Math.max(MIN_REFRESH, DAY * (reads || 0) / share));
 const READ_BUDGET = 4e6;            // of D1's free 5M rows read a day — the rest is polling and /status
 
 export default {
@@ -72,8 +77,8 @@ async function tick(env) {
   // A heavy job runs only if what it read last time still fits in today's budget
   const fits = job => readsToday(st, now) + (+st[`${job}_reads`] || 0) <= READ_BUDGET;
   if (due('board', BOARD_EVERY)) return run('board', refreshBoard);
-  if (+st.matches_total > 0 && due('stats', STATS_EVERY) && fits('stats')) return run('stats', computeStats);
-  if (+st.matches_total > 0 && due('top', TOP_EVERY) && fits('top')) return run('top', computeTop);
+  if (+st.matches_total > 0 && due('stats', refreshEvery(+st.stats_reads, STATS_SHARE)) && fits('stats')) return run('stats', computeStats);
+  if (+st.matches_total > 0 && due('top', refreshEvery(+st.top_reads, TOP_SHARE)) && fits('top')) return run('top', computeTop);
   if (due('prune', PRUNE_EVERY)) return run('prune', prune);
   return pollPlayers(env, now, st);
 }
@@ -186,44 +191,54 @@ async function computeStats(env, now) {
   const since = Math.floor((now - WINDOW_DAYS * DAY) / 1000), until = Math.floor(now / 1000) + 60;
   const prevSince = since - WINDOW_DAYS * 86400;
   const havePrev = +st.started_at && +st.started_at <= prevSince * 1000;
-  // One row per deck played; w = won, d = draw, t = won with three crowns
-  const sides = `
+  // One row per deck played (w = won, d = draw, t = won with three crowns),
+  // grouped by deck first: a week's ~50k decks played are only a few thousand
+  // distinct decks, and the cards are unpacked from those. Unpacking every deck
+  // played instead (json_each over each side) read ~950k rows a run — D1 counts
+  // each unpacked card as a row read.
+  const grouped = `
     WITH s AS (
       SELECT pa AS tag, da AS deck, ca > cb AS w, ca = cb AS d, ca > cb AND ca = 3 AS t FROM matches WHERE time >= ?1 AND time < ?2
       UNION ALL
-      SELECT pb, db, cb > ca, ca = cb, cb > ca AND cb = 3 FROM matches WHERE time >= ?1 AND time < ?2)`;
-  const cardQuery = (from, to) => env.DB.prepare(`${sides}
-    SELECT j.value AS card, COUNT(*) AS n, SUM(s.w) AS w, SUM(s.d) AS d, SUM(s.t) AS t
-    FROM s, json_each('["' || replace(s.deck, ',', '","') || '"]') AS j
-    GROUP BY j.value ORDER BY n DESC`).bind(from, to);
+      SELECT pb, db, cb > ca, ca = cb, cb > ca AND cb = 3 FROM matches WHERE time >= ?1 AND time < ?2),
+    g AS MATERIALIZED (
+      SELECT deck, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d, SUM(t) AS t, COUNT(DISTINCT tag) AS p FROM s GROUP BY deck)`;
+  const cardsOfG = `
+    SELECT 'c' AS kind, j.value AS k, SUM(g.n) AS n, SUM(g.w) AS w, SUM(g.d) AS d, SUM(g.t) AS t, NULL AS p
+    FROM g, json_each('["' || replace(g.deck, ',', '","') || '"]') AS j GROUP BY j.value`;
   // MIN / MAX read one row each off the primary key; match counts come from the
   // card tally (every match is 2 decks × 8 cards) instead of another scan
   const results = await env.DB.batch([
     env.DB.prepare(`SELECT (SELECT MIN(time) FROM matches WHERE time >= ?1) AS first,
                            (SELECT MAX(time) FROM matches) AS last`).bind(since),
-    env.DB.prepare(`${sides} SELECT deck, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d, COUNT(DISTINCT tag) AS p, SUM(t) AS t
-                    FROM s GROUP BY deck ORDER BY n DESC LIMIT ?3`).bind(since, until, TOP_DECKS),
-    cardQuery(since, until),
-    ...(havePrev ? [cardQuery(prevSince, since)] : []),
+    // top decks and every card in one statement, off one grouping
+    env.DB.prepare(`${grouped}
+      SELECT * FROM (SELECT 'd' AS kind, deck AS k, n, w, d, t, p FROM g ORDER BY n DESC LIMIT ?3)
+      UNION ALL SELECT * FROM (${cardsOfG})`).bind(since, until, TOP_DECKS),
+    ...(havePrev ? [env.DB.prepare(`${grouped} ${cardsOfG}`).bind(prevSince, since)] : []),
   ]);
-  const [range, decks, cards, prev] = results;
+  const [range, both, prev] = results;
+  const decks = both.results.filter(r => r.kind === 'd');
+  const cards = both.results.filter(r => r.kind === 'c').sort((a, b) => b.n - a.n);
   const t = range.results[0] || {};
   const count = rows => Math.round(rows.reduce((sum, r) => sum + r.n, 0) / 16);
+  const reads = rowsRead(results);
   const meta = {
     updated: now,
+    next: now + refreshEvery(reads, STATS_SHARE),  // when these stats are recomputed
     window_days: WINDOW_DAYS,
     started: +st.started_at || null,  // when collection began; older matches came from the first logs
-    matches: count(cards.results),
+    matches: count(cards),
     first: t.first ? t.first * 1000 : null,
     last: t.last ? t.last * 1000 : null,
     // [deck key, games, wins, draws, different players, three-crown wins]
-    decks: decks.results.map(r => [r.deck, r.n, r.w, r.d, r.p, r.t]),
+    decks: decks.map(r => [r.k, r.n, r.w, r.d, r.p, r.t]),
     // [card id + form, decks it was in, wins, draws, three-crown wins]
-    cards: cards.results.map(r => [r.card, r.n, r.w, r.d, r.t]),
+    cards: cards.map(r => [r.k, r.n, r.w, r.d, r.t]),
     // The week before, for trends: { matches, cards: [card, decks, wins] }; null until collected
-    prev: prev ? { matches: count(prev.results), cards: prev.results.map(r => [r.card, r.n, r.w]) } : null,
+    prev: prev ? { matches: count(prev.results), cards: prev.results.sort((a, b) => b.n - a.n).map(r => [r.k, r.n, r.w]) } : null,
   };
-  await countReads(env, 'stats', now, rowsRead(results), { stats_at: now, meta: JSON.stringify(meta) });
+  await countReads(env, 'stats', now, reads, { stats_at: now, meta: JSON.stringify(meta) });
 }
 
 // The current top 1,000 with each player's most played ranked deck over the
@@ -245,13 +260,15 @@ async function computeTop(env, now) {
     SELECT p.tag, p.name, p.clan, p.rank, p.rating, r.deck, r.n, r.games, r.wins
     FROM players p LEFT JOIN r ON r.tag = p.tag AND r.rk = 1
     WHERE p.seen_at >= ?2 ORDER BY p.rank`).bind(since, onBoard).all();
+  const reads = rowsRead([res]);
   const top = {
     updated: now,
+    next: now + refreshEvery(reads, TOP_SHARE),
     window_days: WINDOW_DAYS,
     // [tag, name, clan, rank, rating, main deck key, games with it, ranked games, wins]
     players: res.results.map(r => [r.tag, r.name, r.clan, r.rank, r.rating, r.deck, r.n || 0, r.games || 0, r.wins || 0]),
   };
-  await countReads(env, 'top', now, rowsRead([res]), { top_at: now, top: JSON.stringify(top) });
+  await countReads(env, 'top', now, reads, { top_at: now, top: JSON.stringify(top) });
 }
 
 async function prune(env, now) {
