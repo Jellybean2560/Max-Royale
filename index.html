@@ -44,7 +44,9 @@
 
   /* ── Bottom Nav ── */
   #nav { position: fixed; bottom: 0; left: 0; right: 0; height: var(--nav-h); background: var(--surface); border-top: 1px solid var(--border); display: flex; z-index: 100; }
-  .nav-btn { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; background: none; border: none; color: var(--muted); font-family: 'Inter', sans-serif; font-size: 11px; cursor: pointer; transition: color .2s; padding: 0; }
+  /* Icons sit at a fixed height (not centred), so a label that wraps — "Deck
+     Upgrade" with six buttons on a phone — doesn't push its icon out of line */
+  .nav-btn { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 4px; background: none; border: none; color: var(--muted); font-family: 'Inter', sans-serif; font-size: 11px; line-height: 1.15; text-align: center; cursor: pointer; transition: color .2s; padding: 12px 2px 0; }
   .nav-btn.active { color: var(--accent); }
   .nav-btn svg { width: 22px; height: 22px; }
   .nav-btn.icon-box { gap: 6px; }
@@ -359,6 +361,12 @@
     <!-- ═══════════════ DECK UPGRADE ═══════════════ -->
     <div id="screen-deckup" class="screen"></div>
 
+    <!-- ═══════════════ META ═══════════════ -->
+    <div id="screen-meta" class="screen">
+      <h2 style="margin-bottom:12px">📊 Top Player Meta</h2>
+      <div id="meta-result"></div>
+    </div>
+
     <!-- ═══════════════ FRIENDS ═══════════════ -->
     <div id="screen-friends" class="screen">
       <h2 style="margin-bottom:16px">👥 Friends</h2>
@@ -390,6 +398,10 @@
     <button class="nav-btn" id="nav-deckup" onclick="goTo('deckup')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="13" height="16" rx="2"/><rect x="9" y="2" width="13" height="16" rx="2"/></svg>
       Deck Upgrade
+    </button>
+    <button class="nav-btn" id="nav-meta" onclick="goTo('meta')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="4" y1="20" x2="20" y2="20"/><rect x="5" y="11" width="3" height="6" rx="1"/><rect x="10.5" y="5" width="3" height="12" rx="1"/><rect x="16" y="8" width="3" height="9" rx="1"/></svg>
+      Meta
     </button>
     <button class="nav-btn" id="nav-clan" onclick="goTo('clan')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3L4 7v5c0 5.25 3.5 10.15 8 11.5 4.5-1.35 8-6.25 8-11.5V7l-8-4z"/></svg>
@@ -719,6 +731,7 @@ function goTo(name) {
   if (name === 'calc') { maybeLoadCards(); calcUpdate(); }
   if (name === 'friends') renderFriends();
   if (name === 'deckup') renderDeckUpgradeScreen();
+  if (name === 'meta') renderMetaScreen();
   sc.scrollTop = _screenScroll[name] || 0;
 }
 
@@ -4590,6 +4603,149 @@ window.upgradeDeck = function(names) {
   goTo('deckup');
   loadDeckIds(ids);
 };
+
+// ── Meta: top-player deck and card stats ──
+// From the meta collector Worker (collector/ — the ranked matches of the global
+// top 1,000, stats over 7 days, recomputed every 6 hours). Deck keys are sorted
+// card ids, "e" / "h" for a card played as its evolution / hero. The last copy is
+// kept in localStorage so the screen opens instantly and works offline.
+const META_URL = 'https://max-royale-meta.jellevandenwouwer.workers.dev/meta';
+const META_CACHE_KEY = 'cr_meta_cache';
+const META_MAX_AGE_MS = 30 * 60 * 1000;
+const META_MIN_DECK_GAMES = 10;     // "best win rate" needs this many games
+const META_MIN_CARD_SHARE = 0.02;   // … and a card in 2% of decks
+const META_SORTS = {
+  decks: { played: 'Most played', winrate: 'Best win rate' },
+  cards: { used: 'Most used', winrate: 'Best win rate' },
+};
+let _meta = null, _metaView = 'decks', _metaSort = { decks: 'played', cards: 'used' }, _metaLoading = false;
+
+function metaCardOf(key) {
+  const id = parseInt(key, 10), form = key.endsWith('e') ? 'evo' : key.endsWith('h') ? 'hero' : '';
+  const c = allCards.find(x => x.id === id);
+  return { id, form, name: c?.name || `Card ${id}`, elixir: c?.elixirCost ?? 0, card: c };
+}
+// Evolution / hero slots first (as in game), then by elixir
+function metaDeckCards(key) {
+  return key.split(',').map(metaCardOf)
+    .sort((a, b) => (!!b.form - !!a.form) || (a.elixir - b.elixir) || a.name.localeCompare(b.name));
+}
+
+async function renderMetaScreen() {
+  const el = document.getElementById('meta-result');
+  if (!_meta) {
+    try { _meta = JSON.parse(localStorage.getItem(META_CACHE_KEY) || 'null'); } catch(e) {}
+  }
+  await maybeLoadCards();
+  if (_meta?.data) drawMeta();
+  else el.innerHTML = '<div class="spinner"></div>';
+  if (_meta && Date.now() - _meta.savedAt < META_MAX_AGE_MS) return;
+  if (_metaLoading) return;
+  _metaLoading = true;
+  try {
+    let res;
+    try { res = await fetch(META_URL, { cache: 'no-cache' }); }  // the 30-min check above decides freshness
+    catch(e) { throw new Error('Connection failed — check your internet connection and try again.'); }
+    if (!res.ok) throw new Error(`The meta service isn't responding right now (error ${res.status}).`);
+    _meta = { data: await res.json(), savedAt: Date.now() };
+    try { localStorage.setItem(META_CACHE_KEY, JSON.stringify(_meta)); } catch(e) {}
+    if (currentScreen === 'meta') drawMeta();
+  } catch(e) {
+    if (!_meta?.data) el.innerHTML = `<div class="error-msg">${esc(e.message)}</div>`;
+  } finally {
+    _metaLoading = false;
+  }
+}
+
+function drawMeta() {
+  const el = document.getElementById('meta-result'), m = _meta?.data;
+  if (!el || !m) return;
+  if (m.empty || !m.matches) {
+    el.innerHTML = `<div class="empty-msg">No matches collected yet — check back in a few hours.</div>`;
+    return;
+  }
+  const dateOf = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  // Collection began on m.started; older matches only came from the first logs
+  // read, so until a full window has passed, say since when
+  const young = m.started && Date.now() - m.started < m.window_days * 864e5;
+  const view = _metaView, sort = _metaSort[view];
+  el.innerHTML = `
+    <div class="card" style="font-size:13px;line-height:1.5">
+      Ranked matches of the <b>global top 1,000</b> Path of Legends players${young ? `, collected since ${dateOf(m.started)}` : `, last ${m.window_days} days`}:
+      <b>${fmtNum(m.matches)}</b> matches.
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">Updated ${fmtAgo(Date.now() - m.updated)}${young ? ` · still collecting — the numbers settle once there's a full week of matches` : ''}</div>
+    </div>
+    <div class="seg" style="margin-bottom:10px">
+      <button class="${view === 'decks' ? 'active' : ''}" onclick="setMetaView('decks')">Decks</button>
+      <button class="${view === 'cards' ? 'active' : ''}" onclick="setMetaView('cards')">Cards</button>
+    </div>
+    <select onchange="setMetaSort(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
+      ${Object.entries(META_SORTS[view]).map(([v, l]) => `<option value="${v}"${sort === v ? ' selected' : ''}>Sort: ${l}</option>`).join('')}
+    </select>
+    ${view === 'decks' ? metaDecksHTML(m, sort) : metaCardsHTML(m, sort)}`;
+}
+
+function metaDecksHTML(m, sort) {
+  let decks = m.decks.map(([key, n, w, , players]) => ({ key, n, w, players, rate: w / Math.max(n, 1) }));
+  if (sort === 'winrate') decks = decks.filter(d => d.n >= META_MIN_DECK_GAMES).sort((a, b) => b.rate - a.rate || b.n - a.n);
+  if (!decks.length) return `<div class="empty-msg">No deck has ${META_MIN_DECK_GAMES}+ games yet.</div>`;
+  const art = buildCardArtMap([]);
+  const totalDecks = m.matches * 2;
+  const stat = (lbl, val, cls) => `<div style="margin-bottom:5px;text-align:center"><div class="${cls}" style="font-size:15px;font-weight:700;line-height:1.1">${val}</div><div style="font-size:10px;color:var(--muted)">${lbl}</div></div>`;
+  return decks.map((d, i) => {
+    const cards = metaDeckCards(d.key);
+    const names = cards.map(c => c.name).join(', ');
+    const elixir = (cards.reduce((s, c) => s + c.elixir, 0) / 8).toFixed(1);
+    const wr = Math.round(d.rate * 100);
+    return `
+      <div class="deck-item">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:6px">#${i + 1} · in ${(d.n / totalDecks * 100).toFixed(1)}% of decks${d.players ? ` · ${d.players === 1 ? 'one player' : `${d.players} players`}` : ''}</div>
+        <div style="display:flex;gap:12px;align-items:center">
+          <div style="flex:1;min-width:0">
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px">${cards.map(c => deckTileHTML(c.name, c.form, art[c.name], 'deck-list-tile')).join('')}</div>
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 8px">
+              ${stat('Games', fmtNum(d.n), '')}
+              ${stat('Avg Elixir', elixir, 'text-blue')}
+            </div>
+            ${stat('Win Rate', wr + '%', wr >= 50 ? 'text-green' : 'text-red')}
+            <div class="progress-wrap" style="margin-top:2px"><div class="progress-bar" style="width:${wr}%;background:var(--green)"></div></div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+          <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
+          <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="upgradeDeck('${esc(names)}')">💰 Upgrade Cost</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function metaCardsHTML(m, sort) {
+  const totalDecks = m.matches * 2;
+  let cards = m.cards.map(([key, n, w]) => ({ ...metaCardOf(key), n, rate: w / Math.max(n, 1), share: n / totalDecks }));
+  if (sort === 'winrate') cards = cards.filter(c => c.share >= META_MIN_CARD_SHARE).sort((a, b) => b.rate - a.rate || b.n - a.n);
+  const blank = { iconUrls: {} };
+  const img = c => c.form === 'evo' ? evoImg(c.card || blank) : c.form === 'hero' ? heroImg(c.card || blank) : c.card?.iconUrls?.medium || '';
+  const tag = c => c.form ? ` <span style="font-size:9px;font-weight:700;color:${c.form === 'evo' ? 'var(--blue)' : 'var(--purple)'}">${VARIANT_LABEL[c.form]}</span>` : '';
+  return `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding-bottom:4px;border-bottom:1px solid var(--border)">
+        <span>Card</span><span>In decks · Win rate</span>
+      </div>
+      ${cards.map(c => {
+        const wr = Math.round(c.rate * 100);
+        return `<div class="mu-row">
+          ${img(c) ? `<img src="${img(c)}" alt="" loading="lazy" decoding="async">` : ''}
+          <span class="mu-name">${esc(c.name)}${tag(c)}</span>
+          <span style="font-size:12px;white-space:nowrap;color:var(--muted)">${(c.share * 100).toFixed(1)}%</span>
+          <span class="${wr >= 52 ? 'text-green' : wr <= 48 ? 'text-red' : ''}" style="font-weight:700;width:40px;text-align:right">${wr}%</span>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+window.setMetaView = function(v) { _metaView = v; drawMeta(); };
+window.setMetaSort = function(v) { _metaSort[_metaView] = v; drawMeta(); };
 
 window.setDeckFilter = function(scope, mode) {
   const st = _deckState[scope]; if (!st) return;

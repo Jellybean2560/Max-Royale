@@ -51,6 +51,7 @@ collector/                        ← meta collector Worker (not part of the app
 | Player       | `screen-lookup`  | Player profile. A compact header (name ▾, trophies, refresh; King/CL/league line) sits above the tabs; tapping the name opens the Accounts menu (switch, edit, add/look up by tag). The tag box (`#lookup-start`) only shows with no profile on screen: first run or a failed lookup |
 | Calculator   | `screen-calc`    | Offline upgrade cost calculator with card picker |
 | Deck Upgrade | `screen-deckup`  | Cost to upgrade a whole 8-card deck; the current 1v1 and 2v2 decks are the first choices (1v1 is the default). Custom Deck takes a pasted deck link (the game's share link or a RoyaleAPI deck URL); a deck shared to the installed app (manifest `share_target`) opens here too |
+| Meta         | `screen-meta`    | Top-player stats from the meta collector (`META_URL` → `/meta`): Decks (most played / best win rate with 10+ games; share of decks, how many players, games, avg elixir, win rate, Copy Deck + Upgrade Cost) and Cards (share of decks + win rate, evo/hero forms separate; best win rate needs 2%+ of decks). Cached in `cr_meta_cache`, refetched after 30 min (`renderMetaScreen()` / `drawMeta()`) |
 | Clan         | `screen-clan`    | Clan lookup by tag; tabs Members (sortable), River Race (live standings + each member's decks used today), War History (last 10 races, fold-out standings + member contributions) |
 | Friends      | `screen-friends` | Up to 50 saved friends (`MAX_FRIENDS`) with trophies, clan and last battle, sortable (last played / trophies / name / added) + Suggested Friends; the profile modal (also opened for clan members) has the same tabs as the profile plus Compare |
 
@@ -185,6 +186,7 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compa
 | `cr_profile_cache` | Last profile + battles, for instant render on open |
 | `cr_clan_cache` | Last clan lookup |
 | `cr_cards_cache_v7` | `{ items, savedAt }` card catalog, monthly expiry + background revalidation |
+| `cr_meta_cache` | `{ data, savedAt }` — the last `/meta` from the collector, so the Meta screen opens instantly and offline |
 | `cr_coplayers_v1` | Per-tag co-players for Suggested Friends: `{ seen, players: { tag: { name, clan, mates, friendlies, last } }, dismissed }` |
 | `cr_matchups_v1` | Per-tag opponent-card tally: `{ since, battles, seen, cards: { name: [wins, losses, draws] } }`; friendlies and boat battles skipped |
 | `cr_trophy_history_v1` | Per-tag `{ road: [[ms, trophies]], pol: [[ms, rating]] }`, oldest first, max 1000 points per series |
@@ -196,10 +198,10 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compa
 A separate Cloudflare Worker, **`max-royale-meta`** (`https://max-royale-meta.jellevandenwouwer.workers.dev`), with a D1 database `max-royale-meta`. It collects the **ranked (Path of Legends) matches of the global top 1,000** so the app can show top-player deck and card win rates — data no public API offers. Deploy with `cd collector && npx wrangler deploy` (wrangler is logged in on this PC); nothing deploys on push. Schema: `collector/schema.sql` (`npx wrangler d1 execute max-royale-meta --remote --file=schema.sql`).
 
 - **API access:** through a *service binding* to the app's proxy Worker `quiet-frost-f9f0` (`env.CR.fetch('https://cr/<path>')`), so the collector never holds the API key. A plain fetch of the proxy's workers.dev URL from another Worker on the same account would fail.
-- **Schedule:** a cron every minute; each run does one job — leaderboard refresh (every 6 h), stats (every 6 h), prune (daily, matches > 30 days), else poll the 5 most overdue players' battle logs. A player is polled again at half the time their last 30 battles span (all modes fill the log), clamped to 30 min – 12 h, so their log can't roll over unseen.
+- **Schedule:** a cron every minute; each run does one job — leaderboard refresh (every 6 h), stats (every 6 h), prune (daily, matches > 30 days), else poll the 5 most overdue players' battle logs. A job is scheduled off its last *attempt* (`<job>_try_at`) as well as its last success, so a failing one retries every 30 min, not every minute — a stats run reads ~400k rows, so retrying it each minute would exhaust the free 5M reads within the hour. A failed battle log is retried after 30 min, not 12 h; the proxy chain throws the occasional 520. A player is polled again at half the time their last 30 battles span (all modes fill the log), clamped to 30 min – 12 h, so their log can't roll over unseen.
 - **Storage:** `matches` holds one row per ranked match, `WITHOUT ROWID` with key `(time, both tags sorted)` — that dedupes a match between two top players and doubles as the time index. Decks are sorted card ids with `e` / `h` for a card played as evolution / hero.
 - **Free-plan limits drive the design:** 10 ms CPU and 50 subrequests a run; D1 allows only 100 bound parameters, so bulk inserts/updates pass rows as one JSON parameter through `json_each`; D1's free 100k rows written / 5M read a day is why stats are precomputed every 6 h into `state.meta` instead of per request, and why match counts come from the card tally rather than another scan.
-- **Endpoints:** `GET /meta` (the stats: `decks: [key, games, wins, draws]`, `cards: [id+form, decks, wins, draws]`, `matches`, window 7 days; CORS open, cached 10 min) and `GET /status` (progress counters, last error).
+- **Endpoints:** `GET /meta` (the stats: `decks: [key, games, wins, draws, different players]`, `cards: [id+form, decks, wins, draws]`, `matches`, `started` (collection start), window 7 days; CORS open, cached 10 min) and `GET /status` (progress counters, last error).
 - Testing a change: `npx wrangler dev --remote --test-scheduled`, then `curl "http://127.0.0.1:8787/__scheduled?cron=*+*+*+*+*"` runs one tick against the live database and binding.
 
 ## Upgrade data (hardcoded)
@@ -325,3 +327,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 31. Trophy History graph (Trophy Road / Path of Legends, 7 / 30 days / all, touch for values) in the Account tab; the equipped 1v1 deck always listed in Decks; modal history survives a reload
 32. Average elixir per deck in the battle log; Account tab's Cards Found split into cards / evolutions / heroes / tower troops; tower troop totals from the catalog
 33. New cards, evolutions, heroes and tower troops update every count without reopening the app: forms from the catalog's `maxEvolutionLevel` instead of their art, ownership read as bits, hourly catalog re-check on refresh
+34. Meta collector Worker (`collector/`) and the Meta screen (6th bottom button): top-1000 ranked deck and card stats

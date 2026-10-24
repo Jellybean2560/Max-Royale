@@ -23,6 +23,7 @@ const PRUNE_EVERY = DAY;
 const KEEP_DAYS = 30;               // matches older than this are deleted
 const WINDOW_DAYS = 7;              // the stats cover this many days
 const PLAYERS_PER_RUN = 5;          // battle logs fetched per minute (~7,200 a day max)
+const RETRY_AFTER = 30 * MINUTE;    // a failed periodic job or battle log waits this long
 const MIN_INTERVAL = 30 * MINUTE;
 const MAX_INTERVAL = 12 * HOUR;
 const TOP_DECKS = 60;
@@ -49,11 +50,21 @@ export default {
 };
 
 // ── One job per minute: whichever periodic job is due, else poll players ──
+// A job is due when its last success is older than its interval and it hasn't
+// been tried in the last RETRY_AFTER — so a failing job is retried every half
+// hour, not every minute (a failing stats run would burn ~400k rows read each
+// time), and polling carries on in between.
 async function tick(env) {
   const now = Date.now(), st = await getState(env);
-  if (now - (+st.board_at || 0) > BOARD_EVERY) return refreshBoard(env, now);
-  if (now - (+st.stats_at || 0) > STATS_EVERY && +st.matches_total > 0) return computeStats(env, now);
-  if (now - (+st.prune_at || 0) > PRUNE_EVERY) return prune(env, now);
+  const due = (job, every) => now - (+st[`${job}_at`] || 0) > every && now - (+st[`${job}_try_at`] || 0) > RETRY_AFTER;
+  const run = async (job, fn) => {
+    await setState(env, { [`${job}_try_at`]: now });
+    return fn(env, now);
+  };
+  if (!st.started_at) await setState(env, { started_at: now });
+  if (due('board', BOARD_EVERY)) return run('board', refreshBoard);
+  if (+st.matches_total > 0 && due('stats', STATS_EVERY)) return run('stats', computeStats);
+  if (due('prune', PRUNE_EVERY)) return run('prune', prune);
   return pollPlayers(env, now, st);
 }
 
@@ -102,7 +113,7 @@ async function pollPlayers(env, now, st) {
     const log = logs[i];
     if (!Array.isArray(log)) {
       errors++;
-      updates.push({ tag: p.tag, next: now + MAX_INTERVAL, last: p.last_time });
+      updates.push({ tag: p.tag, next: now + RETRY_AFTER, last: p.last_time });
       return;
     }
     let last = p.last_time || 0;
@@ -152,30 +163,32 @@ async function computeStats(env, now) {
   const since = Math.floor((now - WINDOW_DAYS * DAY) / 1000);
   const sides = `
     WITH s AS (
-      SELECT da AS deck, ca > cb AS w, ca = cb AS d FROM matches WHERE time >= ?1
+      SELECT pa AS tag, da AS deck, ca > cb AS w, ca = cb AS d FROM matches WHERE time >= ?1
       UNION ALL
-      SELECT db, cb > ca, ca = cb FROM matches WHERE time >= ?1)`;
+      SELECT pb, db, cb > ca, ca = cb FROM matches WHERE time >= ?1)`;
   // MIN / MAX read one row each off the primary key; the match count comes from
   // the card tally (every match is 2 decks × 8 cards) instead of a third scan
   const [range, decks, cards] = await env.DB.batch([
     env.DB.prepare(`SELECT (SELECT MIN(time) FROM matches WHERE time >= ?1) AS first,
                            (SELECT MAX(time) FROM matches) AS last`).bind(since),
-    env.DB.prepare(`${sides} SELECT deck, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d FROM s
-                    GROUP BY deck ORDER BY n DESC LIMIT ?2`).bind(since, TOP_DECKS),
+    env.DB.prepare(`${sides} SELECT deck, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d, COUNT(DISTINCT tag) AS p
+                    FROM s GROUP BY deck ORDER BY n DESC LIMIT ?2`).bind(since, TOP_DECKS),
     env.DB.prepare(`${sides} SELECT j.value AS card, COUNT(*) AS n, SUM(s.w) AS w, SUM(s.d) AS d
                     FROM s, json_each('["' || replace(s.deck, ',', '","') || '"]') AS j
                     GROUP BY j.value ORDER BY n DESC`).bind(since),
   ]);
   const t = range.results[0] || {};
+  const st = await getState(env);
   const matches = Math.round(cards.results.reduce((s, r) => s + r.n, 0) / 16);
   const meta = {
     updated: now,
     window_days: WINDOW_DAYS,
+    started: +st.started_at || null,  // when collection began; older matches came from the first logs
     matches,
     first: t.first ? t.first * 1000 : null,
     last: t.last ? t.last * 1000 : null,
-    // [deck key, games, wins, draws]
-    decks: decks.results.map(r => [r.deck, r.n, r.w, r.d]),
+    // [deck key, games, wins, draws, different players]
+    decks: decks.results.map(r => [r.deck, r.n, r.w, r.d, r.p]),
     // [card id + form, decks it was in, wins, draws]
     cards: cards.results.map(r => [r.card, r.n, r.w, r.d]),
   };
