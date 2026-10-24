@@ -402,3 +402,6 @@ FodyWeavers.xsd
 
 # Claude Code local config (dev-server launch config, local settings)
 .claude/
+
+# Wrangler local state (collector/)
+.wrangler/
