@@ -4,7 +4,7 @@ compatibility_date = "2026-10-01"
 
 # One tick a minute; each tick does one job (see src/index.js)
 [triggers]
-crons = ["* * * * *"]
+crons = []  # PAUSED (D1 daily read limit) — restore ["* * * * *"] to resume
 
 [[d1_databases]]
 binding = "DB"
