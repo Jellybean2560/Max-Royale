@@ -250,6 +250,10 @@
   .filter-bar::-webkit-scrollbar { display: none; }
   .filter-btn { flex-shrink: 0; padding: 6px 12px; border-radius: 20px; border: 1px solid var(--border); background: none; color: var(--muted); font-size: 12px; cursor: pointer; transition: all .2s; white-space: nowrap; }
   .filter-btn.active { background: var(--surface3); color: var(--text); border-color: var(--accent); }
+  .switch { appearance: none; -webkit-appearance: none; width: 40px; height: 22px; margin: 0; border-radius: 11px; background: var(--surface3); border: 1px solid var(--border); position: relative; cursor: pointer; flex-shrink: 0; transition: background .2s; }
+  .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform .2s, background .2s; }
+  .switch:checked { background: var(--accent); border-color: var(--accent); }
+  .switch:checked::after { transform: translateX(18px); background: #1a1a2e; }
 
   /* ── Misc ── */
   .flex-row { display: flex; align-items: center; gap: 10px; }
@@ -1212,7 +1216,7 @@ function renderSavedAccounts() {
       <button class="btn btn-primary btn-sm" onclick="menuLookup()">Go</button>
     </div>
     <div style="border-top:1px solid var(--border);margin:12px 0 10px"></div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Backup: accounts, friends, deck, matchup &amp; trophy history</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Backup: accounts, friends, deck, matchup, trophy &amp; progress history</div>
     <div class="flex-row">
       <button class="btn btn-secondary btn-sm" style="flex:1" onclick="exportBackup()">💾 Save</button>
       <button class="btn btn-secondary btn-sm" style="flex:1" onclick="document.getElementById('backup-file').click()">📂 Restore</button>
@@ -1225,7 +1229,8 @@ function renderSavedAccounts() {
 // those localStorage keys (caches are left out — they refetch); restoring
 // replaces them.
 const BACKUP_KEYS = ['cr_player_tag', 'cr_saved_accounts', 'cr_friends', 'cr_friends_sort',
-                     'cr_deck_history_v1', 'cr_matchups_v1', 'cr_coplayers_v1', 'cr_trophy_history_v1'];
+                     'cr_deck_history_v1', 'cr_matchups_v1', 'cr_coplayers_v1', 'cr_trophy_history_v1',
+                     'cr_progress_v1', 'cr_clan_tools'];
 window.exportBackup = function() {
   const data = {};
   BACKUP_KEYS.forEach(k => { const v = localStorage.getItem(k); if (v != null) data[k] = v; });
@@ -2010,6 +2015,7 @@ async function loadPlayer(tagOverride, opts = {}) {
     localStorage.setItem('cr_player_tag', data.tag);
     recordMatchups(data.tag, battles);
     recordTrophies(data, battles);
+    recordProgress(data);
     if (opts.quiet) renderProfilePreservingView(data, battles);
     else renderProfile(data, battles);
     // Save this account (name + tag) so the user can switch between accounts
@@ -2111,6 +2117,7 @@ async function autoRefreshProfile() {
 function renderProfileFromCache(cached) {
   recordMatchups(cached.data.tag, cached.battles);
   recordTrophies(cached.data, cached.battles, cached.savedAt);
+  recordProgress(cached.data, cached.savedAt);
   window._currentProfile = { data: cached.data, battles: cached.battles, savedAt: cached.savedAt };
   renderProfile(cached.data, cached.battles);
   recordCoPlayers(cached.data.tag, cached.battles);
@@ -2864,6 +2871,7 @@ function accountStatsHTML(data, battles, scope = 'p') {
   const fav = data.currentFavouriteCard;
   const days = accountAgeDays(data);
   return `
+    ${scope === 'p' ? progressHTML(data) : ''}
     ${trophyHistoryHTML(data, battles, scope)}
     <div class="card">
       <h3 style="margin-bottom:6px">👤 Account</h3>
@@ -3057,6 +3065,125 @@ window.setTrophyRange = function(scope, r) {
   st.range = r;
   const el = document.getElementById(`${scope}-trophy`);
   if (el) el.innerHTML = trophyCardBody(scope);
+};
+
+// ── Progress: what changed since a day, a week or a month ago ──
+// The API only has the profile as it is now, so this device keeps a compact
+// snapshot per tag: the last refresh of each day, plus the first one it ever saw
+// (the baseline until there's a day before today), for PROGRESS_DAYS. The
+// Account tab compares the profile against the last snapshot from before the
+// chosen range. Cards are display level × 4 + owned-form bits (1 evo, 2 hero).
+const PROGRESS_KEY = 'cr_progress_v1';
+const PROGRESS_DAYS = 32, PROGRESS_TAGS = 6;
+const PROGRESS_RANGES = [['today', 'Today'], ['7', '7 days'], ['30', '30 days']];
+function progressSnap(data, at) {
+  const lv = c => toDisplayLevel((c.rarity || 'common').toLowerCase(), c.level);
+  const map = list => Object.fromEntries((list || []).map(c => [c.id, lv(c) * 4 + ((c.evolutionLevel || 0) & 3)]));
+  const badgeLevels = mastery => (data.badges || []).filter(b => (b.name || '').startsWith('Mastery') === mastery)
+    .reduce((s, b) => s + (b.level || 0), 0);
+  const pol = data.currentPathOfLegendSeasonResult;
+  return { at, xp: data.expLevel, king: data.kingTowerLevel ?? null, cl: data.collectionLevel ?? null,
+    trophies: data.trophies, pol: pol?.trophies ?? null, league: pol?.leagueNumber ?? null,
+    battles: data.battleCount, wins: data.wins, mastery: badgeLevels(true), badges: badgeLevels(false),
+    clan: data.clan?.name || null, cards: map(data.cards), troops: map(data.supportCards) };
+}
+const sameProgress = (a, b) => JSON.stringify({ ...a, at: 0 }) === JSON.stringify({ ...b, at: 0 });
+function loadProgress() {
+  try { return JSON.parse(localStorage.getItem(PROGRESS_KEY) || '{}') || {}; } catch(e) { return {}; }
+}
+function recordProgress(data, at = Date.now()) {
+  if (!data?.tag) return;
+  const all = loadProgress(), list = all[data.tag] || [];
+  const snap = progressSnap(data, at), last = list[list.length - 1];
+  if (last && (at < last.at || sameProgress(snap, last))) return;
+  const day = t => new Date(t).toDateString();
+  if (last && list.length > 1 && day(last.at) === day(at)) list[list.length - 1] = snap;
+  else list.push(snap);
+  // Keep one snapshot from before the window: it's the 30-day baseline
+  while (list.length > 2 && list[1].at < at - PROGRESS_DAYS * 864e5) list.shift();
+  all[data.tag] = list;
+  const latest = t => all[t][all[t].length - 1]?.at || 0;
+  Object.keys(all).sort((a, b) => latest(b) - latest(a)).slice(PROGRESS_TAGS).forEach(t => delete all[t]);
+  try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(all)); } catch(e) {}
+}
+
+const _progressState = { range: '7', data: null };
+function progressHTML(data) {
+  _progressState.data = data;
+  return `<div class="card" id="p-progress">${progressCardBody()}</div>`;
+}
+function progressCardBody() {
+  const data = _progressState.data, r = _progressState.range;
+  const list = loadProgress()[data.tag] || [];
+  const from = r === 'today' ? new Date().setHours(0, 0, 0, 0) : Date.now() - r * 864e5;
+  const cur = progressSnap(data, Date.now());
+  // The last snapshot from before the range; with less history, the oldest there is
+  const base = list.filter(s => s.at <= from).pop() || (list.length > 1 ? list[0] : null);
+  const chips = `<div class="filter-bar" style="margin:0 0 8px">
+    ${PROGRESS_RANGES.map(([k, l]) => `<button class="filter-btn ${r === k ? 'active' : ''}" onclick="setProgressRange('${k}')">${l}</button>`).join('')}
+  </div>`;
+  const head = `<h3 style="margin-bottom:10px">🆕 Progress</h3>${chips}`;
+  if (!base) return `${head}<div class="empty-msg" style="padding:10px 0;font-size:12px">Tracking started ${progressWhen(list[0]?.at || Date.now())}. What changes — upgrades, unlocks, levels, rating — shows up here after your next refresh.</div>`;
+
+  const byId = Object.fromEntries([...(data.cards || []), ...(data.supportCards || [])].map(c => [c.id, c]));
+  const upgraded = [], unlocked = [];
+  for (const kind of ['cards', 'troops']) {
+    for (const [id, v] of Object.entries(cur[kind])) {
+      const c = byId[id]; if (!c) continue;
+      const old = base[kind]?.[id];
+      if (old == null) { unlocked.push([c, kind === 'troops' ? 'troop' : 'card', v >> 2]); continue; }
+      if (v >> 2 > old >> 2) upgraded.push([c, old >> 2, v >> 2]);
+      if ((v & 1) && !(old & 1)) unlocked.push([c, 'evo']);
+      if ((v & 2) && !(old & 2)) unlocked.push([c, 'hero']);
+    }
+  }
+  upgraded.sort((a, b) => b[2] - a[2] || a[0].name.localeCompare(b[0].name));
+
+  const sign = n => `<span class="${n > 0 ? 'text-green' : 'text-red'}" style="font-weight:700">${n > 0 ? '+' : ''}${fmtNum(n)}</span>`;
+  const rows = [];
+  const levelRow = (label, k) => { if (base[k] != null && cur[k] != null && cur[k] !== base[k]) rows.push(ovRow(label, `${fmtNum(base[k])} → <b>${fmtNum(cur[k])}</b>`)); };
+  levelRow('Experience Level', 'xp');
+  levelRow('King Tower', 'king');
+  if (base.cl != null && cur.cl != null && cur.cl !== base.cl) rows.push(ovRow('Collection Level', `${sign(cur.cl - base.cl)} <span class="text-muted">· ${fmtNum(cur.cl)}</span>`));
+  if (cur.trophies !== base.trophies) rows.push(ovRow('Trophies', `${sign(cur.trophies - base.trophies)} <span class="text-muted">· 🏆 ${fmtNum(cur.trophies)}</span>`));
+  if (base.league != null && cur.league != null && cur.league !== base.league)
+    rows.push(ovRow('League', `${polLeagueName({ leagueNumber: base.league })} → <b>${polLeagueName({ leagueNumber: cur.league })}</b>`));
+  if (base.pol != null && cur.pol != null && cur.pol !== base.pol) rows.push(ovRow('Path of Legends', `${sign(cur.pol - base.pol)} <span class="text-muted">· ⚔️ ${fmtNum(cur.pol)}</span>`));
+  const played = (cur.battles || 0) - (base.battles || 0), won = (cur.wins || 0) - (base.wins || 0);
+  if (played > 0) rows.push(ovRow('Battles', `${fmtNum(played)} played · ${fmtNum(won)} won`));
+  if (cur.mastery > base.mastery) rows.push(ovRow('Card Mastery', `+${cur.mastery - base.mastery} level${cur.mastery - base.mastery === 1 ? '' : 's'}`));
+  if (cur.badges > base.badges) rows.push(ovRow('Badges', `+${cur.badges - base.badges} level${cur.badges - base.badges === 1 ? '' : 's'}`));
+  if (cur.clan !== base.clan) rows.push(ovRow('Clan', cur.clan ? `${base.clan ? `${esc(base.clan)} → ` : 'Joined '}<b>${esc(cur.clan)}</b>` : `Left ${esc(base.clan)}`));
+
+  const tile = (c, img, label, color = 'var(--text)') => `
+    <div style="text-align:center;min-width:0" title="${esc(c.name)}">
+      <img src="${img}" alt="${esc(c.name)}" loading="lazy" style="width:100%;aspect-ratio:5/6;object-fit:contain;display:block">
+      <div style="font-size:11px;font-weight:600;color:${color};white-space:nowrap">${label}</div>
+    </div>`;
+  const grid = (title, items) => items.length ? `
+    <div style="${OV_SECTION_STYLE}">${title} <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· ${items.length}</span></div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px">${items.join('')}</div>` : '';
+  const unlockLabel = { card: 'New', troop: 'New', evo: 'Evo', hero: 'Hero' };
+  const body = rows.join('')
+    + grid('Upgraded', upgraded.map(([c, a, b]) => tile(c, c.iconUrls?.medium || '', `${a}→${b}`)))
+    + grid('Unlocked', unlocked.map(([c, k]) => tile(c, k === 'evo' ? evoImg(c) : k === 'hero' ? heroImg(c) : c.iconUrls?.medium || '',
+        unlockLabel[k], k === 'evo' ? 'var(--purple)' : k === 'hero' ? 'var(--accent)' : 'var(--green)')));
+  return `${head}
+    <div style="font-size:12px;color:var(--muted);margin-bottom:4px">Since ${progressWhen(base.at)}</div>
+    ${body || `<div class="empty-msg" style="padding:10px 0;font-size:12px">Nothing changed in this time.</div>`}`;
+}
+// "10:02 today", "yesterday 22:14", "21 Oct"
+function progressWhen(t) {
+  const d = new Date(t), today = new Date().setHours(0, 0, 0, 0);
+  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  if (t >= today) return `${time} today`;
+  if (t >= today - 864e5) return `yesterday ${time}`;
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+window.setProgressRange = function(r) {
+  _progressState.range = r;
+  const el = document.getElementById('p-progress');
+  if (el && _progressState.data) el.innerHTML = progressCardBody();
 };
 
 // W/L per game mode over the battle log (~30 most recent games).
@@ -5073,6 +5200,7 @@ let _clanTag = '', _clanTab = 'members', _warSort = 'today';
 const _clanWar = {};
 const CLAN_WAR_TTL_MS = 60 * 1000;
 let _clanSort = 'trophies';
+let _clanAway = 0;  // Members filter: only those away this many days (0 = all)
 
 let _loadClanSeq = 0;
 async function loadClan() {
@@ -5107,9 +5235,10 @@ function loadClanCache(tag) {
 
 function renderClan(data) {
   _clanMembers = data.memberList || [];
-  if (data.tag !== _clanTag) { _clanTag = data.tag; _clanTab = 'members'; }
+  if (data.tag !== _clanTag) { _clanTag = data.tag; _clanTab = 'members'; _clanAway = 0; _partAll = false; }
   document.getElementById('clan-result').innerHTML = `
     ${clanHeaderHTML(data)}
+    <div id="clan-tools">${clanToolsHTML()}</div>
     <div class="tab-bar" id="clan-tabs">
       <button class="tab-btn" data-ctab="members" onclick="clanTab('members')">Members</button>
       <button class="tab-btn" data-ctab="war" onclick="clanTab('war')">River Race</button>
@@ -5161,6 +5290,7 @@ window.clanTab = async function(name) {
   if (!pane) return;
   if (name === 'members') {
     pane.innerHTML = `
+      ${clanTools().inactive ? '<div id="clan-away-bar"></div>' : ''}
       <div style="margin-bottom:10px">
         <select id="clan-sort-select" onchange="setClanSort(this.value)" style="${CLAN_SELECT_STYLE}">
           ${CLAN_SORTS.map(([v,l]) =>
@@ -5178,6 +5308,137 @@ window.clanTab = async function(name) {
   if (tag !== _clanTag || _clanTab !== name) return;  // switched clan or tab meanwhile
   pane.innerHTML = name === 'war' ? riverRaceHTML(war.race, tag) : warHistoryHTML(war.log, tag);
 };
+
+// ── Clan tools: extras for leaders and co-leaders, each off until switched on ──
+const CLAN_TOOLS_KEY = 'cr_clan_tools';
+const CLAN_TOOLS = [
+  ['decksLeft', '⏳ War decks left today', 'River Race: who still has decks to play today, with a list to copy into clan chat'],
+  ['participation', '📋 War participation', "War History: each member's decks used over the last 10 races"],
+  ['inactive', '💤 Inactive members', 'Members: marks members away for 3+ days, with a filter'],
+];
+const WAR_DECKS_PER_DAY = 4, WAR_DECKS_PER_RACE = 16;  // 4 war days a week
+function clanTools() {
+  try { return JSON.parse(localStorage.getItem(CLAN_TOOLS_KEY) || '{}') || {}; } catch(e) { return {}; }
+}
+let _clanToolsOpen = false;
+function clanToolsHTML() {
+  const on = clanTools(), n = CLAN_TOOLS.filter(([k]) => on[k]).length;
+  return `
+    <div style="display:flex;justify-content:flex-end;margin:-4px 0 10px">
+      <button class="filter-btn ${_clanToolsOpen ? 'active' : ''}" onclick="toggleClanTools()">🛠 Clan tools${n ? ` · ${n} on` : ''} ${_clanToolsOpen ? '▲' : '▼'}</button>
+    </div>
+    ${_clanToolsOpen ? `<div class="card" style="padding:4px 14px 10px">
+      ${CLAN_TOOLS.map(([k, label, desc]) => `
+        <label class="stat-row" style="cursor:pointer;gap:12px">
+          <span style="min-width:0;flex:1">
+            <span style="display:block;color:var(--text);font-weight:600;font-size:14px">${label}</span>
+            <span style="font-size:11px;color:var(--muted)">${desc}</span>
+          </span>
+          <input type="checkbox" class="switch" ${on[k] ? 'checked' : ''} onchange="setClanTool('${k}', this.checked)">
+        </label>`).join('')}
+      <div style="font-size:11px;color:var(--muted);margin-top:8px">Saved on this device, for every clan you look up.</div>
+    </div>` : ''}`;
+}
+window.toggleClanTools = function() {
+  _clanToolsOpen = !_clanToolsOpen;
+  const el = document.getElementById('clan-tools');
+  if (el) el.innerHTML = clanToolsHTML();
+};
+window.setClanTool = function(k, on) {
+  const t = clanTools();
+  t[k] = on;
+  try { localStorage.setItem(CLAN_TOOLS_KEY, JSON.stringify(t)); } catch(e) {}
+  if (k === 'inactive' && !on) _clanAway = 0;
+  const el = document.getElementById('clan-tools');
+  if (el) el.innerHTML = clanToolsHTML();
+  clanTab(_clanTab);
+};
+
+// Members who haven't used all 4 decks today (no race entry = none used)
+let _decksLeftText = '';
+function decksLeftHTML(ours) {
+  const parts = Object.fromEntries((ours?.participants || []).map(p => [p.tag, p]));
+  const left = _clanMembers.map(m => ({ name: m.name, tag: m.tag, left: WAR_DECKS_PER_DAY - (parts[m.tag]?.decksUsedToday || 0) }))
+    .filter(r => r.left > 0)
+    .sort((a, b) => b.left - a.left || a.name.localeCompare(b.name));
+  if (!left.length) return `<div class="card"><h3 style="margin-bottom:4px">⏳ Decks Left Today</h3><div class="text-green" style="font-size:13px">✓ Everyone has played all ${WAR_DECKS_PER_DAY} decks today.</div></div>`;
+  const decks = left.reduce((s, r) => s + r.left, 0);
+  _decksLeftText = `War decks still to play today (${decks}): ` + left.map(r => `${r.name} ${r.left}`).join(', ');
+  return `
+    <div class="card">
+      <div class="flex-between" style="margin-bottom:4px">
+        <h3 style="margin:0">⏳ Decks Left Today</h3>
+        <button class="btn btn-secondary btn-sm" onclick="copyDecksLeft(this)">📋 Copy list</button>
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">${left.length} member${left.length === 1 ? '' : 's'} · ${decks} deck${decks === 1 ? '' : 's'} still to play</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${left.map(r => `<span onclick="viewFriend('${esc(r.tag)}')" style="cursor:pointer;background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:4px 10px;font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name)} <b style="color:${r.left === WAR_DECKS_PER_DAY ? 'var(--red)' : 'var(--accent)'}">${r.left}</b></span>`).join('')}
+      </div>
+    </div>`;
+}
+window.copyDecksLeft = function(btn) {
+  const done = t => { const o = btn.textContent; btn.textContent = t; setTimeout(() => btn.textContent = o, 1800); };
+  navigator.clipboard.writeText(_decksLeftText).then(() => done('✓ Copied'), () => done('Copy failed'));
+};
+
+// Each current member over the logged races: decks used out of 16 per race they
+// were in (a race lists everyone who was in the clan, played or not)
+let _partSort = 'low', _partAll = false;
+function participationHTML(log, tag) {
+  const stats = {};
+  let races = 0;
+  log.forEach(race => {
+    const mine = (race.standings || []).find(s => s.clan.tag === tag);
+    if (!mine) return;
+    races++;
+    (mine.clan.participants || []).forEach(p => {
+      const s = stats[p.tag] || (stats[p.tag] = { races: 0, decks: 0, fame: 0 });
+      s.races++; s.decks += p.decksUsed || 0; s.fame += p.fame || 0;
+    });
+  });
+  if (!races) return '';
+  const rows = _clanMembers.map(m => {
+    const s = stats[m.tag] || { races: 0, decks: 0, fame: 0 };
+    return { ...s, name: m.name, tag: m.tag, pct: s.races ? s.decks / (s.races * WAR_DECKS_PER_RACE) : null };
+  });
+  const dir = _partSort === 'low' ? 1 : -1;
+  rows.sort((a, b) => (a.pct == null) - (b.pct == null) || dir * (a.pct - b.pct) || dir * (a.decks - b.decks) || a.name.localeCompare(b.name));
+  const shown = _partAll ? rows : rows.slice(0, 10);
+  const color = p => p >= 0.9 ? 'var(--green)' : p >= 0.5 ? 'var(--accent)' : 'var(--red)';
+  return `
+    <div class="card">
+      <h3 style="margin-bottom:4px">📋 War Participation</h3>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Decks used in the last ${races} race${races === 1 ? '' : 's'}, out of ${WAR_DECKS_PER_RACE} for each race they were in the clan for</div>
+      <div class="seg" style="margin-bottom:6px">
+        <button class="${_partSort === 'low' ? 'active' : ''}" onclick="setPartSort('low')">Lowest first</button>
+        <button class="${_partSort === 'high' ? 'active' : ''}" onclick="setPartSort('high')">Highest first</button>
+      </div>
+      ${shown.map(r => `
+        <div class="stat-row" onclick="viewFriend('${esc(r.tag)}')" style="cursor:pointer">
+          <span class="stat-label" style="min-width:0;flex:1">
+            <span style="display:block;color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name)}</span>
+            <span style="font-size:11px">${r.races ? `🃏 ${r.decks} / ${r.races * WAR_DECKS_PER_RACE} · ${r.races} race${r.races === 1 ? '' : 's'} · ⭐ ${fmtNum(Math.round(r.fame / r.races))} a race` : 'Joined after the last race'}</span>
+          </span>
+          <span style="font-weight:700;font-size:15px;flex-shrink:0;margin-left:8px;color:${r.pct == null ? 'var(--muted)' : color(r.pct)}">${r.pct == null ? '—' : Math.round(r.pct * 100) + '%'}</span>
+        </div>`).join('')}
+      ${rows.length > shown.length ? `<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="setPartAll()">Show all ${rows.length}</button>` : ''}
+    </div>`;
+}
+function redrawWarHistory() {
+  const war = _clanWar[_clanTag], pane = document.getElementById('clan-pane');
+  if (war && pane && _clanTab === 'history') pane.innerHTML = warHistoryHTML(war.log, _clanTag);
+}
+window.setPartSort = function(v) { _partSort = v; redrawWarHistory(); };
+window.setPartAll = function() { _partAll = true; redrawWarHistory(); };
+
+const awayDays = m => m.lastSeen ? (Date.now() - parseApiTime(m.lastSeen).getTime()) / 864e5 : 0;
+const AWAY_FILTERS = [[0, 'All'], [3, '3+ days away'], [7, '7+ days'], [14, '14+ days']];
+function clanAwayBarHTML() {
+  return `<div class="filter-bar" style="margin-bottom:10px">
+    ${AWAY_FILTERS.map(([d, l]) => `<button class="filter-btn ${_clanAway === d ? 'active' : ''}" onclick="setClanAway(${d})">${l} (${d ? _clanMembers.filter(m => awayDays(m) >= d).length : _clanMembers.length})</button>`).join('')}
+  </div>`;
+}
+window.setClanAway = function(d) { _clanAway = d; renderMembers(_clanMembers); };
 
 async function loadClanWar(tag) {
   const c = _clanWar[tag];
@@ -5227,6 +5488,7 @@ function riverRaceHTML(race, tag) {
     (raceFinished(b) - raceFinished(a)) || (raceFinished(a) && a.finishTime.localeCompare(b.finishTime)) || (b.fame||0) - (a.fame||0));
   const ours = race.clans.find(c => c.tag === tag) || race.clan;
   return `
+    ${clanTools().decksLeft && race.periodType !== 'training' ? decksLeftHTML(ours) : ''}
     <div class="card">
       <div class="flex-between" style="margin-bottom:6px">
         <h3 style="margin:0">⛵ River Race</h3>
@@ -5282,7 +5544,7 @@ function warHistoryHTML(log, tag) {
   if (!log) return '<div class="empty-msg">War history isn\'t available for this clan right now.</div>';
   if (!log.length) return '<div class="empty-msg">No finished River Races yet.</div>';
   const memberTags = new Set(_clanMembers.map(m => m.tag));
-  return log.map((race, i) => {
+  return (clanTools().participation ? participationHTML(log, tag) : '') + log.map((race, i) => {
     const standings = [...(race.standings || [])].sort((a,b) => a.rank - b.rank);
     const mine = standings.find(s => s.clan.tag === tag);
     if (!mine) return '';
@@ -5326,10 +5588,15 @@ window.setClanSort = function(by) {
 
 function renderMembers(members) {
   const list = document.getElementById('clan-members-list');
-  if (list) list.innerHTML = memberRowsHTML(members, _clanSort);
+  const bar = document.getElementById('clan-away-bar');  // there when the Inactive members tool is on
+  if (bar) bar.innerHTML = clanAwayBarHTML();
+  const shown = bar && _clanAway ? members.filter(m => awayDays(m) >= _clanAway) : members;
+  if (list) list.innerHTML = shown.length ? memberRowsHTML(shown, _clanSort, '', !!bar)
+    : `<div class="empty-msg">Nobody has been away ${_clanAway}+ days.</div>`;
 }
-// highlightTag: the player whose profile this list was opened from
-function memberRowsHTML(members, sort, highlightTag = '') {
+// highlightTag: the player whose profile this list was opened from; markAway
+// tags members not seen for 3+ days (the Inactive members clan tool)
+function memberRowsHTML(members, sort, highlightTag = '', markAway = false) {
   const sorted = [...members];
   if (sort === 'trophies') sorted.sort((a,b) => (b.trophies||0) - (a.trophies||0));
   else if (sort === 'donations') sorted.sort((a,b) => (b.donations||0) - (a.donations||0));
@@ -5348,10 +5615,11 @@ function memberRowsHTML(members, sort, highlightTag = '') {
     else if (prev < cur) move = `<span style="color:var(--red)" title="Down ${cur-prev}">▼</span>`;
     else move = '<span style="color:var(--muted)">–</span>';
     const seen = formatBattleTime(m.lastSeen);
+    const away = markAway ? Math.floor(awayDays(m)) : 0;
     return `
     <div class="member-item" onclick="viewFriend('${esc(m.tag)}')" style="cursor:pointer${m.tag === highlightTag ? ';border-color:var(--accent)' : ''}">
       <div>
-        <div class="member-name"><span style="color:var(--muted);font-size:12px">#${cur}</span> ${move} ${esc(m.name)}</div>
+        <div class="member-name"><span style="color:var(--muted);font-size:12px">#${cur}</span> ${move} ${esc(m.name)}${away >= 3 ? ` <span class="badge" style="font-size:10px;padding:1px 6px;background:${away >= 7 ? 'rgba(231,76,60,.15)' : '#3d2f00'};color:${away >= 7 ? 'var(--red)' : 'var(--accent)'}">💤 ${away}d</span>` : ''}</div>
         <div class="member-role">${roleLabel[m.role]||m.role} · ${m.tag}</div>
         ${seen ? `<div style="color:var(--muted);font-size:11px;margin-top:2px">🕓 ${seen}</div>` : ''}
       </div>
