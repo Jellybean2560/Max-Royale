@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS players (
   name      TEXT,
   rank      INTEGER,
   rating    INTEGER,
+  clan      TEXT,              -- clan name, from the leaderboard (added later: ALTER TABLE players ADD COLUMN clan TEXT)
   seen_at   INTEGER,           -- last leaderboard refresh they were on
   next_poll INTEGER,
   last_time INTEGER DEFAULT 0,

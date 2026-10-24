@@ -12,10 +12,14 @@
 //    parameters), matches are stored once (no extra index) and kept 30 days,
 //    and the stats are computed every 6 hours, not per request (each run reads
 //    the week's matches four times, and the week before twice more once there
-//    is one for trends: ~2.5M rows a day at ~15k matches a day).
+//    is one for trends: ~2.5M rows a day at ~15k matches a day). The top players'
+//    main decks take two more passes. Every heavy query's rows_read is counted
+//    per UTC day, and a job that would push the day past READ_BUDGET waits for
+//    tomorrow instead of running into D1's limit.
 //
 // GET /meta    the latest stats (CORS open, for the app)
-// GET /status  collection progress and the last error
+// GET /top     the top 1,000 with rank, rating, clan and main deck
+// GET /status  collection progress, reads used today and the last error
 
 const MINUTE = 60e3, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 const BOARD_EVERY = 6 * HOUR;       // leaderboard refresh
@@ -28,6 +32,8 @@ const RETRY_AFTER = 30 * MINUTE;    // a failed periodic job or battle log waits
 const MIN_INTERVAL = 30 * MINUTE;
 const MAX_INTERVAL = 12 * HOUR;
 const TOP_DECKS = 300;              // enough to search by card and find similar decks
+const TOP_EVERY = 6 * HOUR;         // recompute /top (main deck per player)
+const READ_BUDGET = 4e6;            // of D1's free 5M rows read a day — the rest is polling and /status
 
 export default {
   async scheduled(event, env, ctx) {
@@ -36,8 +42,8 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
-    if (url.pathname === '/meta') {
-      const row = await env.DB.prepare(`SELECT v FROM state WHERE k = 'meta'`).first();
+    if (url.pathname === '/meta' || url.pathname === '/top') {
+      const row = await env.DB.prepare(`SELECT v FROM state WHERE k = ?1`).bind(url.pathname.slice(1)).first();
       return new Response(row?.v || JSON.stringify({ empty: true }), { headers: { ...headers, 'Cache-Control': 'public, max-age=600' } });
     }
     if (url.pathname === '/status') {
@@ -46,7 +52,7 @@ export default {
       const day = await env.DB.prepare(`SELECT COUNT(*) AS n FROM matches WHERE time >= ?1`).bind(Math.floor((Date.now() - DAY) / 1000)).first();
       return new Response(JSON.stringify({ ...st, players: board?.n || 0, players_polled: board?.polled || 0, matches_last_24h: day?.n || 0 }, null, 2), { headers });
     }
-    return new Response('Max Royale meta collector — see /meta and /status', { status: 404 });
+    return new Response('Max Royale meta collector — see /meta, /top and /status', { status: 404 });
   },
 };
 
@@ -63,10 +69,23 @@ async function tick(env) {
     return fn(env, now);
   };
   if (!st.started_at) await setState(env, { started_at: now });
+  // A heavy job runs only if what it read last time still fits in today's budget
+  const fits = job => readsToday(st, now) + (+st[`${job}_reads`] || 0) <= READ_BUDGET;
   if (due('board', BOARD_EVERY)) return run('board', refreshBoard);
-  if (+st.matches_total > 0 && due('stats', STATS_EVERY)) return run('stats', computeStats);
+  if (+st.matches_total > 0 && due('stats', STATS_EVERY) && fits('stats')) return run('stats', computeStats);
+  if (+st.matches_total > 0 && due('top', TOP_EVERY) && fits('top')) return run('top', computeTop);
   if (due('prune', PRUNE_EVERY)) return run('prune', prune);
   return pollPlayers(env, now, st);
+}
+
+// D1's daily limits reset at midnight UTC
+const dayKey = now => new Date(now).toISOString().slice(0, 10);
+const readsToday = (st, now) => st.reads_day === dayKey(now) ? +st.reads_count || 0 : 0;
+const rowsRead = results => results.reduce((sum, r) => sum + (r?.meta?.rows_read || 0), 0);
+// Adds a job's reads to today's count and remembers them as its next estimate
+async function countReads(env, job, now, reads, extra) {
+  const st = await getState(env);
+  await setState(env, { ...extra, reads_day: dayKey(now), reads_count: readsToday(st, now) + reads, [`${job}_reads`]: reads });
 }
 
 // The app's proxy Worker forwards the path to the Clash Royale API
@@ -80,16 +99,16 @@ async function api(env, path) {
 
 async function refreshBoard(env, now) {
   const board = await api(env, '/locations/global/pathoflegend/players?limit=1000');
-  const items = (board.items || []).map(p => ({ tag: p.tag, name: p.name, rank: p.rank, rating: p.eloRating }));
+  const items = (board.items || []).map(p => ({ tag: p.tag, name: p.name, rank: p.rank, rating: p.eloRating, clan: p.clan?.name || null }));
   if (!items.length) throw new Error('empty leaderboard');
   // New players are due at once; existing ones keep their schedule
   await env.DB.prepare(`
-    INSERT INTO players (tag, name, rank, rating, seen_at, next_poll)
+    INSERT INTO players (tag, name, rank, rating, clan, seen_at, next_poll)
     SELECT json_extract(value, '$.tag'), json_extract(value, '$.name'), json_extract(value, '$.rank'),
-           json_extract(value, '$.rating'), ?2, ?2
+           json_extract(value, '$.rating'), json_extract(value, '$.clan'), ?2, ?2
     FROM json_each(?1) WHERE true
     ON CONFLICT (tag) DO UPDATE SET name = excluded.name, rank = excluded.rank,
-      rating = excluded.rating, seen_at = excluded.seen_at`).bind(JSON.stringify(items), now).run();
+      rating = excluded.rating, clan = excluded.clan, seen_at = excluded.seen_at`).bind(JSON.stringify(items), now).run();
   await setState(env, { board_at: now, board_size: items.length });
 }
 
@@ -204,7 +223,35 @@ async function computeStats(env, now) {
     // The week before, for trends: { matches, cards: [card, decks, wins] }; null until collected
     prev: prev ? { matches: count(prev.results), cards: prev.results.map(r => [r.card, r.n, r.w]) } : null,
   };
-  await setState(env, { stats_at: now, meta: JSON.stringify(meta) });
+  await countReads(env, 'stats', now, rowsRead(results), { stats_at: now, meta: JSON.stringify(meta) });
+}
+
+// The current top 1,000 with each player's most played ranked deck over the
+// window and their overall record in it (players with no ranked match collected
+// in the window get no deck)
+async function computeTop(env, now) {
+  const st = await getState(env);
+  const since = Math.floor((now - WINDOW_DAYS * DAY) / 1000), onBoard = (+st.board_at || 0) - HOUR;
+  const res = await env.DB.prepare(`
+    WITH s AS (
+      SELECT pa AS tag, da AS deck, ca > cb AS w FROM matches WHERE time >= ?1
+      UNION ALL
+      SELECT pb, db, cb > ca FROM matches WHERE time >= ?1),
+    g AS (SELECT s.tag, s.deck, COUNT(*) AS n, SUM(s.w) AS w FROM s JOIN players p ON p.tag = s.tag AND p.seen_at >= ?2
+          GROUP BY s.tag, s.deck),
+    -- the player's totals come from the same grouping, so the matches are read once
+    r AS (SELECT tag, deck, n, ROW_NUMBER() OVER (PARTITION BY tag ORDER BY n DESC) AS rk,
+                 SUM(n) OVER (PARTITION BY tag) AS games, SUM(w) OVER (PARTITION BY tag) AS wins FROM g)
+    SELECT p.tag, p.name, p.clan, p.rank, p.rating, r.deck, r.n, r.games, r.wins
+    FROM players p LEFT JOIN r ON r.tag = p.tag AND r.rk = 1
+    WHERE p.seen_at >= ?2 ORDER BY p.rank`).bind(since, onBoard).all();
+  const top = {
+    updated: now,
+    window_days: WINDOW_DAYS,
+    // [tag, name, clan, rank, rating, main deck key, games with it, ranked games, wins]
+    players: res.results.map(r => [r.tag, r.name, r.clan, r.rank, r.rating, r.deck, r.n || 0, r.games || 0, r.wins || 0]),
+  };
+  await countReads(env, 'top', now, rowsRead([res]), { top_at: now, top: JSON.stringify(top) });
 }
 
 async function prune(env, now) {
@@ -218,7 +265,7 @@ async function prune(env, now) {
 }
 
 async function getState(env) {
-  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k != 'meta'`).all();
+  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top')`).all();
   return Object.fromEntries(results.map(r => [r.k, r.v]));
 }
 async function setState(env, values) {

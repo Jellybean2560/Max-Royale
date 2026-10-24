@@ -4611,6 +4611,8 @@ window.upgradeDeck = function(names) {
 // kept in localStorage so the screen opens instantly and works offline.
 const META_URL = 'https://max-royale-meta.jellevandenwouwer.workers.dev/meta';
 const META_CACHE_KEY = 'cr_meta_cache';
+const META_TOP_URL = 'https://max-royale-meta.jellevandenwouwer.workers.dev/top';
+const META_TOP_CACHE_KEY = 'cr_meta_top_cache';
 const META_MAX_AGE_MS = 30 * 60 * 1000;
 const META_MIN_DECK_GAMES = 10;     // win rate / 3-crown sorts need this many games
 const META_MIN_CARD_SHARE = 0.02;   // … and a card in 2% of decks
@@ -4622,6 +4624,7 @@ const META_SORTS = {
 const META_KINDS = { all: 'All', evo: 'Evolutions', hero: 'Heroes' };
 let _meta = null, _metaView = 'decks', _metaSort = { decks: 'played', cards: 'used' }, _metaLoading = false;
 let _metaQuery = '', _metaKind = 'all', _metaShown = META_PAGE, _metaParsed = null;
+let _metaTop = null, _metaTopLoading = false, _metaTopQuery = '';
 
 function metaCardOf(key) {
   const id = parseInt(key, 10), form = key.endsWith('e') ? 'evo' : key.endsWith('h') ? 'hero' : '';
@@ -4654,6 +4657,17 @@ function metaParsed(m) {
   return _metaParsed;
 }
 
+// GET a collector endpoint as { data, savedAt }, saved to localStorage
+async function fetchMetaJSON(url, cacheKey) {
+  let res;
+  try { res = await fetch(url, { cache: 'no-cache' }); }  // the 30-min checks decide freshness
+  catch(e) { throw new Error('Connection failed — check your internet connection and try again.'); }
+  if (!res.ok) throw new Error(`The meta service isn't responding right now (error ${res.status}).`);
+  const out = { data: await res.json(), savedAt: Date.now() };
+  try { localStorage.setItem(cacheKey, JSON.stringify(out)); } catch(e) {}
+  return out;
+}
+
 async function renderMetaScreen() {
   const el = document.getElementById('meta-result');
   if (!_meta) {
@@ -4666,12 +4680,7 @@ async function renderMetaScreen() {
   if (_metaLoading) return;
   _metaLoading = true;
   try {
-    let res;
-    try { res = await fetch(META_URL, { cache: 'no-cache' }); }  // the 30-min check above decides freshness
-    catch(e) { throw new Error('Connection failed — check your internet connection and try again.'); }
-    if (!res.ok) throw new Error(`The meta service isn't responding right now (error ${res.status}).`);
-    _meta = { data: await res.json(), savedAt: Date.now() };
-    try { localStorage.setItem(META_CACHE_KEY, JSON.stringify(_meta)); } catch(e) {}
+    _meta = await fetchMetaJSON(META_URL, META_CACHE_KEY);
     if (currentScreen === 'meta') drawMeta();
   } catch(e) {
     if (!_meta?.data) el.innerHTML = `<div class="error-msg">${esc(e.message)}</div>`;
@@ -4697,7 +4706,9 @@ function drawMeta() {
   const sorts = view === 'cards' && !P.hasPrev
     ? Object.fromEntries(Object.entries(META_SORTS.cards).filter(([v]) => v !== 'trend'))
     : META_SORTS[view];
-  const controls = view === 'you' ? '' : `
+  const controls = view === 'you' ? '' : view === 'players' ? `
+    <input type="search" value="${esc(_metaTopQuery)}" placeholder="🔍 Player or clan name…" oninput="setMetaTopQuery(this.value)"
+      style="width:100%;margin-bottom:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:14px;font-family:'Inter',sans-serif">` : `
     <select onchange="setMetaSort(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
       ${Object.entries(sorts).map(([v, l]) => `<option value="${v}"${sort === v ? ' selected' : ''}>Sort: ${l}</option>`).join('')}
     </select>
@@ -4714,7 +4725,7 @@ function drawMeta() {
       <div style="font-size:11px;color:var(--muted);margin-top:4px">Updated ${fmtAgo(Date.now() - m.updated)}${young ? ` · still collecting — the numbers settle once there's a full week of matches` : ''}</div>
     </div>
     <div class="seg" style="margin-bottom:10px">
-      ${[['decks', 'Decks'], ['cards', 'Cards'], ['you', 'You']].map(([v, l]) => `<button class="${view === v ? 'active' : ''}" onclick="setMetaView('${v}')">${l}</button>`).join('')}
+      ${[['decks', 'Decks'], ['cards', 'Cards'], ['players', 'Players'], ['you', 'You']].map(([v, l]) => `<button class="${view === v ? 'active' : ''}" onclick="setMetaView('${v}')">${l}</button>`).join('')}
     </div>
     ${controls}
     <div id="meta-list">${metaListHTML()}</div>`;
@@ -4724,6 +4735,7 @@ function metaListHTML() {
   if (!P) return '';
   if (_metaView === 'decks') return metaDecksHTML(P, _metaSort.decks);
   if (_metaView === 'cards') return metaCardsHTML(P, _metaSort.cards);
+  if (_metaView === 'players') return metaPlayersHTML();
   return metaYouHTML(P);
 }
 function redrawMetaList() {
@@ -4912,6 +4924,67 @@ function metaYouHTML(P) {
   }
   return parts.join('');
 }
+
+// ── Players: the global top 1,000 with each one's most played ranked deck ──
+// /top is fetched when the view first opens (it's ~190 KB, the rest of Meta
+// doesn't need it) and kept like /meta. Tap a player to open their profile.
+async function loadMetaTop() {
+  if (!_metaTop) {
+    try { _metaTop = JSON.parse(localStorage.getItem(META_TOP_CACHE_KEY) || 'null'); } catch(e) {}
+  }
+  if ((_metaTop && Date.now() - _metaTop.savedAt < META_MAX_AGE_MS) || _metaTopLoading) return;
+  _metaTopLoading = true;
+  try {
+    _metaTop = await fetchMetaJSON(META_TOP_URL, META_TOP_CACHE_KEY);
+  } catch(e) {
+    if (!_metaTop) _metaTop = { error: e.message };
+  } finally {
+    _metaTopLoading = false;
+    if (currentScreen === 'meta' && _metaView === 'players') redrawMetaList();
+  }
+}
+function metaPlayersHTML() {
+  if (!_metaTop?.data) {
+    if (_metaTop?.error) return `<div class="error-msg">${esc(_metaTop.error)}</div>`;
+    loadMetaTop();
+    return '<div class="spinner"></div>';
+  }
+  if (Date.now() - _metaTop.savedAt >= META_MAX_AGE_MS) loadMetaTop();  // quietly refresh
+  const t = _metaTop.data;
+  if (t.empty || !t.players?.length) return `<div class="empty-msg">The top players list isn't ready yet — check back in a few hours.</div>`;
+  const mine = new Set(getSavedAccounts().map(a => a.tag));
+  const friends = new Set(getFriends().map(f => f.tag));
+  const q = _metaTopQuery.trim().toLowerCase();
+  let list = t.players;
+  if (q) list = list.filter(([, name, clan]) => (name || '').toLowerCase().includes(q) || (clan || '').toLowerCase().includes(q));
+  if (!list.length) return `<div class="empty-msg">No top player matches "${esc(_metaTopQuery.trim())}".</div>`;
+  const art = buildCardArtMap([]);
+  const shown = list.slice(0, _metaShown);
+  return `<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Main deck: their most played ranked deck in the last ${t.window_days} days. Updated ${fmtAgo(Date.now() - t.updated)}.</div>`
+    + shown.map(([tag, name, clan, rank, rating, deck, deckGames, games, wins]) => {
+      const label = mine.has(tag) ? 'You' : friends.has(tag) ? 'Friend' : '';
+      const cards = deck ? metaDeckCards(deck) : [];
+      return `
+      <div class="deck-item" style="cursor:pointer" onclick="viewFriend('${esc(tag)}')">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <span class="text-muted" style="font-size:12px">#${rank}</span> <b>${esc(name || tag)}</b>
+            ${label ? `<span class="badge badge-gold" style="font-size:10px;margin-left:4px">${label}</span>` : ''}
+          </span>
+          <span style="white-space:nowrap;font-weight:700;color:var(--accent)">⚔️ ${fmtNum(rating)}</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin:2px 0 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${clan ? `🛡 ${esc(clan)}` : 'No clan'}${games ? ` · ${games} ranked games · ${Math.round(wins / games * 100)}% wins` : ''}
+        </div>
+        ${cards.length ? `
+          <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:3px">${cards.map(c => deckTileHTML(c.name, c.form, art[c.name], 'deck-list-tile')).join('')}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">Main deck · ${deckGames} of ${games} games</div>`
+        : `<div style="font-size:12px;color:var(--muted)">No ranked games collected in the last ${t.window_days} days.</div>`}
+      </div>`;
+    }).join('')
+    + (list.length > shown.length ? `<button class="btn btn-secondary" style="width:100%;margin-top:4px" onclick="metaShowMore()">Show more (${list.length - shown.length} more)</button>` : '');
+}
+window.setMetaTopQuery = function(v) { _metaTopQuery = v; _metaShown = META_PAGE; redrawMetaList(); };
 
 window.setMetaView = function(v) { _metaView = v; _metaShown = META_PAGE; drawMeta(); };
 window.setMetaSort = function(v) { _metaSort[_metaView] = v; _metaShown = META_PAGE; redrawMetaList(); };
