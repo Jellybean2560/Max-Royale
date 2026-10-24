@@ -19,3 +19,7 @@ service = "quiet-frost-f9f0"
 
 [observability]
 enabled = true
+
+# Set to "0" (and restore the cron above) to resume collecting
+[vars]
+PAUSED = "1"

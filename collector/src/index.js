@@ -42,6 +42,7 @@ const READ_BUDGET = 4e6;            // of D1's free 5M rows read a day — the r
 
 export default {
   async scheduled(event, env, ctx) {
+    if (env.PAUSED === '1') return;  // wrangler.toml [vars]: collection paused, no D1 access at all
     ctx.waitUntil(tick(env).catch(e => setState(env, { last_error: `${new Date().toISOString()} ${e.message}` })));
   },
   async fetch(req, env) {
