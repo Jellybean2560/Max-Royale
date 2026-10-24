@@ -1,0 +1,21 @@
+name = "max-royale-meta"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# One tick a minute; each tick does one job (see src/index.js)
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "max-royale-meta"
+database_id = "83db5505-795b-4d7c-bc0f-e02dd74ef43d"
+
+# The app's API proxy Worker, which holds the Clash Royale key — called through
+# a service binding, so this Worker never needs the key itself
+[[services]]
+binding = "CR"
+service = "quiet-frost-f9f0"
+
+[observability]
+enabled = true

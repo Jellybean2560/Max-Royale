@@ -1,0 +1,11 @@
+{
+  "name": "max-royale-meta",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.143.0"
+  }
+}

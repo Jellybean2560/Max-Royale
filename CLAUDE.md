@@ -30,6 +30,7 @@ evo-hero-icon.webp
 tower-troop-icon.webp
 .github/workflows/deploy.yml      ← GitHub Pages auto-deploy workflow
 README.md                         ← setup instructions
+collector/                        ← meta collector Worker (not part of the app; see *Meta collector*)
 ```
 
 ---
@@ -190,6 +191,16 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compa
 | `cr_deck_history_v1` | Per-tag deck W/L/D history (+ `last` played battleTime), deduped by `battleTime`. Keys are sorted names with `[evo]`/`[hero]` suffixes; entries without `variants` predate that and are adopted by the first matching card set played again |
 
 ---
+
+## Meta collector (`collector/`)
+A separate Cloudflare Worker, **`max-royale-meta`** (`https://max-royale-meta.jellevandenwouwer.workers.dev`), with a D1 database `max-royale-meta`. It collects the **ranked (Path of Legends) matches of the global top 1,000** so the app can show top-player deck and card win rates — data no public API offers. Deploy with `cd collector && npx wrangler deploy` (wrangler is logged in on this PC); nothing deploys on push. Schema: `collector/schema.sql` (`npx wrangler d1 execute max-royale-meta --remote --file=schema.sql`).
+
+- **API access:** through a *service binding* to the app's proxy Worker `quiet-frost-f9f0` (`env.CR.fetch('https://cr/<path>')`), so the collector never holds the API key. A plain fetch of the proxy's workers.dev URL from another Worker on the same account would fail.
+- **Schedule:** a cron every minute; each run does one job — leaderboard refresh (every 6 h), stats (every 6 h), prune (daily, matches > 30 days), else poll the 5 most overdue players' battle logs. A player is polled again at half the time their last 30 battles span (all modes fill the log), clamped to 30 min – 12 h, so their log can't roll over unseen.
+- **Storage:** `matches` holds one row per ranked match, `WITHOUT ROWID` with key `(time, both tags sorted)` — that dedupes a match between two top players and doubles as the time index. Decks are sorted card ids with `e` / `h` for a card played as evolution / hero.
+- **Free-plan limits drive the design:** 10 ms CPU and 50 subrequests a run; D1 allows only 100 bound parameters, so bulk inserts/updates pass rows as one JSON parameter through `json_each`; D1's free 100k rows written / 5M read a day is why stats are precomputed every 6 h into `state.meta` instead of per request, and why match counts come from the card tally rather than another scan.
+- **Endpoints:** `GET /meta` (the stats: `decks: [key, games, wins, draws]`, `cards: [id+form, decks, wins, draws]`, `matches`, window 7 days; CORS open, cached 10 min) and `GET /status` (progress counters, last error).
+- Testing a change: `npx wrangler dev --remote --test-scheduled`, then `curl "http://127.0.0.1:8787/__scheduled?cron=*+*+*+*+*"` runs one tick against the live database and binding.
 
 ## Upgrade data (hardcoded)
 Stored in `LEVEL_DATA` — arrays of `{cards, gold}` per level transition for each rarity. Index 0 = upgrade from level 1→2, index 14 = 15→16.
