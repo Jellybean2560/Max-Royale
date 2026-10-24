@@ -11,7 +11,8 @@
 //    each (rows passed as one JSON parameter — D1 allows only 100 bound
 //    parameters), matches are stored once (no extra index) and kept 30 days,
 //    and the stats are computed every 6 hours, not per request (each run reads
-//    the week's matches twice: ~2M rows a day at ~15k matches a day).
+//    the week's matches four times, and the week before twice more once there
+//    is one for trends: ~2.5M rows a day at ~15k matches a day).
 //
 // GET /meta    the latest stats (CORS open, for the app)
 // GET /status  collection progress and the last error
@@ -26,7 +27,7 @@ const PLAYERS_PER_RUN = 5;          // battle logs fetched per minute (~7,200 a 
 const RETRY_AFTER = 30 * MINUTE;    // a failed periodic job or battle log waits this long
 const MIN_INTERVAL = 30 * MINUTE;
 const MAX_INTERVAL = 12 * HOUR;
-const TOP_DECKS = 60;
+const TOP_DECKS = 300;              // enough to search by card and find similar decks
 
 export default {
   async scheduled(event, env, ctx) {
@@ -158,39 +159,50 @@ async function pollPlayers(env, now, st) {
   });
 }
 
-// Deck and card stats over the last WINDOW_DAYS, both sides of every match
+// Deck and card stats over the last WINDOW_DAYS, both sides of every match, plus
+// the week before for trends once collection has run that long (skipped until
+// then: it would only read rows to describe a half-collected week)
 async function computeStats(env, now) {
-  const since = Math.floor((now - WINDOW_DAYS * DAY) / 1000);
+  const st = await getState(env);
+  const since = Math.floor((now - WINDOW_DAYS * DAY) / 1000), until = Math.floor(now / 1000) + 60;
+  const prevSince = since - WINDOW_DAYS * 86400;
+  const havePrev = +st.started_at && +st.started_at <= prevSince * 1000;
+  // One row per deck played; w = won, d = draw, t = won with three crowns
   const sides = `
     WITH s AS (
-      SELECT pa AS tag, da AS deck, ca > cb AS w, ca = cb AS d FROM matches WHERE time >= ?1
+      SELECT pa AS tag, da AS deck, ca > cb AS w, ca = cb AS d, ca > cb AND ca = 3 AS t FROM matches WHERE time >= ?1 AND time < ?2
       UNION ALL
-      SELECT pb, db, cb > ca, ca = cb FROM matches WHERE time >= ?1)`;
-  // MIN / MAX read one row each off the primary key; the match count comes from
-  // the card tally (every match is 2 decks × 8 cards) instead of a third scan
-  const [range, decks, cards] = await env.DB.batch([
+      SELECT pb, db, cb > ca, ca = cb, cb > ca AND cb = 3 FROM matches WHERE time >= ?1 AND time < ?2)`;
+  const cardQuery = (from, to) => env.DB.prepare(`${sides}
+    SELECT j.value AS card, COUNT(*) AS n, SUM(s.w) AS w, SUM(s.d) AS d, SUM(s.t) AS t
+    FROM s, json_each('["' || replace(s.deck, ',', '","') || '"]') AS j
+    GROUP BY j.value ORDER BY n DESC`).bind(from, to);
+  // MIN / MAX read one row each off the primary key; match counts come from the
+  // card tally (every match is 2 decks × 8 cards) instead of another scan
+  const results = await env.DB.batch([
     env.DB.prepare(`SELECT (SELECT MIN(time) FROM matches WHERE time >= ?1) AS first,
                            (SELECT MAX(time) FROM matches) AS last`).bind(since),
-    env.DB.prepare(`${sides} SELECT deck, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d, COUNT(DISTINCT tag) AS p
-                    FROM s GROUP BY deck ORDER BY n DESC LIMIT ?2`).bind(since, TOP_DECKS),
-    env.DB.prepare(`${sides} SELECT j.value AS card, COUNT(*) AS n, SUM(s.w) AS w, SUM(s.d) AS d
-                    FROM s, json_each('["' || replace(s.deck, ',', '","') || '"]') AS j
-                    GROUP BY j.value ORDER BY n DESC`).bind(since),
+    env.DB.prepare(`${sides} SELECT deck, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d, COUNT(DISTINCT tag) AS p, SUM(t) AS t
+                    FROM s GROUP BY deck ORDER BY n DESC LIMIT ?3`).bind(since, until, TOP_DECKS),
+    cardQuery(since, until),
+    ...(havePrev ? [cardQuery(prevSince, since)] : []),
   ]);
+  const [range, decks, cards, prev] = results;
   const t = range.results[0] || {};
-  const st = await getState(env);
-  const matches = Math.round(cards.results.reduce((s, r) => s + r.n, 0) / 16);
+  const count = rows => Math.round(rows.reduce((sum, r) => sum + r.n, 0) / 16);
   const meta = {
     updated: now,
     window_days: WINDOW_DAYS,
     started: +st.started_at || null,  // when collection began; older matches came from the first logs
-    matches,
+    matches: count(cards.results),
     first: t.first ? t.first * 1000 : null,
     last: t.last ? t.last * 1000 : null,
-    // [deck key, games, wins, draws, different players]
-    decks: decks.results.map(r => [r.deck, r.n, r.w, r.d, r.p]),
-    // [card id + form, decks it was in, wins, draws]
-    cards: cards.results.map(r => [r.card, r.n, r.w, r.d]),
+    // [deck key, games, wins, draws, different players, three-crown wins]
+    decks: decks.results.map(r => [r.deck, r.n, r.w, r.d, r.p, r.t]),
+    // [card id + form, decks it was in, wins, draws, three-crown wins]
+    cards: cards.results.map(r => [r.card, r.n, r.w, r.d, r.t]),
+    // The week before, for trends: { matches, cards: [card, decks, wins] }; null until collected
+    prev: prev ? { matches: count(prev.results), cards: prev.results.map(r => [r.card, r.n, r.w]) } : null,
   };
   await setState(env, { stats_at: now, meta: JSON.stringify(meta) });
 }
