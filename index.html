@@ -3176,8 +3176,8 @@ function progressSnap(data, at) {
   const map = list => Object.fromEntries((list || []).map(c => [c.id, lv(c) * 4 + ((c.evolutionLevel || 0) & 3)]));
   const badgeLevels = mastery => (data.badges || []).filter(b => (b.name || '').startsWith('Mastery') === mastery)
     .reduce((s, b) => s + (b.level || 0), 0);
-  const pol = data.currentPathOfLegendSeasonResult;
-  return { at, xp: data.expLevel, king: data.kingTowerLevel ?? null, cl: data.collectionLevel ?? null,
+  const pol = data.currentPathOfLegendSeasonResult, last = data.lastPathOfLegendSeasonResult;
+  return { at, lastSeason: last ? [last.leagueNumber || 0, last.trophies || 0, last.rank || 0].join('/') : null, xp: data.expLevel, king: data.kingTowerLevel ?? null, cl: data.collectionLevel ?? null,
     trophies: data.trophies, pol: pol?.trophies ?? null, league: pol?.leagueNumber ?? null,
     battles: data.battleCount, wins: data.wins, mastery: badgeLevels(true), badges: badgeLevels(false),
     clan: data.clan?.name || null, cards: map(data.cards), troops: map(data.supportCards) };
@@ -3243,9 +3243,18 @@ function progressCardBody() {
   levelRow('King Tower', 'king');
   if (base.cl != null && cur.cl != null && cur.cl !== base.cl) rows.push(ovRow('Collection Level', `${sign(cur.cl - base.cl)} <span class="text-muted">· ${fmtNum(cur.cl)}</span>`));
   if (cur.trophies !== base.trophies) rows.push(ovRow('Trophies', `${sign(cur.trophies - base.trophies)} <span class="text-muted">· 🏆 ${fmtNum(cur.trophies)}</span>`));
-  if (base.league != null && cur.league != null && cur.league !== base.league)
-    rows.push(ovRow('League', `${polLeagueName({ leagueNumber: base.league })} → <b>${polLeagueName({ leagueNumber: cur.league })}</b>`));
-  if (base.pol != null && cur.pol != null && cur.pol !== base.pol) rows.push(ovRow('Path of Legends', `${sign(cur.pol - base.pol)} <span class="text-muted">· ⚔️ ${fmtNum(cur.pol)}</span>`));
+  // A Path of Legends season ended in between: last season's result changed, or
+  // the league dropped (it can't mid-season). The reset isn't a loss, so say so
+  const newSeason = (base.lastSeason && cur.lastSeason && base.lastSeason !== cur.lastSeason)
+    || (base.league != null && cur.league != null && cur.league < base.league);
+  if (newSeason) {
+    const r = data.lastPathOfLegendSeasonResult;
+    rows.push(ovRow('Path of Legends', `New season${r?.leagueNumber ? ` <span class="text-muted">· last one ended in ${esc(polLeagueName(r))}${r.rank ? ` #${fmtNum(r.rank)}` : ''}${r.trophies ? ` · ⚔️ ${fmtNum(r.trophies)}` : ''}</span>` : ''}`));
+  } else {
+    if (base.league != null && cur.league != null && cur.league !== base.league)
+      rows.push(ovRow('League', `${polLeagueName({ leagueNumber: base.league })} → <b>${polLeagueName({ leagueNumber: cur.league })}</b>`));
+    if (base.pol != null && cur.pol != null && cur.pol !== base.pol) rows.push(ovRow('Path of Legends', `${sign(cur.pol - base.pol)} <span class="text-muted">· ⚔️ ${fmtNum(cur.pol)}</span>`));
+  }
   if (gold) rows.push(ovRow('Gold on Upgrades', `<span class="text-accent" style="font-weight:700">≈ ${fmtNum(gold)} 💰</span>`));
   const played = (cur.battles || 0) - (base.battles || 0), won = (cur.wins || 0) - (base.wins || 0);
   if (played > 0) rows.push(ovRow('Battles', `${fmtNum(played)} played · ${fmtNum(won)} won`));
@@ -4586,9 +4595,11 @@ function _renderBattleList(scope) {
     const trophyChange = team.trophyChange;
     const is2v2 = teamPlayers.length > 1 || oppPlayers.length > 1;
 
-    const sideNames = (players, color, align) => players.map(p =>
-      `<div style="color:${color};font-weight:600;font-size:14px;text-align:${align};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name||'?')}</div>`
-    ).join('');
+    // Everyone but the log's owner opens their profile when tapped
+    const sideNames = (players, color, align) => players.map(p => {
+      const tap = p.tag && p.tag !== _battleState[scope].data?.tag;
+      return `<div ${tap ? `onclick="viewFriend('${esc(p.tag)}')" title="Open profile" ` : ''}style="color:${color};font-weight:600;font-size:14px;text-align:${align};overflow:hidden;text-overflow:ellipsis;white-space:nowrap${tap ? ';cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px' : ''}">${esc(p.name||'?')}</div>`;
+    }).join('');
 
     // 1v1 → your deck + the opponent's side by side. 2v2 → both teammates, with
     // the opponents' two decks behind a fold-out underneath.
@@ -5230,7 +5241,7 @@ function metaPlayersHTML() {
   if (!list.length) return `<div class="empty-msg">No top player matches "${esc(_metaTopQuery.trim())}".</div>`;
   const art = buildCardArtMap([]);
   const shown = list.slice(0, _metaShown);
-  return `<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Main deck: their most played ranked deck in the last ${t.window_days} days. ${metaUpdatedText(t)}.</div>`
+  return (q ? '' : metaYourRankHTML(t.players)) + `<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Main deck: their most played ranked deck in the last ${t.window_days} days. ${metaUpdatedText(t)}.</div>`
     + shown.map(([tag, name, clan, rank, rating, deck, deckGames, games, wins]) => {
       const label = mine.has(tag) ? 'You' : friends.has(tag) ? 'Friend' : '';
       const cards = deck ? metaDeckCards(deck) : [];
@@ -5253,6 +5264,23 @@ function metaPlayersHTML() {
       </div>`;
     }).join('')
     + (list.length > shown.length ? `<button class="btn btn-secondary" style="width:100%;margin-top:4px" onclick="metaShowMore()">Show more (${list.length - shown.length} more)</button>` : '');
+}
+// Where the loaded profile stands against the top 1,000. Only Ultimate Champion
+// has a rating (leagueNumber 7); below that, how far there is to go.
+function metaYourRankHTML(players) {
+  const d = window._currentProfile?.data;
+  if (!d || !players.length) return '';
+  const r = d.currentPathOfLegendSeasonResult || {};
+  const cutoff = players[players.length - 1][4];
+  const box = html => `<div class="card" style="padding:12px;margin-bottom:10px;font-size:13px">${html}</div>`;
+  const listed = players.find(p => p[0] === d.tag);
+  if (listed) return box(`🏅 <b>${esc(d.name)}</b> is <b class="text-accent">#${fmtNum(listed[3])}</b> in the world with ⚔️ ${fmtNum(listed[4])}.`);
+  if (r.leagueNumber !== 7 || !r.trophies)
+    return box(`🏅 <b>${esc(d.name)}</b> is in ${r.leagueNumber ? esc(polLeagueName(r)) : 'no Path of Legends league yet'}. The top 1,000 starts at ⚔️ <b>${fmtNum(cutoff)}</b> in Ultimate Champion.`);
+  const rank = players.filter(p => p[4] > r.trophies).length + 1;
+  return box(rank <= players.length
+    ? `🏅 With ⚔️ ${fmtNum(r.trophies)}, <b>${esc(d.name)}</b> would be <b class="text-accent">#${fmtNum(rank)}</b> in the world.`
+    : `🏅 <b>${esc(d.name)}</b> has ⚔️ ${fmtNum(r.trophies)}: <b class="text-accent">${fmtNum(cutoff - r.trophies + 1)}</b> short of the top 1,000 (⚔️ ${fmtNum(cutoff)}).`);
 }
 window.setMetaTopQuery = function(v) { _metaTopQuery = v; _metaShown = META_PAGE; redrawMetaList(); };
 
