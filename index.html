@@ -3200,6 +3200,8 @@ function progressCardBody() {
     }
   }
   upgraded.sort((a, b) => b[2] - a[2] || a[0].name.localeCompare(b[0].name));
+  // From the upgrade table: what those level-ups cost (cards aside)
+  const gold = upgraded.reduce((sum, [c, a, b]) => sum + computeUpgrade((c.rarity || 'common').toLowerCase(), a, 0, b).totalGold, 0);
 
   const sign = n => `<span class="${n > 0 ? 'text-green' : 'text-red'}" style="font-weight:700">${n > 0 ? '+' : ''}${fmtNum(n)}</span>`;
   const rows = [];
@@ -3211,6 +3213,7 @@ function progressCardBody() {
   if (base.league != null && cur.league != null && cur.league !== base.league)
     rows.push(ovRow('League', `${polLeagueName({ leagueNumber: base.league })} → <b>${polLeagueName({ leagueNumber: cur.league })}</b>`));
   if (base.pol != null && cur.pol != null && cur.pol !== base.pol) rows.push(ovRow('Path of Legends', `${sign(cur.pol - base.pol)} <span class="text-muted">· ⚔️ ${fmtNum(cur.pol)}</span>`));
+  if (gold) rows.push(ovRow('Gold on Upgrades', `<span class="text-accent" style="font-weight:700">≈ ${fmtNum(gold)} 💰</span>`));
   const played = (cur.battles || 0) - (base.battles || 0), won = (cur.wins || 0) - (base.wins || 0);
   if (played > 0) rows.push(ovRow('Battles', `${fmtNum(played)} played · ${fmtNum(won)} won`));
   if (cur.mastery > base.mastery) rows.push(ovRow('Card Mastery', `+${cur.mastery - base.mastery} level${cur.mastery - base.mastery === 1 ? '' : 's'}`));
@@ -5092,6 +5095,7 @@ function metaYouHTML(P) {
   } else {
     parts.push(`<div class="empty-msg" style="margin-bottom:12px">The API didn't return your full current deck — play a 1v1 battle with it and it'll show here.</div>`);
   }
+  parts.push(bestDecksForYouHTML(P, data, mine));
   // Most-used top-player cards (all forms together) you own but haven't maxed
   const share = {};
   P.cards.forEach(c => { share[c.id] = (share[c.id] || 0) + c.share; });
@@ -5120,6 +5124,42 @@ function metaYouHTML(P) {
       </div>`);
   }
   return parts.join('');
+}
+
+// Top decks you can play best right now: every card unlocked, ranked by the
+// evolutions / heroes you're missing, then the gold to bring every card up to
+// your level (your current deck's average, floored), then win rate. Only decks
+// with META_FIT_MIN_GAMES+ games and a winning record; one per card set.
+const META_FIT_MIN_GAMES = 20, META_FIT_SHOWN = 5;
+function bestDecksForYouHTML(P, data, mine) {
+  const owned = Object.fromEntries((data.cards || []).map(c => [c.id, c]));
+  const lvl = pc => toDisplayLevel((pc.rarity || 'common').toLowerCase(), pc.level);
+  const myLevels = (mine || []).map(c => owned[c.id]).filter(Boolean).map(lvl);
+  const allLevels = Object.values(owned).map(lvl).sort((a, b) => b - a);
+  // Without a current deck: the level of your 8th best card
+  const target = myLevels.length ? Math.floor(myLevels.reduce((a, b) => a + b, 0) / myLevels.length) : (allLevels[7] || MIN_LEVEL.common);
+  const fits = P.decks
+    .filter(d => d.n >= META_FIT_MIN_GAMES && d.rate >= 0.5 && d.cards.every(c => owned[c.id]))
+    .map(d => {
+      let gold = 0, sum = 0;
+      const missing = [];
+      d.cards.forEach(c => {
+        const pc = owned[c.id], r = (pc.rarity || 'common').toLowerCase(), l = lvl(pc);
+        sum += l;
+        if (l < target) gold += computeUpgrade(r, l, pc.count || 0, target).totalGold;
+        if ((c.form === 'evo' && !ownsEvo(pc)) || (c.form === 'hero' && !ownsHero(pc))) missing.push(c);
+      });
+      return { d, gold, avg: sum / 8, missing };
+    })
+    .sort((a, b) => a.missing.length - b.missing.length || a.gold - b.gold || b.d.rate - a.d.rate)
+    .filter((x, i, all) => all.findIndex(y => y.d.names.slice().sort().join() === x.d.names.slice().sort().join()) === i)
+    .slice(0, META_FIT_SHOWN);
+  const head = `<div class="mu-sub" style="margin:4px 0 4px">Best top decks for your cards</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Winning top-player decks (${META_FIT_MIN_GAMES}+ games) you've unlocked every card of, cheapest to bring to level ${target} first — your current deck's level.</div>`;
+  if (!fits.length) return head + `<div style="font-size:12px;color:var(--muted);margin:0 0 12px">No winning top deck uses only cards you've unlocked yet.</div>`;
+  return head + fits.map(({ d, gold, avg, missing }) => metaDeckItemHTML(d, P,
+    `Your avg level ${avg.toFixed(1)} · ${gold ? `<span class="text-accent">${fmtNum(gold)} 💰</span> to get all to ${target}` : `<span class="text-green">all at ${target}+ ✓</span>`}`
+    + (missing.length ? ` · <span class="text-red">no ${missing.map(c => `${c.form === 'evo' ? 'Evo' : 'Hero'} ${esc(c.name)}`).join(', ')}</span>` : ''))).join('');
 }
 
 // ── Players: the global top 1,000 with each one's most played ranked deck ──
