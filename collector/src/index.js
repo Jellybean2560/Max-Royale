@@ -10,12 +10,13 @@
 //  - D1 free tier: 100k rows written and 5M read a day. Inserts go in one query
 //    each (rows passed as one JSON parameter — D1 allows only 100 bound
 //    parameters), matches are stored once (no extra index) and kept 30 days,
-//    and the stats are computed every 1–12 hours as their cost allows, not per
+//    and the stats are computed every 1–24 hours as their cost allows, not per
 //    request. Each run reads the week's matches once per side plus the distinct
 //    decks (~200k rows at 25k matches), and the week before again once there is
-//    one for trends; the top players' main decks take another pass. Every heavy query's rows_read is counted
-//    per UTC day, and a job that would push the day past READ_BUDGET waits for
-//    tomorrow instead of running into D1's limit.
+//    one for trends; the top players' main decks take another pass. Every query's
+//    rows_read (polling too) is counted per UTC day, and a heavy job that would
+//    push the day past READ_BUDGET minus the polling reserve waits for tomorrow
+//    instead of running into D1's limit.
 //
 // GET /meta    the latest stats (CORS open, for the app)
 // GET /top     the top 1,000 with rank, rating, clan and main deck
@@ -33,12 +34,15 @@ const MAX_INTERVAL = 12 * HOUR;
 const TOP_DECKS = 300;              // enough to search by card and find similar decks
 // /meta and /top are recomputed as often as their cost allows: each job gets a
 // daily share of the read budget and runs every (24 h × last run's reads / share),
-// kept between 1 and 12 hours — hourly while the window is young and runs are
-// cheap, less often once a full week (and the week before, for trends) is read
-const STATS_SHARE = 2.5e6, TOP_SHARE = 1e6;
-const MIN_REFRESH = HOUR, MAX_REFRESH = 12 * HOUR;
+// kept between 1 and 24 hours — every few hours while the window is young and
+// runs are cheap, less often once a full week (and the week before) is read
+const STATS_SHARE = 1.1e6, TOP_SHARE = 0.45e6;
+const MIN_REFRESH = HOUR, MAX_REFRESH = 24 * HOUR;
 const refreshEvery = (reads, share) => Math.min(MAX_REFRESH, Math.max(MIN_REFRESH, DAY * (reads || 0) / share));
-const READ_BUDGET = 4e6;            // of D1's free 5M rows read a day — the rest is polling and /status
+// 2M of D1's free 5M rows read a day (Cloudflare mails warnings from 80%), all
+// queries counted; heavy jobs leave POLL_RESERVE for polling (~150k a day),
+// the leaderboard, pruning and /status
+const READ_BUDGET = 2e6, POLL_RESERVE = 250e3;
 
 export default {
   async scheduled(event, env, ctx) {
@@ -76,7 +80,7 @@ async function tick(env) {
   };
   if (!st.started_at) await setState(env, { started_at: now });
   // A heavy job runs only if what it read last time still fits in today's budget
-  const fits = job => readsToday(st, now) + (+st[`${job}_reads`] || 0) <= READ_BUDGET;
+  const fits = job => readsToday(st, now) + (+st[`${job}_reads`] || 0) <= READ_BUDGET - POLL_RESERVE;
   if (due('board', BOARD_EVERY)) return run('board', refreshBoard);
   if (+st.matches_total > 0 && due('stats', refreshEvery(+st.stats_reads, STATS_SHARE)) && fits('stats')) return run('stats', computeStats);
   if (+st.matches_total > 0 && due('top', refreshEvery(+st.top_reads, TOP_SHARE)) && fits('top')) return run('top', computeTop);
@@ -127,9 +131,10 @@ const deckKey = cards => cards.map(c => {
 }).sort().join(',');
 
 async function pollPlayers(env, now, st) {
-  const { results: due } = await env.DB.prepare(`
+  const dueRes = await env.DB.prepare(`
     SELECT tag, last_time FROM players WHERE seen_at >= ?1 AND next_poll <= ?2
     ORDER BY next_poll LIMIT ?3`).bind((+st.board_at || 0) - HOUR, now, PLAYERS_PER_RUN).all();
+  const due = dueRes.results;
   if (!due.length) return;
   const logs = await Promise.all(due.map(p => api(env, `/players/${p.tag}/battlelog`).catch(e => ({ error: e.message }))));
 
@@ -162,9 +167,9 @@ async function pollPlayers(env, now, st) {
     updates.push({ tag: p.tag, next: now + interval, last });
   });
 
-  let inserted = 0;
+  let inserted = 0, insertRes = null;
   if (matches.length) {
-    const res = await env.DB.prepare(`
+    const res = insertRes = await env.DB.prepare(`
       INSERT OR IGNORE INTO matches (time, pa, pb, da, db, ca, cb, ra, rb)
       SELECT json_extract(value, '$.t'), json_extract(value, '$.pa'), json_extract(value, '$.pb'),
              json_extract(value, '$.da'), json_extract(value, '$.db'), json_extract(value, '$.ca'),
@@ -172,11 +177,13 @@ async function pollPlayers(env, now, st) {
       FROM json_each(?1)`).bind(JSON.stringify(matches)).run();
     inserted = res.meta?.changes || 0;
   }
-  await env.DB.prepare(`
+  const updateRes = await env.DB.prepare(`
     UPDATE players SET next_poll = json_extract(j.value, '$.next'), last_time = json_extract(j.value, '$.last'),
       polls = polls + 1
     FROM json_each(?1) AS j WHERE players.tag = json_extract(j.value, '$.tag')`).bind(JSON.stringify(updates)).run();
+  const reads = rowsRead([dueRes, insertRes, updateRes]) + 25;  // + the tick's state read
   await setState(env, {
+    reads_day: dayKey(now), reads_count: readsToday(st, now) + reads,
     last_poll_at: now,
     polls_total: (+st.polls_total || 0) + due.length,
     matches_total: (+st.matches_total || 0) + inserted,

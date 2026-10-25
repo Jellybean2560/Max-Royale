@@ -4,7 +4,7 @@ compatibility_date = "2026-10-01"
 
 # One tick a minute; each tick does one job (see src/index.js)
 [triggers]
-crons = []  # PAUSED (D1 daily read limit) — restore ["* * * * *"] to resume
+crons = ["* * * * *"]
 
 [[d1_databases]]
 binding = "DB"
@@ -20,6 +20,6 @@ service = "quiet-frost-f9f0"
 [observability]
 enabled = true
 
-# Set to "0" (and restore the cron above) to resume collecting
+# "1" pauses collection: scheduled runs return before touching D1
 [vars]
-PAUSED = "1"
+PAUSED = "0"
