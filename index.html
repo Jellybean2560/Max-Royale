@@ -736,6 +736,7 @@ function goTo(name) {
   if (name === 'friends') renderFriends();
   if (name === 'deckup') renderDeckUpgradeScreen();
   if (name === 'meta') renderMetaScreen();
+  if (name === 'clan') refreshClanIfStale();
   sc.scrollTop = _screenScroll[name] || 0;
 }
 
@@ -1846,8 +1847,8 @@ function sortedFriends(list) {
                         (a, b) => (b.lastBattle || '').localeCompare(a.lastBattle || ''));
 }
 // "⚔️ 5–3 · 🤝 12–8" — your friendly record against them and 2v2 record with them
-function h2hLine(tag) {
-  const h = headToHead(tag);
+function h2hLine(tag, coPlayers) {
+  const h = headToHead(tag, coPlayers);
   if (!h) return '';
   const wl = r => `${r[0]}–${r[1]}${r[2] ? `–${r[2]}` : ''}`;
   const parts = [h.vs && `<span title="Friendly battles against them">⚔️ ${wl(h.vs)}</span>`, h.tm && `<span title="2v2 together">🤝 ${wl(h.tm)}</span>`].filter(Boolean);
@@ -1876,6 +1877,7 @@ function _renderFriendsList() {
       ${Object.entries(FRIEND_SORTS).map(([v, label]) => `<button class="filter-btn ${sort === v ? 'active' : ''}" onclick="setFriendSort('${v}')">${label}</button>`).join('')}
     </div>`;
   const DAY = 24 * 60 * 60 * 1000;
+  const myTag = window._currentProfile?.data?.tag, coPlayers = myTag ? loadCoPlayers(myTag) : null;
   const rows = sortedFriends(list).map(f => {
     const active = f.lastBattle && Date.now() - parseApiTime(f.lastBattle) < DAY;
     return `
@@ -1883,7 +1885,7 @@ function _renderFriendsList() {
       <div style="min-width:0">
         <div style="font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</div>
         <div style="font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${f.clan ? `🛡 ${esc(f.clan)}` : `<span style="font-family:monospace">${esc(f.tag)}</span>`}</div>
-        ${h2hLine(f.tag)}
+        ${h2hLine(f.tag, coPlayers)}
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
         ${_friendsEditMode
@@ -1972,10 +1974,10 @@ function recordCoPlayers(myTag, battles) {
 }
 
 // The loaded profile's record with a player: { vs, tm, last } or null
-function headToHead(tag) {
+function headToHead(tag, coPlayers) {
   const me = window._currentProfile?.data?.tag;
   if (!me || !tag || me === tag) return null;
-  const e = loadCoPlayers(me).players[tag];
+  const e = (coPlayers || loadCoPlayers(me)).players[tag];
   return e && (e.vs || e.tm) ? e : null;
 }
 const wldText = r => `<span class="text-green">${r[0]}W</span> <span class="text-red">${r[1]}L</span>${r[2] ? ` <span class="text-muted">${r[2]}D</span>` : ''}`;
@@ -2124,7 +2126,7 @@ function syncClanToProfile(data, { fromCache = false } = {}) {
   if (!_profileClanTag) { document.getElementById('clan-result').innerHTML = ''; return; }
   if (!fromCache) { loadClan(); return; }
   const cached = loadClanCache(_profileClanTag);
-  if (cached) renderClan(cached.data);
+  if (cached) { _clanShownAt = cached.savedAt || 0; renderClan(cached.data); }
 }
 
 // Re-render the profile without throwing the user back to the Overview tab or to
@@ -2964,12 +2966,16 @@ const TROPHY_HISTORY_KEY = 'cr_trophy_history_v1';
 const TROPHY_POINTS_MAX = 1000;
 const TROPHY_SERIES = { road: 'Trophies', pol: 'Path of Legends' };
 const TROPHY_RANGES = { 7: '7 days', 30: '30 days', all: 'All' };
+// 1v1 Trophy Road: type 'trail' (the API's coarse type for most matchmade modes,
+// 2v2 included) with a Ladder game mode; older logs used type 'PvP'
+const isTrophyRoadBattle = b => (b.team || []).length === 1
+  && (b.type === 'PvP' || (b.type === 'trail' && /^Ladder/i.test(b.gameMode?.name || '')));
 function trophyPointsFromBattles(battles) {
   const pts = { road: [], pol: [] };
   (battles || []).forEach(b => {
     const me = (b.team || [])[0];
     if (!b.battleTime || me?.trophyChange == null || me.startingTrophies == null) return;
-    const series = b.type === 'pathOfLegend' ? 'pol' : b.type === 'PvP' ? 'road' : '';
+    const series = b.type === 'pathOfLegend' ? 'pol' : isTrophyRoadBattle(b) ? 'road' : '';
     if (series) pts[series].push([parseApiTime(b.battleTime).getTime(), me.startingTrophies + me.trophyChange, me.startingTrophies]);
   });
   // Battles arrive newest-first: the oldest one also gives the value before it
@@ -5259,6 +5265,10 @@ let _clanSort = 'trophies';
 let _clanAway = 0;  // Members filter: only those away this many days (0 = all)
 
 let _loadClanSeq = 0;
+// When the clan on screen was fetched: the cached clan shown at startup can be
+// days old in a browser tab, which made Last Seen (and the away marks) wrong
+let _clanShownAt = 0;
+const CLAN_MAX_AGE_MS = 10 * 60 * 1000;
 async function loadClan() {
   const input = document.getElementById('clan-tag');
   const tag = normalizeTag(input.value);
@@ -5270,12 +5280,30 @@ async function loadClan() {
   try {
     const data = await apiGet('/clans/' + encodeURIComponent(tag));
     if (seq !== _loadClanSeq) return;
+    _clanShownAt = Date.now();
     renderClan(data);
     saveClanCache(tag, data);
   } catch(e) {
     if (seq !== _loadClanSeq) return;
     el.innerHTML = `<div class="error-msg">${esc(lookupErrorText(e, 'clan', tag))}</div>`;
   }
+}
+
+// Opening the Clan screen refetches a clan older than CLAN_MAX_AGE_MS in place:
+// no spinner, same tab and scroll, the old view kept if it fails
+async function refreshClanIfStale() {
+  const tag = _clanTag;
+  if (!tag || Date.now() - _clanShownAt < CLAN_MAX_AGE_MS) return;
+  const seq = ++_loadClanSeq;
+  try {
+    const data = await apiGet('/clans/' + encodeURIComponent(tag));
+    if (seq !== _loadClanSeq || data.tag !== _clanTag) return;
+    _clanShownAt = Date.now();
+    const sc = document.getElementById('content'), y = sc.scrollTop;
+    renderClan(data);
+    saveClanCache(tag, data);
+    if (currentScreen === 'clan') sc.scrollTop = y;
+  } catch(e) {}
 }
 
 // ── Clan cache (matches the profile cache pattern) ──
