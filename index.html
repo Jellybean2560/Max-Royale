@@ -597,6 +597,10 @@ const DEFAULT_CARD_SORT = CARD_SORT_OPTIONS[0][0];
 const _optionsHTML = opts => opts.map(([v,label]) => `<option value="${v}">${label}</option>`).join('');
 const cardSortOptionsHTML   = () => _optionsHTML(CARD_SORT_OPTIONS);
 const cardRarityOptionsHTML = () => _optionsHTML(CARD_RARITY_OPTIONS);
+// The levels this player's cards are at, highest first
+const cardLevelOptionsHTML = cards => _optionsHTML([['all', 'All Levels'],
+  ...[...new Set((cards || []).map(c => toDisplayLevel((c.rarity || 'common').toLowerCase(), c.level)))]
+    .sort((a, b) => b - a).map(l => [String(l), `Level ${l}`])]);
 
 const CARD_STATUS_FILTERS = {
   notfound:   c => !c.owned,
@@ -664,11 +668,12 @@ function unownedCardRowHTML(c) {
   </div>`;
 }
 
-// state: { rarity, search, status, sort } — the four controls both panes expose.
+// state: { rarity, level, search, status, sort } — the controls both panes expose.
 function prepareCardList(rawCards, state) {
   let cards = (rawCards||[]).map(c => ({ ...decorateCard(c), owned: true }))
     .concat(unownedCardEntries(rawCards));
   if (state.rarity && state.rarity !== 'all') cards = cards.filter(c => c.r === state.rarity);
+  if (state.level && state.level !== 'all') cards = cards.filter(c => c.owned && c.disp === +state.level);
   if (state.search) cards = cards.filter(c => (c.name||'').toLowerCase().includes(state.search));
   const statusFilter = CARD_STATUS_FILTERS[state.status];
   if (statusFilter) cards = cards.filter(statusFilter);
@@ -1559,7 +1564,7 @@ window.setCompareFilter = function(v) {
 };
 
 // Friend modal filter state (self-contained so it never touches the main profile)
-let _fCardStatus = 'all', _fCardRarity = 'all', _fCardSort = DEFAULT_CARD_SORT, _fCardSearch = '';
+let _fCardStatus = 'all', _fCardRarity = 'all', _fCardLevel = 'all', _fCardSort = DEFAULT_CARD_SORT, _fCardSearch = '';
 let _fEvoFilter = 'all', _fHeroFilter = 'all';
 let _fBadgeFilter = 'all', _fBadgeEntries = [], _fBadgeSort = 'progress';
 
@@ -1574,7 +1579,7 @@ function friendTab(name) {
   const pane = document.getElementById('friend-pane');
   if (name === 'overview')    pane.innerHTML = renderOverview(d, _friendBattles, 'f');
   if (name === 'compare')   { _cmpFilter = 'them'; pane.innerHTML = compareHTML(window._currentProfile.data, d); }
-  if (name === 'cards')     { _fCardStatus='all'; _fCardRarity='all'; _fCardSort=DEFAULT_CARD_SORT; _fCardSearch=''; pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
+  if (name === 'cards')     { _fCardStatus='all'; _fCardRarity='all'; _fCardLevel='all'; _fCardSort=DEFAULT_CARD_SORT; _fCardSearch=''; pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
   if (name === 'evolutions'){ _fEvoFilter='all';  pane.innerHTML = friendCollectShell('evolution'); friendRenderCollect('evolution'); }
   if (name === 'heroes')    { _fHeroFilter='all'; pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
   if (name === 'towerTroops') pane.innerHTML = friendTroopHTML(d);
@@ -1622,10 +1627,13 @@ function friendCardsShell(data) {
       <select onchange="friendSetCard(this.value,'rarity')" style="${sel}">
         ${cardRarityOptionsHTML()}
       </select>
-      <select onchange="friendSetCard(this.value,'sort')" style="${sel}">
-        ${cardSortOptionsHTML()}
+      <select id="f-card-level" onchange="friendSetCard(this.value,'level')" style="${sel}">
+        ${cardLevelOptionsHTML(data.cards)}
       </select>
     </div>
+    <select onchange="friendSetCard(this.value,'sort')" style="${sel.replace('flex:1;', 'width:100%;margin-bottom:10px;')}">
+      ${cardSortOptionsHTML()}
+    </select>
     <div class="filter-bar" id="f-card-status">
       <button class="filter-btn active" onclick="friendSetCard('all','status')">All</button>
       <button class="filter-btn" onclick="friendSetCard('upgradable','status')">Upgradable</button>
@@ -1642,6 +1650,7 @@ window.friendSetCard = function(val, type) {
     document.querySelectorAll('#f-card-status .filter-btn').forEach(b => b.classList.toggle('active', b.getAttribute('onclick').includes(`'${val}'`)));
   }
   if (type === 'rarity') _fCardRarity = val;
+  if (type === 'level')  _fCardLevel = val;
   if (type === 'sort')   _fCardSort = val;
   if (type === 'search') _fCardSearch = (val||'').toLowerCase().trim();
   friendRenderCards();
@@ -1651,7 +1660,7 @@ function friendRenderCards() {
   if (!grid || !_friendData) return;
   const catalogStarMax = catalogStarMaxMap();
   const cards = prepareCardList(_friendData.cards,
-    { rarity:_fCardRarity, search:_fCardSearch, status:_fCardStatus, sort:_fCardSort });
+    { rarity:_fCardRarity, level:_fCardLevel, search:_fCardSearch, status:_fCardStatus, sort:_fCardSort });
   if (!cards.length) { grid.innerHTML = '<div class="empty-msg">No cards match this filter.</div>'; return; }
   grid.innerHTML = cards.map(c => {
     if (!c.owned) return unownedCardRowHTML(c);
@@ -2944,7 +2953,7 @@ function accountStatsHTML(data, battles, scope = 'p') {
         <span class="stat-label">Cards <span id="${scope}-card-levels-toggle" data-closed="▼ levels" data-open="▲" style="font-size:10px;color:var(--muted)">▼ levels</span></span>
         <span class="stat-value">${found.cards[0]} / ${found.cards[1]}${found.cards[0] >= found.cards[1] ? ' <span class="text-green">✓</span>' : ''}</span>
       </div>
-      <div id="${scope}-card-levels-max" style="display:none;padding:8px 0 10px;border-bottom:1px solid var(--border)">${cardLevelChartHTML(data, found.cards)}</div>
+      <div id="${scope}-card-levels-max" style="display:none;padding:8px 0 10px;border-bottom:1px solid var(--border)">${cardLevelChartHTML(data, found.cards, scope)}</div>
       ${foundRow('Evolutions', found.evos)}
       ${foundRow('Heroes', found.heroes)}
       ${foundRow('Tower Troops', found.troops)}
@@ -2961,7 +2970,7 @@ function accountStatsHTML(data, battles, scope = 'p') {
 
 // How many cards sit at each level, one bar per level split by rarity — folded
 // out from the Account tab's Cards count
-function cardLevelChartHTML(data, [found, total]) {
+function cardLevelChartHTML(data, [found, total], scope) {
   const byLevel = {};
   (data.cards || []).forEach(c => {
     const r = (c.rarity || 'common').toLowerCase(), l = toDisplayLevel(r, c.level);
@@ -2973,7 +2982,7 @@ function cardLevelChartHTML(data, [found, total]) {
   const most = Math.max(...levels.map(count));
   const used = RARITY_ORDER_KEYS.filter(r => levels.some(l => byLevel[l][r]));
   return levels.map(l => `
-      <div style="display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px">
+      <div onclick="openCardsAtLevel('${scope}',${l})" title="Show these cards" style="display:flex;align-items:center;gap:8px;padding:2px 0;font-size:12px;cursor:pointer">
         <span style="width:38px;flex-shrink:0;color:var(--muted)">Lv ${l}</span>
         <span style="flex:1;min-width:0;display:flex;height:12px">
           <span style="display:flex;width:${count(l) / most * 100}%;border-radius:3px;overflow:hidden;gap:1px">
@@ -2981,12 +2990,29 @@ function cardLevelChartHTML(data, [found, total]) {
           </span>
         </span>
         <span style="width:24px;text-align:right;font-weight:700;flex-shrink:0">${count(l)}</span>
+        <span style="color:var(--muted);font-size:14px;line-height:1">›</span>
       </div>`).join('')
     + (total > found ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">+ ${total - found} not found yet</div>` : '')
     + `<div style="display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px;font-size:11px;color:var(--muted)">
         ${used.map(r => `<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:2px;background:${RARITY_COLOR[r]}"></span>${r[0].toUpperCase() + r.slice(1)}</span>`).join('')}
       </div>`;
 }
+
+// A bar of the level chart: the Cards tab with only that level, other filters cleared
+window.openCardsAtLevel = function(scope, level) {
+  if (scope === 'f') {
+    friendTab('cards');  // resets the modal's card filters
+    const sel = document.getElementById('f-card-level');
+    if (sel) sel.value = String(level);
+    friendSetCard(String(level), 'level');
+    return;
+  }
+  ovGo('p', 'cards', 'all');
+  _cardLevel = String(level);
+  const sel = document.getElementById('card-level-select');
+  if (sel) sel.value = _cardLevel;
+  renderCards();
+};
 
 // ── Trophy history ──
 // The API only knows today's numbers, so the history is built up on this device:
@@ -3652,9 +3678,11 @@ window.ovGo = function(scope, tab, filter = '') {
     return;
   }
   if (tab === 'cards') {
-    _cardRarity = 'all'; _cardSearch = '';
+    _cardRarity = 'all'; _cardLevel = 'all'; _cardSearch = '';
     const rar = document.getElementById('card-rarity-select'), q = document.getElementById('card-name-search');
+    const lev = document.getElementById('card-level-select');
     if (rar) rar.value = 'all';
+    if (lev) lev.value = 'all';
     if (q) q.value = '';
     switchTab('cards');
     setCardFilter(filter || 'all', 'status');
@@ -3672,6 +3700,7 @@ window.ovGo = function(scope, tab, filter = '') {
 let _cardData = [];
 let _cardFilter = 'all';
 let _cardRarity = 'all';
+let _cardLevel  = 'all';
 let _cardSort   = DEFAULT_CARD_SORT;
 let _cardSearch = '';
 
@@ -3679,6 +3708,7 @@ function renderCardsPane(data) {
   _cardData  = data.cards || [];
   _cardFilter = 'all';
   _cardRarity = 'all';
+  _cardLevel  = 'all';
   _cardSort   = DEFAULT_CARD_SORT;
   _cardSearch = '';
   const totalCards = allCards.length || _cardData.length;
@@ -3691,11 +3721,15 @@ function renderCardsPane(data) {
         style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
         ${cardRarityOptionsHTML()}
       </select>
-      <select id="card-sort-select" onchange="setCardFilter(this.value,'sort')"
+      <select id="card-level-select" onchange="setCardFilter(this.value,'level')"
         style="flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
-        ${cardSortOptionsHTML()}
+        ${cardLevelOptionsHTML(_cardData)}
       </select>
     </div>
+    <select id="card-sort-select" onchange="setCardFilter(this.value,'sort')"
+      style="width:100%;margin-bottom:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center">
+      ${cardSortOptionsHTML()}
+    </select>
     <div class="filter-bar" id="card-status-filter">
       <button class="filter-btn active" onclick="setCardFilter('all','status')">All</button>
       <button class="filter-btn" onclick="setCardFilter('upgradable','status')">Upgradable</button>
@@ -3716,6 +3750,7 @@ window.setCardFilter = function(val, type) {
     );
   }
   if (type === 'rarity') _cardRarity = val;
+  if (type === 'level')  _cardLevel  = val;
   if (type === 'sort')   _cardSort   = val;
   renderCards();
 };
@@ -3731,7 +3766,7 @@ function renderCards() {
 
   const catalogStarMax = catalogStarMaxMap();
   const cards = prepareCardList(_cardData,
-    { rarity:_cardRarity, search:_cardSearch, status:_cardFilter, sort:_cardSort });
+    { rarity:_cardRarity, level:_cardLevel, search:_cardSearch, status:_cardFilter, sort:_cardSort });
 
   if (!cards.length) {
     grid.innerHTML = '<div class="empty-msg">No cards match this filter.</div>';
@@ -5499,12 +5534,15 @@ const CLAN_TOOLS_KEY = 'cr_clan_tools';
 const CLAN_TOOLS = [
   ['decksLeft', '⏳ War decks left today', 'River Race: who still has decks to play today, with a list to copy into clan chat'],
   ['participation', '📋 War participation', "War History: each member's decks used over the last 10 races"],
-  ['inactive', '💤 Inactive members', 'Members: marks members away for 3+ days, with a filter'],
+  ['inactive', '💤 Inactive members', 'Members: marks members away for a while, with a filter'],
 ];
 const WAR_DECKS_PER_DAY = 4, WAR_DECKS_PER_RACE = 16;  // 4 war days a week
 function clanTools() {
   try { return JSON.parse(localStorage.getItem(CLAN_TOOLS_KEY) || '{}') || {}; } catch(e) { return {}; }
 }
+// Inactive members: days away before someone counts as inactive, set by the user
+const AWAY_DEFAULT = 3, AWAY_CHOICES = [1, 2, 3, 4, 5, 7, 10, 14, 21, 30];
+const awayAfter = () => AWAY_CHOICES.includes(+clanTools().awayAfter) ? +clanTools().awayAfter : AWAY_DEFAULT;
 let _clanToolsOpen = false;
 function clanToolsHTML() {
   const on = clanTools(), n = CLAN_TOOLS.filter(([k]) => on[k]).length;
@@ -5520,7 +5558,13 @@ function clanToolsHTML() {
             <span style="font-size:11px;color:var(--muted)">${desc}</span>
           </span>
           <input type="checkbox" class="switch" ${on[k] ? 'checked' : ''} onchange="setClanTool('${k}', this.checked)">
-        </label>`).join('')}
+        </label>${k === 'inactive' && on[k] ? `
+        <div class="stat-row" style="gap:12px">
+          <span style="font-size:13px;color:var(--muted);white-space:nowrap">Inactive after</span>
+          <select onchange="setClanTool('awayAfter', +this.value)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:5px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer">
+            ${AWAY_CHOICES.map(d => `<option value="${d}" ${d === awayAfter() ? 'selected' : ''}>${d} day${d > 1 ? 's' : ''} away</option>`).join('')}
+          </select>
+        </div>` : ''}`).join('')}
       <div style="font-size:11px;color:var(--muted);margin-top:8px">Saved on this device, for every clan you look up.</div>
     </div>` : ''}`;
 }
@@ -5533,7 +5577,7 @@ window.setClanTool = function(k, on) {
   const t = clanTools();
   t[k] = on;
   try { localStorage.setItem(CLAN_TOOLS_KEY, JSON.stringify(t)); } catch(e) {}
-  if (k === 'inactive' && !on) _clanAway = 0;
+  if (k === 'inactive' || k === 'awayAfter') _clanAway = 0;
   const el = document.getElementById('clan-tools');
   if (el) el.innerHTML = clanToolsHTML();
   clanTab(_clanTab);
@@ -5617,10 +5661,11 @@ window.setPartSort = function(v) { _partSort = v; redrawWarHistory(); };
 window.setPartAll = function() { _partAll = true; redrawWarHistory(); };
 
 const awayDays = m => m.lastSeen ? (Date.now() - parseApiTime(m.lastSeen).getTime()) / 864e5 : 0;
-const AWAY_FILTERS = [[0, 'All'], [3, '3+ days away'], [7, '7+ days'], [14, '14+ days']];
+// All, then the user's threshold and two longer steps (7 → 7+ / 14+ / 28+ days)
+const awayFilters = n => [[0, 'All'], [n, `${n}+ day${n > 1 ? 's' : ''} away`], [n * 2, `${n * 2}+ days`], [n * 4, `${n * 4}+ days`]];
 function clanAwayBarHTML() {
   return `<div class="filter-bar" style="margin-bottom:10px">
-    ${AWAY_FILTERS.map(([d, l]) => `<button class="filter-btn ${_clanAway === d ? 'active' : ''}" onclick="setClanAway(${d})">${l} (${d ? _clanMembers.filter(m => awayDays(m) >= d).length : _clanMembers.length})</button>`).join('')}
+    ${awayFilters(awayAfter()).map(([d, l]) => `<button class="filter-btn ${_clanAway === d ? 'active' : ''}" onclick="setClanAway(${d})">${l} (${d ? _clanMembers.filter(m => awayDays(m) >= d).length : _clanMembers.length})</button>`).join('')}
   </div>`;
 }
 window.setClanAway = function(d) { _clanAway = d; renderMembers(_clanMembers); };
@@ -5800,11 +5845,11 @@ function memberRowsHTML(members, sort, highlightTag = '', markAway = false) {
     else if (prev < cur) move = `<span style="color:var(--red)" title="Down ${cur-prev}">▼</span>`;
     else move = '<span style="color:var(--muted)">–</span>';
     const seen = formatBattleTime(m.lastSeen);
-    const away = markAway ? Math.floor(awayDays(m)) : 0;
+    const away = markAway ? Math.floor(awayDays(m)) : 0, after = markAway ? awayAfter() : 0;
     return `
     <div class="member-item" onclick="viewFriend('${esc(m.tag)}')" style="cursor:pointer${m.tag === highlightTag ? ';border-color:var(--accent)' : ''}">
       <div>
-        <div class="member-name"><span style="color:var(--muted);font-size:12px">#${cur}</span> ${move} ${esc(m.name)}${away >= 3 ? ` <span class="badge" style="font-size:10px;padding:1px 6px;background:${away >= 7 ? 'rgba(231,76,60,.15)' : '#3d2f00'};color:${away >= 7 ? 'var(--red)' : 'var(--accent)'}">💤 ${away}d</span>` : ''}</div>
+        <div class="member-name"><span style="color:var(--muted);font-size:12px">#${cur}</span> ${move} ${esc(m.name)}${markAway && away >= after ? ` <span class="badge" style="font-size:10px;padding:1px 6px;background:${away >= after * 2 ? 'rgba(231,76,60,.15)' : '#3d2f00'};color:${away >= after * 2 ? 'var(--red)' : 'var(--accent)'}">💤 ${away}d</span>` : ''}</div>
         <div class="member-role">${roleLabel[m.role]||m.role} · ${m.tag}</div>
         ${seen ? `<div style="color:var(--muted);font-size:11px;margin-top:2px">🕓 ${seen}</div>` : ''}
       </div>
