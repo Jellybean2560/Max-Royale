@@ -2940,7 +2940,11 @@ function accountStatsHTML(data, battles, scope = 'p') {
       ${fav ?`<div class="stat-row"><span class="stat-label">Favourite Card</span><span class="stat-value" style="display:flex;align-items:center;gap:6px">${fav.iconUrls?.medium?`<img src="${fav.iconUrls.medium}" alt="" style="width:26px;height:32px;object-fit:contain">`:''}${esc(fav.name)}</span></div>` : ''}
 
       <div style="${OV_SECTION_STYLE}">Collection <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· ${found.found} / ${found.total} found</span></div>
-      ${foundRow('Cards', found.cards)}
+      <div class="stat-row" onclick="toggleCardMax('${scope}-card-levels')" style="cursor:pointer">
+        <span class="stat-label">Cards <span id="${scope}-card-levels-toggle" data-closed="▼ levels" data-open="▲" style="font-size:10px;color:var(--muted)">▼ levels</span></span>
+        <span class="stat-value">${found.cards[0]} / ${found.cards[1]}${found.cards[0] >= found.cards[1] ? ' <span class="text-green">✓</span>' : ''}</span>
+      </div>
+      <div id="${scope}-card-levels-max" style="display:none;padding:8px 0 10px;border-bottom:1px solid var(--border)">${cardLevelChartHTML(data, found.cards)}</div>
       ${foundRow('Evolutions', found.evos)}
       ${foundRow('Heroes', found.heroes)}
       ${foundRow('Tower Troops', found.troops)}
@@ -2953,6 +2957,35 @@ function accountStatsHTML(data, battles, scope = 'p') {
       ${ovRow('Clan Cards Collected', fmtNum(data.clanCardsCollected))}
       ${ovRow('War Day Wins', fmtNum(data.warDayWins))}
     </div>`;
+}
+
+// How many cards sit at each level, one bar per level split by rarity — folded
+// out from the Account tab's Cards count
+function cardLevelChartHTML(data, [found, total]) {
+  const byLevel = {};
+  (data.cards || []).forEach(c => {
+    const r = (c.rarity || 'common').toLowerCase(), l = toDisplayLevel(r, c.level);
+    (byLevel[l] || (byLevel[l] = {}))[r] = (byLevel[l][r] || 0) + 1;
+  });
+  const levels = Object.keys(byLevel).map(Number).sort((a, b) => b - a);
+  if (!levels.length) return '<div class="empty-msg" style="padding:6px 0;font-size:12px">No cards yet.</div>';
+  const count = l => Object.values(byLevel[l]).reduce((a, b) => a + b, 0);
+  const most = Math.max(...levels.map(count));
+  const used = RARITY_ORDER_KEYS.filter(r => levels.some(l => byLevel[l][r]));
+  return levels.map(l => `
+      <div style="display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px">
+        <span style="width:38px;flex-shrink:0;color:var(--muted)">Lv ${l}</span>
+        <span style="flex:1;min-width:0;display:flex;height:12px">
+          <span style="display:flex;width:${count(l) / most * 100}%;border-radius:3px;overflow:hidden;gap:1px">
+            ${RARITY_ORDER_KEYS.filter(r => byLevel[l][r]).map(r => `<span title="${byLevel[l][r]} ${r}" style="flex:${byLevel[l][r]};background:${RARITY_COLOR[r]}"></span>`).join('')}
+          </span>
+        </span>
+        <span style="width:24px;text-align:right;font-weight:700;flex-shrink:0">${count(l)}</span>
+      </div>`).join('')
+    + (total > found ? `<div style="font-size:11px;color:var(--muted);margin-top:4px">+ ${total - found} not found yet</div>` : '')
+    + `<div style="display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px;font-size:11px;color:var(--muted)">
+        ${used.map(r => `<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:2px;background:${RARITY_COLOR[r]}"></span>${r[0].toUpperCase() + r.slice(1)}</span>`).join('')}
+      </div>`;
 }
 
 // ── Trophy history ──
