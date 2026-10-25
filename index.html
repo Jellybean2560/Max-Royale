@@ -1361,8 +1361,8 @@ async function viewFriend(tag, { fromHistory = false } = {}) {
   body.innerHTML = '<div class="spinner"></div>';
   try {
     await maybeLoadCards();
-    // The battle log only feeds the Overview's recent-battle stats — a failure
-    // there shouldn't stop the profile from opening.
+    // The battle log only feeds the Overview's recent-battle stats and the
+    // head-to-head record — a failure there shouldn't stop the profile opening.
     const [data, battles] = (fromHistory && _modalProfiles[tag]) || await Promise.all([
       apiGet('/players/' + encodeURIComponent(tag)),
       apiGet('/players/' + encodeURIComponent(tag) + '/battlelog').catch(() => [])
@@ -1371,6 +1371,7 @@ async function viewFriend(tag, { fromHistory = false } = {}) {
     _modalProfiles[tag] = [data, battles];
     [_friendData, _friendBattles] = [data, battles];
     saveFriendStats(data.tag, data, battles);
+    recordCoPlayers(window._currentProfile?.data?.tag, battles);
     body.innerHTML = `
       <div class="lookup-header" style="margin-bottom:12px">
         <div class="player-name">${esc(_friendData.name)}</div>
@@ -1507,6 +1508,7 @@ function compareHTML(me, them) {
   const cell = (v, other, d, show) => `<span class="${(v || 0) > (other || 0) ? 'cmp-win' : ''}">${show ? show(v, d) : fmtNum(v)}</span>`;
   const counts = compareCardRows(me, them).reduce((n, r) => (n[r.diff > 0 ? 'them' : r.diff < 0 ? 'me' : 'same']++, n), { them: 0, me: 0, same: 0 });
   return `
+    ${headToHeadHTML(me, them)}
     <div class="card">
       <h3 style="margin-bottom:6px">⚖️ You vs ${esc(them.name)}</h3>
       <div class="cmp-row cmp-head"><span></span><span>${esc(me.name)}</span><span>${esc(them.name)}</span></div>
@@ -1816,6 +1818,7 @@ async function refreshFriendStats(force = false) {
       try {
         const [p, log] = await Promise.all([apiGet(path), apiGet(path + '/battlelog').catch(() => null)]);
         saveFriendStats(tag, p, log);
+        recordCoPlayers(window._currentProfile?.data?.tag, log);
       } catch(e) {}
       _friendStatsProgress.done++;
       if (currentScreen === 'friends') _renderFriendsList();
@@ -1841,6 +1844,14 @@ function sortedFriends(list) {
     by === 'trophies' ? (a, b) => (b.trophies ?? -1) - (a.trophies ?? -1) :
     by === 'name'     ? (a, b) => (a.name || '').localeCompare(b.name || '') :
                         (a, b) => (b.lastBattle || '').localeCompare(a.lastBattle || ''));
+}
+// "⚔️ 5–3 · 🤝 12–8" — your friendly record against them and 2v2 record with them
+function h2hLine(tag) {
+  const h = headToHead(tag);
+  if (!h) return '';
+  const wl = r => `${r[0]}–${r[1]}${r[2] ? `–${r[2]}` : ''}`;
+  const parts = [h.vs && `<span title="Friendly battles against them">⚔️ ${wl(h.vs)}</span>`, h.tm && `<span title="2v2 together">🤝 ${wl(h.tm)}</span>`].filter(Boolean);
+  return `<div style="font-size:11px;color:var(--muted);margin-top:2px">${parts.join(' · ')}</div>`;
 }
 function _renderFriendsList() {
   const wrap = document.getElementById('friends-list');
@@ -1872,6 +1883,7 @@ function _renderFriendsList() {
       <div style="min-width:0">
         <div style="font-weight:600;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f.name)}</div>
         <div style="font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${f.clan ? `🛡 ${esc(f.clan)}` : `<span style="font-family:monospace">${esc(f.tag)}</span>`}</div>
+        ${h2hLine(f.tag)}
       </div>
       <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
         ${_friendsEditMode
@@ -1906,37 +1918,81 @@ function saveCoPlayers(tag, entry) {
     localStorage.setItem(COPLAYERS_KEY, JSON.stringify(all));
   } catch(e) {}
 }
+// Head-to-head rides along: per co-player, [wins, losses, draws] against them in
+// friendly battles (vs) and next to them in any battle (tm). Those have their own
+// dedupe list (hseen), so battles counted for suggestions before results were
+// kept still get their result tallied once. Works on any battle log that has
+// myTag in it — a friend's log too, which fills in games yours has rolled past.
 function recordCoPlayers(myTag, battles) {
   if (!myTag) return;
   const entry = loadCoPlayers(myTag);
-  const seen = new Set(entry.seen);
+  const seen = new Set(entry.seen), hseen = new Set(entry.hseen || []);
   let changed = false;
   (battles || []).forEach(b => {
-    if (!b.battleTime || seen.has(b.battleTime)) return;
+    if (!b.battleTime || (seen.has(b.battleTime) && hseen.has(b.battleTime))) return;
     const mySide = (b.team || []).some(p => p.tag === myTag) ? (b.team || []) : (b.opponent || []).some(p => p.tag === myTag) ? (b.opponent || []) : null;
     if (!mySide) return;
-    seen.add(b.battleTime);
+    const oppSide = (mySide === b.team ? b.opponent : b.team) || [];
     changed = true;
     const isFriendly = /friendly|clanMate|casual/i.test(b.type || '');
-    const bump = (p, field) => {
-      if (!p.tag || p.tag === myTag) return;
+    const player = p => {
       const e = entry.players[p.tag] || (entry.players[p.tag] = { name: p.name, mates: 0, friendlies: 0 });
       e.name = p.name; e.clan = p.clan?.name || e.clan || '';
-      e[field]++;
       if (!e.last || b.battleTime > e.last) e.last = b.battleTime;
+      return e;
     };
-    mySide.forEach(p => bump(p, isFriendly ? 'friendlies' : 'mates'));
-    if (isFriendly) ((mySide === b.team ? b.opponent : b.team) || []).forEach(p => bump(p, 'friendlies'));
+    const others = side => side.filter(p => p.tag && p.tag !== myTag);
+    if (!seen.has(b.battleTime)) {
+      seen.add(b.battleTime);
+      others(mySide).forEach(p => player(p)[isFriendly ? 'friendlies' : 'mates']++);
+      if (isFriendly) others(oppSide).forEach(p => player(p).friendlies++);
+    }
+    if (!hseen.has(b.battleTime)) {
+      hseen.add(b.battleTime);
+      const mine = mySide[0]?.crowns, theirs = oppSide[0]?.crowns;
+      if (mine == null || theirs == null || !oppSide.length) return;  // boat battles: no result
+      const r = mine > theirs ? 0 : mine < theirs ? 1 : 2;
+      const tally = (p, k) => { const e = player(p); (e[k] || (e[k] = [0, 0, 0]))[r]++; };
+      others(mySide).forEach(p => tally(p, 'tm'));
+      if (isFriendly) others(oppSide).forEach(p => tally(p, 'vs'));
+    }
   });
   if (!changed) return;
   entry.seen = [...seen].slice(-300);
+  entry.hseen = [...hseen].slice(-300);
   // Bound growth: random one-off teammates pile up, so keep the 300 most recent
-  const tags = Object.keys(entry.players);
+  // (saved friends always stay, with their head-to-head record)
+  const friends = new Set(getFriends().map(f => f.tag));
+  const tags = Object.keys(entry.players).filter(t => !friends.has(t));
   if (tags.length > 300) {
     tags.sort((a, b) => (entry.players[b].last || '').localeCompare(entry.players[a].last || ''))
         .slice(300).forEach(t => delete entry.players[t]);
   }
   saveCoPlayers(myTag, entry);
+}
+
+// The loaded profile's record with a player: { vs, tm, last } or null
+function headToHead(tag) {
+  const me = window._currentProfile?.data?.tag;
+  if (!me || !tag || me === tag) return null;
+  const e = loadCoPlayers(me).players[tag];
+  return e && (e.vs || e.tm) ? e : null;
+}
+const wldText = r => `<span class="text-green">${r[0]}W</span> <span class="text-red">${r[1]}L</span>${r[2] ? ` <span class="text-muted">${r[2]}D</span>` : ''}`;
+const wldPct = r => Math.round(r[0] / Math.max(r[0] + r[1] + r[2], 1) * 100);
+function headToHeadHTML(me, them) {
+  const h = headToHead(them.tag);
+  const row = (label, r, note) => r ? ovRow(label, `${wldText(r)} · ${wldPct(r)}%`) : ovRow(label, `<span class="text-muted">${note}</span>`);
+  return `
+    <div class="card">
+      <h3 style="margin-bottom:6px">🤝 Head-to-Head</h3>
+      ${h ? `
+        ${row(`${esc(me.name)} vs ${esc(them.name)}`, h.vs, 'No friendly battles yet')}
+        ${row('Together in 2v2', h.tm, 'No 2v2 games together yet')}
+        ${h.last ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">Last played together ${formatBattleTime(h.last)}</div>` : ''}`
+      : `<div style="font-size:12px;color:var(--muted)">No games together yet.</div>`}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Friendly battles and 2v2 games together, collected on this device from both your battle logs.</div>
+    </div>`;
 }
 
 function suggestedFriendsHTML() {
