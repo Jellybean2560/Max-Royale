@@ -5541,8 +5541,9 @@ function clanTools() {
   try { return JSON.parse(localStorage.getItem(CLAN_TOOLS_KEY) || '{}') || {}; } catch(e) { return {}; }
 }
 // Inactive members: days away before someone counts as inactive, set by the user
-const AWAY_DEFAULT = 3, AWAY_CHOICES = [1, 2, 3, 4, 5, 7, 10, 14, 21, 30];
-const awayAfter = () => AWAY_CHOICES.includes(+clanTools().awayAfter) ? +clanTools().awayAfter : AWAY_DEFAULT;
+const AWAY_DEFAULT = 3, AWAY_MAX = 180;
+const clampAway = v => Number.isFinite(+v) && +v >= 1 ? Math.min(AWAY_MAX, Math.round(+v)) : AWAY_DEFAULT;
+const awayAfter = () => clampAway(clanTools().awayAfter);
 let _clanToolsOpen = false;
 function clanToolsHTML() {
   const on = clanTools(), n = CLAN_TOOLS.filter(([k]) => on[k]).length;
@@ -5561,9 +5562,12 @@ function clanToolsHTML() {
         </label>${k === 'inactive' && on[k] ? `
         <div class="stat-row" style="gap:12px">
           <span style="font-size:13px;color:var(--muted);white-space:nowrap">Inactive after</span>
-          <select onchange="setClanTool('awayAfter', +this.value)" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:5px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer">
-            ${AWAY_CHOICES.map(d => `<option value="${d}" ${d === awayAfter() ? 'selected' : ''}>${d} day${d > 1 ? 's' : ''} away</option>`).join('')}
-          </select>
+          <span style="display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted)">
+            <input type="number" inputmode="numeric" min="1" max="${AWAY_MAX}" step="1" value="${awayAfter()}"
+              onchange="setClanTool('awayAfter', clampAway(this.value))" onkeydown="if(event.key==='Enter')this.blur()"
+              style="width:64px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:5px 10px;font-size:13px;font-family:'Inter',sans-serif;text-align:center">
+            days away
+          </span>
         </div>` : ''}`).join('')}
       <div style="font-size:11px;color:var(--muted);margin-top:8px">Saved on this device, for every clan you look up.</div>
     </div>` : ''}`;
