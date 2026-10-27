@@ -1394,6 +1394,7 @@ async function viewFriend(tag, { fromHistory = false } = {}) {
     [_friendData, _friendBattles] = [data, battles];
     saveFriendStats(data.tag, data, battles);
     recordCoPlayers(window._currentProfile?.data?.tag, battles);
+    if (!fromHistory) recordHistory(data, battles);
     body.innerHTML = `
       <div class="lookup-header" style="margin-bottom:12px">
         <div class="player-name">${esc(_friendData.name)}</div>
@@ -1845,6 +1846,7 @@ async function refreshFriendStats(force = false) {
         const [p, log] = await Promise.all([apiGet(path), apiGet(path + '/battlelog').catch(() => null)]);
         saveFriendStats(tag, p, log);
         recordCoPlayers(window._currentProfile?.data?.tag, log);
+        recordHistory(p, log || []);
       } catch(e) {}
       _friendStatsProgress.done++;
       if (currentScreen === 'friends') _renderFriendsList();
@@ -2096,9 +2098,7 @@ async function loadPlayer(tagOverride, opts = {}) {
     // Saved only once the tag proved real: a mistyped tag must not become the
     // account the app reopens on
     localStorage.setItem('cr_player_tag', data.tag);
-    recordMatchups(data.tag, battles);
-    recordTrophies(data, battles);
-    recordProgress(data);
+    recordHistory(data, battles);
     if (opts.quiet) renderProfilePreservingView(data, battles);
     else renderProfile(data, battles);
     // Save this account (name + tag) so the user can switch between accounts
@@ -2198,9 +2198,7 @@ async function autoRefreshProfile() {
 }
 
 function renderProfileFromCache(cached) {
-  recordMatchups(cached.data.tag, cached.battles);
-  recordTrophies(cached.data, cached.battles, cached.savedAt);
-  recordProgress(cached.data, cached.savedAt);
+  recordHistory(cached.data, cached.battles, cached.savedAt);
   window._currentProfile = { data: cached.data, battles: cached.battles, savedAt: cached.savedAt };
   renderProfile(cached.data, cached.battles);
   recordCoPlayers(cached.data.tag, cached.battles);
@@ -2954,7 +2952,7 @@ function accountStatsHTML(data, battles, scope = 'p') {
   const fav = data.currentFavouriteCard;
   const days = accountAgeDays(data);
   return `
-    ${scope === 'p' ? progressHTML(data) : ''}
+    ${progressHTML(data, scope)}
     ${trophyHistoryHTML(data, battles, scope)}
     <div class="card">
       <h3 style="margin-bottom:6px">👤 Account</h3>
@@ -3284,16 +3282,20 @@ function trophyHistory(data, battles, { persist = false, at = Date.now() } = {})
     if (now[s] != null && (!list.length || list[list.length - 1][1] !== now[s])) list = mergeTrophyPoints(list, [[at, now[s]]]);
     entry[s] = list;
   }
-  if (persist) try { all[data.tag] = entry; localStorage.setItem(TROPHY_HISTORY_KEY, JSON.stringify(all)); } catch(e) {}
+  if (persist) try {
+    all[data.tag] = entry;
+    pruneHistoryTags(all, e => Math.max(e.road?.at(-1)?.[0] || 0, e.pol?.at(-1)?.[0] || 0));
+    localStorage.setItem(TROPHY_HISTORY_KEY, JSON.stringify(all));
+  } catch(e) {}
   return entry;
 }
 function recordTrophies(data, battles, at) { if (data?.tag) trophyHistory(data, battles, { persist: true, at }); }
 
 const _trophyState = {};
-// scope 'p' reads the saved history; 'f' (a friend) gets their current log only
+// The saved history (recordHistory), else just the current log
 function trophyHistoryHTML(data, battles, scope) {
   let hist = null;
-  if (scope === 'p') try { hist = JSON.parse(localStorage.getItem(TROPHY_HISTORY_KEY) || '{}')[data.tag] || null; } catch(e) {}
+  try { hist = JSON.parse(localStorage.getItem(TROPHY_HISTORY_KEY) || '{}')[data.tag] || null; } catch(e) {}
   if (!hist) hist = trophyHistory(data, battles);
   const prev = _trophyState[scope]?.tag === data.tag ? _trophyState[scope] : null;
   const has = s => (hist[s] || []).length > 0;
@@ -3334,7 +3336,9 @@ function trophyCardBody(scope) {
     <div class="filter-bar" style="margin:10px 0 0">
       ${Object.entries(TROPHY_RANGES).map(([r, l]) => `<button class="filter-btn ${st.range === r ? 'active' : ''}" onclick="setTrophyRange('${scope}','${r}')">${l}</button>`).join('')}
     </div>
-    ${scope === 'p' ? `<div style="font-size:11px;color:var(--muted);margin-top:8px">Built up on this device from refreshes and your ${st.series === 'pol' ? 'ranked' : 'ladder'} battles, so it grows the more you use the app.</div>` : ''}`;
+    <div style="font-size:11px;color:var(--muted);margin-top:8px">${scope === 'p'
+      ? `Built up on this device from refreshes and your ${st.series === 'pol' ? 'ranked' : 'ladder'} battles, so it grows the more you use the app.`
+      : `Built up on this device from their ${st.series === 'pol' ? 'ranked' : 'ladder'} battles each time their profile is loaded, so it grows the more you look them up.`}</div>`;
 }
 // A line over the range, with three recessive gridlines; touch or hover shows the
 // value at that moment in the readout above.
@@ -3342,7 +3346,7 @@ function trophyChartSVG(scope, pts) {
   const W = 320, H = 120, L = 40, R = 6, T = 6, B = 18;
   if (new Set(pts.map(p => p[0])).size < 2 || pts.length < 3) {
     _trophyState[scope].chart = null;
-    return `<div class="empty-msg" style="padding:14px 0;font-size:12px">Not enough history yet — the graph fills in as you play${scope === 'p' ? ' and refresh' : ''}.</div>`;
+    return `<div class="empty-msg" style="padding:14px 0;font-size:12px">Not enough history yet — the graph fills in ${scope === 'p' ? 'as you play and refresh' : 'each time their profile is loaded'}.</div>`;
   }
   const t0 = pts[0][0], t1 = pts[pts.length - 1][0];
   let lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1]));
@@ -3405,6 +3409,27 @@ window.setTrophyRange = function(scope, r) {
   if (el) el.innerHTML = trophyCardBody(scope);
 };
 
+// ── Per-player history on this device (progress, trophies, opponent cards) ──
+// Kept for every profile seen — loaded, opened in the modal, or refreshed in the
+// Friends list — so a friend's tabs build up the same history as your own.
+function recordHistory(data, battles, at = Date.now()) {
+  if (!data?.tag) return;
+  recordMatchups(data.tag, battles, at);
+  recordTrophies(data, battles, at);
+  recordProgress(data, at);
+}
+// Tags whose history stays: your accounts, saved friends and the loaded profile,
+// plus the HISTORY_OTHERS most recently seen other players (clan members etc.)
+const HISTORY_OTHERS = 10;
+function pruneHistoryTags(all, latest) {
+  const bare = t => String(t || '').replace('#', '');
+  const keep = new Set([...getSavedAccounts(), ...getFriends()].map(x => bare(x.tag)));
+  keep.add(bare(window._currentProfile?.data?.tag));
+  Object.keys(all).filter(t => !keep.has(bare(t)))
+    .sort((a, b) => latest(all[b]) - latest(all[a]))
+    .slice(HISTORY_OTHERS).forEach(t => delete all[t]);
+}
+
 // ── Progress: what changed since a day, a week or a month ago ──
 // The API only has the profile as it is now, so this device keeps a compact
 // snapshot per tag: the last refresh of each day, plus the first one it ever saw
@@ -3412,7 +3437,7 @@ window.setTrophyRange = function(scope, r) {
 // Account tab compares the profile against the last snapshot from before the
 // chosen range. Cards are display level × 4 + owned-form bits (1 evo, 2 hero).
 const PROGRESS_KEY = 'cr_progress_v1';
-const PROGRESS_DAYS = 32, PROGRESS_TAGS = 6;
+const PROGRESS_DAYS = 32;
 const PROGRESS_RANGES = [['today', 'Today'], ['7', '7 days'], ['30', '30 days']];
 function progressSnap(data, at) {
   const lv = c => toDisplayLevel((c.rarity || 'common').toLowerCase(), c.level);
@@ -3429,9 +3454,24 @@ const sameProgress = (a, b) => JSON.stringify({ ...a, at: 0 }) === JSON.stringif
 function loadProgress() {
   try { return JSON.parse(localStorage.getItem(PROGRESS_KEY) || '{}') || {}; } catch(e) { return {}; }
 }
+// Stored compactly: after a tag's first snapshot, cards and troops hold only what
+// changed since the one before (d: 1). Older full snapshots read as they are.
+function expandProgress(list) {
+  let prev = null;
+  return (list || []).map(raw => {
+    const { d, ...s } = raw;
+    if (d && prev) { s.cards = { ...prev.cards, ...s.cards }; s.troops = { ...prev.troops, ...s.troops }; }
+    return prev = s;
+  });
+}
+function compactProgress(list) {
+  const diff = (a, b) => Object.fromEntries(Object.entries(a || {}).filter(([k, v]) => b?.[k] !== v));
+  return list.map((s, i) => i ? { ...s, d: 1, cards: diff(s.cards, list[i - 1].cards), troops: diff(s.troops, list[i - 1].troops) } : s);
+}
+const progressList = tag => expandProgress(loadProgress()[tag]);
 function recordProgress(data, at = Date.now()) {
   if (!data?.tag) return;
-  const all = loadProgress(), list = all[data.tag] || [];
+  const all = loadProgress(), list = expandProgress(all[data.tag]);
   const snap = progressSnap(data, at), last = list[list.length - 1];
   if (last && (at < last.at || sameProgress(snap, last))) return;
   const day = t => new Date(t).toDateString();
@@ -3439,29 +3479,28 @@ function recordProgress(data, at = Date.now()) {
   else list.push(snap);
   // Keep one snapshot from before the window: it's the 30-day baseline
   while (list.length > 2 && list[1].at < at - PROGRESS_DAYS * 864e5) list.shift();
-  all[data.tag] = list;
-  const latest = t => all[t][all[t].length - 1]?.at || 0;
-  Object.keys(all).sort((a, b) => latest(b) - latest(a)).slice(PROGRESS_TAGS).forEach(t => delete all[t]);
+  all[data.tag] = compactProgress(list);
+  pruneHistoryTags(all, l => l[l.length - 1]?.at || 0);
   try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(all)); } catch(e) {}
 }
 
-const _progressState = { range: '7', data: null };
-function progressHTML(data) {
-  _progressState.data = data;
-  return `<div class="card" id="p-progress">${progressCardBody()}</div>`;
+const _progressState = {};
+function progressHTML(data, scope) {
+  _progressState[scope] = { range: _progressState[scope]?.range || '7', data };
+  return `<div class="card" id="${scope}-progress">${progressCardBody(scope)}</div>`;
 }
-function progressCardBody() {
-  const data = _progressState.data, r = _progressState.range;
-  const list = loadProgress()[data.tag] || [];
+function progressCardBody(scope) {
+  const { data, range: r } = _progressState[scope];
+  const list = progressList(data.tag);
   const from = r === 'today' ? new Date().setHours(0, 0, 0, 0) : Date.now() - r * 864e5;
   const cur = progressSnap(data, Date.now());
   // The last snapshot from before the range; with less history, the oldest there is
   const base = list.filter(s => s.at <= from).pop() || (list.length > 1 ? list[0] : null);
   const chips = `<div class="filter-bar" style="margin:0 0 8px">
-    ${PROGRESS_RANGES.map(([k, l]) => `<button class="filter-btn ${r === k ? 'active' : ''}" onclick="setProgressRange('${k}')">${l}</button>`).join('')}
+    ${PROGRESS_RANGES.map(([k, l]) => `<button class="filter-btn ${r === k ? 'active' : ''}" onclick="setProgressRange('${scope}','${k}')">${l}</button>`).join('')}
   </div>`;
   const head = `<h3 style="margin-bottom:10px">🆕 Progress</h3>${chips}`;
-  if (!base) return `${head}<div class="empty-msg" style="padding:10px 0;font-size:12px">Tracking started ${progressWhen(list[0]?.at || Date.now())}. What changes — upgrades, unlocks, levels, rating — shows up here after your next refresh.</div>`;
+  if (!base) return `${head}<div class="empty-msg" style="padding:10px 0;font-size:12px">Tracking started ${progressWhen(list[0]?.at || Date.now())}. What changes — upgrades, unlocks, levels, rating — shows up here after ${scope === 'p' ? 'your next refresh' : 'their profile is loaded again (opening it, or the Friends list refreshing them)'}.</div>`;
 
   const byId = Object.fromEntries([...(data.cards || []), ...(data.supportCards || [])].map(c => [c.id, c]));
   const upgraded = [], unlocked = [];
@@ -3530,10 +3569,11 @@ function progressWhen(t) {
   if (t >= today - 864e5) return `yesterday ${time}`;
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 }
-window.setProgressRange = function(r) {
-  _progressState.range = r;
-  const el = document.getElementById('p-progress');
-  if (el && _progressState.data) el.innerHTML = progressCardBody();
+window.setProgressRange = function(scope, r) {
+  if (!_progressState[scope]) return;
+  _progressState[scope].range = r;
+  const el = document.getElementById(`${scope}-progress`);
+  if (el) el.innerHTML = progressCardBody(scope);
 };
 
 // W/L per game mode over the battle log (~30 most recent games).
@@ -3640,21 +3680,23 @@ function loadMatchups(tag) {
   try { return JSON.parse(localStorage.getItem(MATCHUPS_KEY) || '{}')[tag] || null; }
   catch(e) { return null; }
 }
-function recordMatchups(tag, battles) {
+function recordMatchups(tag, battles, at = Date.now()) {
   if (!tag) return;
   try {
     const all = JSON.parse(localStorage.getItem(MATCHUPS_KEY) || '{}');
     const entry = all[tag] || newMatchups();
     if (!tallyMatchups(entry, battles)) return;
+    entry.at = at;
     all[tag] = entry;
+    pruneHistoryTags(all, e => e.at || e.since || 0);
     localStorage.setItem(MATCHUPS_KEY, JSON.stringify(all));
   } catch(e) {}
 }
-// scope 'p' reads the saved tally; 'f' (a friend) counts their current log only
+// The saved tally (recordHistory), else just the current log
 function matchupsHTML(data, battles, scope) {
-  let m = scope === 'p' ? loadMatchups(data.tag) : null;
+  let m = loadMatchups(data.tag), saved = !!m;
   if (!m) { m = newMatchups(); tallyMatchups(m, battles); }
-  const since = scope === 'p' && m.since ? ` since ${new Date(m.since).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : '';
+  const since = saved && m.since ? ` since ${new Date(m.since).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : '';
   const head = `<div style="${OV_SECTION_STYLE}">Opponent Cards <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· ${m.battles} battle${m.battles === 1 ? '' : 's'}${since}</span></div>`;
   const rows = Object.entries(m.cards)
     .map(([name, [w, l, d]]) => ({ name, w, l, d, n: w + l + d, rate: w / Math.max(w + l + d, 1) }))
