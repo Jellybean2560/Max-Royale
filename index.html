@@ -2416,13 +2416,15 @@ function loadDeckHistory(tag) {
 function saveDeckHistory(tag, history) {
   try {
     const all = JSON.parse(localStorage.getItem('cr_deck_history_v1') || '{}');
+    history.at = Date.now();
     all[tag] = history;
+    pruneHistoryTags(all, h => h.at || 0);
     localStorage.setItem('cr_deck_history_v1', JSON.stringify(all));
   } catch(e) {}
 }
 
-// persist:false builds the map from these battles alone and saves nothing — for
-// friends, whose decks must never land in this device's deck history.
+// Every profile seen keeps its own history (friends and clan members too, under
+// their own tag); persist:false builds the map from these battles alone.
 function buildDeckMapFromBattles(battles, playerTag, { persist = true } = {}) {
   const history = persist ? loadDeckHistory(playerTag) : { decks: {}, seen: [] };
   const seen = new Set(history.seen);
@@ -3415,6 +3417,7 @@ window.setTrophyRange = function(scope, r) {
 function recordHistory(data, battles, at = Date.now()) {
   if (!data?.tag) return;
   recordMatchups(data.tag, battles, at);
+  buildDeckMapFromBattles(battles, data.tag);
   recordTrophies(data, battles, at);
   recordProgress(data, at);
 }
@@ -5044,12 +5047,13 @@ function renderDeckBuilder(battles, data, scope = 'p') {
   battles = battles || [];
   _deckState[scope] = {
     data, battles,
+    // The filter carries over within your own profile; the sort for each scope
     filter: scope === 'p' ? (_deckState.p?.filter || 'all') : 'all',
-    sort: scope === 'p' ? (_deckState.p?.sort || 'played') : 'played',
+    sort: _deckState[scope]?.sort || 'played',
     // Prefer the full card catalog (always complete) over icons embedded in
     // individual battle-log records, which are sometimes missing iconUrls.
     art: buildCardArtMap(battles),
-    deckMap: buildDeckMapFromBattles(battles, data.tag, { persist: scope === 'p' })
+    deckMap: buildDeckMapFromBattles(battles, data.tag)
   };
   return `<div id="${scope}-decks">${_renderDeckList(scope)}</div>`;
 }
@@ -5100,12 +5104,12 @@ function _renderDeckList(scope) {
       `<div style="margin-bottom:5px;text-align:center"><div class="${cls}" style="font-size:15px;font-weight:700;line-height:1.1">${val}</div><div style="font-size:10px;color:var(--muted)">${lbl}</div></div>`;
     return `
       <div class="deck-item"${inUse ? ' style="border-color:var(--accent)"' : ''}>
-        ${mine || inUse || d.last ? `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;min-height:22px;margin-bottom:6px">
+        ${!d.unplayed || inUse ? `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;min-height:22px;margin-bottom:6px">
           <span style="display:flex;align-items:center;gap:8px;min-width:0">
             ${inUse ? `<span class="badge badge-gold" title="1v1: the deck equipped in-game. 2v2: the deck from your latest 2v2 battle.">${inUse}</span>` : ''}
             ${d.last ? `<span style="font-size:11px;color:var(--muted);white-space:nowrap" title="Last played">🕓 ${formatBattleTime(d.last)}</span>` : ''}
           </span>
-          ${mine && !d.unplayed ? `<button class="btn btn-secondary btn-sm" title="Delete this deck's history" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="deleteDeck('${esc(d.key)}')">🗑️</button>` : ''}
+          ${!d.unplayed ? `<button class="btn btn-secondary btn-sm" title="Delete this deck's history" style="font-size:11px;padding:2px 8px;line-height:1.4" onclick="deleteDeck('${scope}','${esc(d.key)}')">🗑️</button>` : ''}
         </div>` : ''}
         <div style="display:flex;gap:12px;align-items:center">
           <div style="flex:1;min-width:0">
@@ -5114,7 +5118,7 @@ function _renderDeckList(scope) {
           <div style="flex:1;min-width:0">
             ${d.unplayed ? `
             ${statRow('Avg Elixir', avgElixir, 'text-blue')}
-            <div style="font-size:12px;color:var(--muted);text-align:center;line-height:1.4;margin-top:6px">No games with it yet${mine ? ' on this device' : ''} — wins and losses show up once ${mine ? 'you play' : 'they play'} it.</div>` : `
+            <div style="font-size:12px;color:var(--muted);text-align:center;line-height:1.4;margin-top:6px">No games with it yet on this device — wins and losses show up once ${mine ? 'you play' : 'they play'} it.</div>` : `
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 8px">
               ${statRow('Wins', d.wins, 'text-green')}
               ${statRow('Losses', d.losses, 'text-red')}
@@ -5915,15 +5919,15 @@ window.setDeckFilter = function(scope, mode) {
 // Manually remove a deck (and its accumulated win/loss history) from local storage.
 // Battles already counted toward it stay marked "seen", so it won't reappear just
 // from re-fetching the same recent battle log — only if it's actually played again.
-window.deleteDeck = function(key) {
+window.deleteDeck = function(scope, key) {
   if (!confirm('Delete this deck and its win/loss history? This can\'t be undone.')) return;
-  const st = _deckState.p; if (!st) return;
+  const st = _deckState[scope]; if (!st) return;
   const history = loadDeckHistory(st.data.tag);
   delete history.decks[key];
   saveDeckHistory(st.data.tag, history);
   delete st.deckMap[key];
-  const el = document.getElementById('p-decks');
-  if (el) el.innerHTML = _renderDeckList('p');
+  const el = document.getElementById(`${scope}-decks`);
+  if (el) el.innerHTML = _renderDeckList(scope);
 };
 
 // Open the deck directly in Clash Royale (the "Copy Deck" dialog inside the game)
