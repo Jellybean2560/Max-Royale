@@ -181,6 +181,15 @@
   .mu-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
   .mu-row img { width: 26px; height: 32px; object-fit: contain; flex-shrink: 0; }
   .mu-row .mu-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dr-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .dr-table th { font-weight: 600; color: var(--muted); font-size: 11px; text-align: right; padding: 4px 2px; border-bottom: 1px solid var(--border); }
+  .dr-table td { text-align: right; padding: 5px 2px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .dr-table th:first-child, .dr-table td:first-child { text-align: left; white-space: normal; }
+  .dr-table tr.dr-me td { color: var(--accent); font-weight: 700; }
+  details.dr-fold > summary { cursor: pointer; font-size: 13px; font-weight: 600; padding: 8px 0; list-style: none; display: flex; justify-content: space-between; }
+  details.dr-fold > summary::-webkit-details-marker { display: none; }
+  details.dr-fold > summary::after { content: '▼'; font-size: 10px; color: var(--muted); }
+  details.dr-fold[open] > summary::after { content: '▲'; }
   .mu-sub { font-size: 12px; font-weight: 600; color: var(--muted); margin: 10px 0 2px; }
   .acct-chip { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 16px; padding: 6px 12px; font-size: 13px; font-family: 'Inter', sans-serif; cursor: pointer; }
   .player-tag { color: var(--muted); font-size: 13px; font-family: monospace; }
@@ -275,7 +284,12 @@
 
     <!-- ═══════════════ CALCULATOR ═══════════════ -->
     <div id="screen-calc" class="screen">
-      <h2 style="margin-bottom:16px">🧮 Upgrade Calculator</h2>
+      <h2 style="margin-bottom:12px" id="calc-title">🧮 Upgrade Calculator</h2>
+      <div class="seg" id="calc-seg">
+        <button class="active" onclick="setCalcView('calc')">Calculator</button>
+        <button onclick="setCalcView('drops')">Drop Rates</button>
+      </div>
+      <div id="calc-pane">
 
       <div class="card">
         <div class="field">
@@ -316,6 +330,8 @@
       </div>
 
       <div id="calc-result"></div>
+      </div>
+      <div id="drops-pane" style="display:none"></div>
     </div>
 
     <!-- ═══════════════ PLAYER LOOKUP ═══════════════ -->
@@ -737,7 +753,7 @@ function goTo(name) {
   const navBtn = document.getElementById('nav-' + name);
   if (navBtn) navBtn.classList.add('active');
   currentScreen = name;
-  if (name === 'calc') { maybeLoadCards(); calcUpdate(); }
+  if (name === 'calc') { maybeLoadCards(); calcUpdate(); if (_calcView === 'drops') renderDropRates(); }
   if (name === 'friends') renderFriends();
   if (name === 'deckup') renderDeckUpgradeScreen();
   if (name === 'meta') renderMetaScreen();
@@ -3013,6 +3029,207 @@ window.openCardsAtLevel = function(scope, level) {
   if (sel) sel.value = _cardLevel;
   renderCards();
 };
+
+// ── Drop rates: Supercell's published chest odds and rewards (October 2026,
+// support.supercell.com), for the arena / chest level picked ──
+const DROPS_URL = 'https://support.supercell.com/clash-royale/en/articles/info-cr-shocktober-2026.html';
+const DROPS_AS_OF = 'October 2026';
+const MAX_ARENA = 32;
+// Chest level by arena; Supercell's table ends at Arena 28 (level 16), which was
+// the top arena when it was written — arenas 29–32 are level 16 too
+const chestLevelFor = a => a <= 8 ? a : a <= 10 ? 9 : a <= 12 ? 10 : a <= 15 ? 11 : a <= 18 ? 12 : a <= 21 ? 13 : a <= 24 ? 14 : a <= 27 ? 15 : 16;
+// The API has no arena number: Arena1–Arena14 by name, then Arena_L1… = Arena 15…
+// (Arena_L14 Summit of Heroes = 28, Arena_L18 Spirit Square = 32; checked Oct 2026)
+// An arena name it doesn't know (a new arena) falls back to the trophy thresholds.
+const ARENA_TROPHIES = [0,300,600,1000,1300,1600,2000,2300,2600,3000,3400,3800,4200,4600,5000,5500,6000,6500,7000,7500,
+  8000,8500,9000,9500,10000,10500,11000,11500,12000,12500,13000,13500];
+function arenaNumber(data) {
+  const raw = data?.arena?.rawName || '';
+  let m;
+  if ((m = raw.match(/^Arena_L(\d+)$/))) return Math.min(MAX_ARENA, 14 + +m[1]);
+  if ((m = raw.match(/^Arena(\d+)$/))) return +m[1];
+  const named = { Arena_L: 10, Arena_Electric: 11, Arena_T: 12, TrainingCamp: 1 }[raw];
+  if (named) return named;
+  if (data?.trophies == null) return null;
+  return ARENA_TROPHIES.filter(t => t <= Math.max(data.trophies, data.bestTrophies || 0)).length || 1;
+}
+// Reward types: label, the arena that unlocks it
+const DROP_TYPES = {
+  gold: ['Gold', 1], common: ['Common Cards', 1], rare: ['Rare Cards', 1], epic: ['Epic Cards', 6],
+  legendary: ['Legendary Cards', 11], champion: ['Champion Cards', 16],
+  wCommon: ['Common Wild Cards', 2], wRare: ['Rare Wild Cards', 2], wEpic: ['Epic Wild Cards', 6],
+  wLegendary: ['Legendary Wild Cards', 11], wChampion: ['Champion Wild Cards', 16],
+  shards: ['Evolution Shards', 3], fullEvo: ['Full Evolution', 3], banner: ['Banner', 4], emote: ['Emote', 4],
+};
+const dropZeros = n => Array(n).fill(0);
+// Amount per chest level 1–16, per star
+const DROP_AMOUNTS = {
+  1: { gold: [50,75,100,125,150,200,250,325,400,500,600,700,800,900,1000,1100],
+       common: [2,2,3,4,5,6,8,10,13,16,19,22,25,28,31,34], rare: [1,1,1,1,1,1,2,2,3,3,4,4,5,6,6,7] },
+  2: { gold: [200,300,400,500,600,800,1000,1300,1600,2000,2400,2800,3200,3600,4000,4400], banner: [0,0,0,...Array(13).fill(1)],
+       common: [6,9,12,16,19,25,31,40,50,62,75,88,100,112,125,138], rare: [2,2,2,3,4,5,6,8,10,12,15,18,20,23,25,28],
+       epic: [0,0,0,0,0,1,1,1,1,2,2,2,3,3,3,3] },
+  3: { gold: [800,1200,1600,2000,2400,3200,4000,5200,6400,8000,9600,11200,12800,14400,16000,17600], emote: [0,0,0,...Array(13).fill(1)],
+       common: [25,38,50,63,75,100,125,163,200,250,300,350,400,450,500,550], rare: [5,8,10,13,15,20,25,33,40,50,60,70,80,90,100,110],
+       epic: [0,0,0,0,0,2,3,4,5,6,8,9,10,11,13,14], legendary: [...dropZeros(9),1,1,1,1,1,1,2], champion: [...dropZeros(11),1,1,1,1,1] },
+  4: { wCommon: [0,50,67,83,100,135,165,215,265,335,400,465,535,600,665,735], wRare: [0,10,13,17,20,27,33,43,53,67,80,93,107,120,133,147],
+       wEpic: [0,0,0,0,0,3,4,5,7,8,10,12,13,15,17,18], wLegendary: [...dropZeros(9),1,1,1,1,2,2,2], wChampion: [...dropZeros(11),1,1,1,1,1],
+       shards: [0,0,...Array(14).fill(2)],
+       common: [100,150,200,250,300,400,500,650,800,1000,1200,1400,1600,1800,2000,2200], rare: [20,30,40,50,60,80,100,130,160,200,240,280,320,360,400,440],
+       epic: [0,0,0,0,0,10,13,16,20,25,30,35,40,45,50,55], legendary: [...dropZeros(9),3,3,4,4,5,5,6], champion: [...dropZeros(11),3,3,4,4,4] },
+  5: { wCommon: [0,150,200,250,300,400,500,650,800,1000,1200,1500,2500,3500,5500,7500], wRare: [0,30,40,50,60,80,100,130,160,200,300,400,550,750,1000,1400],
+       wEpic: [0,0,0,0,0,10,13,16,20,25,30,50,70,100,130,180], wLegendary: [...dropZeros(9),3,4,6,9,12,14,20], wChampion: [...dropZeros(11),3,5,8,11,15],
+       shards: [0,0,...Array(14).fill(6)], fullEvo: [0,0,...Array(14).fill(1)],
+       common: [300,450,600,750,900,1200,1500,1950,2400,3000,3600,4200,4800,5400,6000,7500], rare: [60,90,120,150,180,240,300,390,480,600,720,840,960,1080,1200,1400],
+       epic: [0,0,0,0,0,30,38,48,60,75,90,105,120,135,150,180], legendary: [...dropZeros(9),8,10,11,13,14,16,20], champion: [...dropZeros(11),8,10,11,12,15] },
+};
+// Chance of each reward by final star — Supercell publishes these for chest level 13+
+const MAGIC_CHANCES = {
+  1: { gold: 50, common: 25.89, rare: 24.11 },
+  2: { gold: 38.46, common: 20.11, rare: 18.72, epic: 18.86, banner: 3.85 },
+  3: { gold: 28.85, common: 18.75, rare: 17.46, epic: 17.59, legendary: 10.41, champion: 3.10, emote: 3.85 },
+  4: { common: 16.44, rare: 15.30, epic: 15.42, legendary: 9.12, champion: 2.72, wCommon: 8, wRare: 7.5, wEpic: 7, wLegendary: 6.5, wChampion: 6.5, shards: 5.5 },
+  5: { common: 16.02, rare: 14.91, epic: 15.02, legendary: 8.89, champion: 2.65, wCommon: 9, wRare: 8, wEpic: 6.5, wLegendary: 5.5, wChampion: 4, fullEvo: 9.5 },
+};
+const STANDARD_CHANCES = {
+  1: { gold: 50, common: 25.89, rare: 24.11 },
+  2: { gold: 40, common: 20.91, rare: 19.47, epic: 19.62 },
+  3: { gold: 30, common: 19.50, rare: 18.16, epic: 18.29, legendary: 10.83, champion: 3.23 },
+  4: { common: 27.86, rare: 25.94, epic: 26.13, legendary: 15.47, champion: 4.61 },
+};
+// Final star by starting star (rows), in %
+const MAGIC_STARS = { 1: [31.64, 43.04, 20.25, 4.06, 1.01], 2: [0, 33.36, 45.59, 19.71, 1.34], 3: [0, 0, 40.96, 56.97, 2.07], 4: [0, 0, 0, 96, 4], 5: [0, 0, 0, 0, 100] };
+const STANDARD_STARS = { 1: [31.44, 45.71, 18.53, 4.32] };
+const EVO_BOX_STARS = { 3: [49.30, 45.60, 5.10], 4: [0, 79.20, 20.80], 5: [0, 0, 100] }, EVO_BOX_SHARDS = [1, 2, 6];
+// Lightning Chest per arena 1–28: strikes, total, common, rare, epic, % legendary, % champion
+const LIGHTNING = [[2,80,67,13,0,0,0],[2,85,71,14,0,0,0],[3,95,79,16,0,0,0],[3,110,92,18,0,0,0],[4,115,96,19,0,0,0],
+  [4,130,106,22,3,0,0],[4,145,118,24,3,0,0],[4,160,130,27,3,0,0],[5,175,142,29,4,0,0],[5,190,154,32,4,0,0],
+  [5,205,166,34,4,6.31,0],[5,220,179,37,4,9.78,0],[6,235,191,39,5,12.59,0],[6,250,203,42,5,14.66,0],[6,265,215,44,5,19.19,0],
+  [6,270,219,45,5,19.55,0.93],[6,275,223,46,6,19.91,2.37],[6,280,227,47,6,20.28,3.86],[6,285,231,48,6,20.64,3.93],
+  [6,290,235,48,6,21.00,4.00],[6,295,239,49,6,21.36,4.07],[6,300,244,50,6,21.72,4.14],[6,305,248,51,6,22.09,4.21],
+  [6,310,252,52,6,22.45,4.28],[6,315,256,53,6,22.81,4.34],[6,320,260,53,6,23.17,4.41],[6,325,264,54,7,23.53,4.48],[6,330,268,55,7,23.90,4.55]];
+// Legendary King's Chest, arenas 11–16+: total, common, rare, epic (a legendary always; a champion from 16)
+const KINGS = [[340,249,68,22],[350,256,70,23],[360,264,72,24],[370,272,74,24],[380,279,76,25],[380,279,76,25]];
+
+let _calcView = 'calc';
+window.setCalcView = function(v) {
+  _calcView = v;
+  document.querySelectorAll('#calc-seg button').forEach((b, i) => b.classList.toggle('active', (i === 1) === (v === 'drops')));
+  document.getElementById('calc-pane').style.display = v === 'calc' ? '' : 'none';
+  document.getElementById('drops-pane').style.display = v === 'drops' ? '' : 'none';
+  document.getElementById('calc-title').textContent = v === 'drops' ? '🎁 Drop Rates' : '🧮 Upgrade Calculator';
+  if (v === 'drops') renderDropRates();
+};
+
+const dropFmt = n => n >= 100 ? fmtNum(Math.round(n)) : n >= 10 ? n.toFixed(0) : n >= 1 ? n.toFixed(1) : n.toFixed(2);
+// What one chest gives on average: Σ final-star chance × reward chance × amount
+function dropAverage(stars, chances, lvl, arena) {
+  const out = {};
+  stars.forEach((p, i) => {
+    const st = i + 1;
+    for (const [k, c] of Object.entries(chances[st] || {})) {
+      if (DROP_TYPES[k][1] > arena) continue;
+      out[k] = (out[k] || 0) + p / 100 * c / 100 * (DROP_AMOUNTS[st][k]?.[lvl - 1] || 0);
+    }
+  });
+  return out;
+}
+// Average per chest; under 1 as "1 per N chests"
+const dropAverageHTML = (title, avg) => `
+  <div class="mu-sub">${title}</div>
+  <table class="dr-table">
+    ${Object.entries(avg).filter(([, v]) => v > 0).sort((x, y) => Object.keys(DROP_TYPES).indexOf(x[0]) - Object.keys(DROP_TYPES).indexOf(y[0]))
+      .map(([k, v]) => `<tr><td>${DROP_TYPES[k][0]}</td><td>${v >= 1 ? `<b>${dropFmt(v)}</b>` : `1 per ${fmtNum(Math.round(1 / v))} chests`}</td></tr>`).join('')}
+  </table>`;
+const starRow = (label, row, cols) => `<tr><td>${label}</td>${Array.from({ length: cols }, (_, i) => `<td>${row[i] ? row[i].toFixed(2) + '%' : ''}</td>`).join('')}</tr>`;
+const starsHead = (first, cols) => `<tr><th>Start → ends</th>${Array.from({ length: cols }, (_, i) => `<th>${i + first}★</th>`).join('')}</tr>`;
+
+// One star's rewards: type, chance, amount at this chest level (types the arena hasn't unlocked left out)
+function dropStarHTML(st, chances, lvl, arena, cosmetics) {
+  const rows = Object.entries(chances[st]).filter(([k]) => DROP_TYPES[k][1] <= arena && (DROP_AMOUNTS[st][k]?.[lvl - 1] || 0) > 0);
+  return `
+    <details class="dr-fold">
+      <summary><span>${'⭐'.repeat(st)} ${st}-Star rewards</span></summary>
+      <table class="dr-table" style="margin-bottom:8px">
+        <tr><th>Reward</th><th>Chance</th><th>Amount</th></tr>
+        ${rows.map(([k, c]) => `<tr><td>${DROP_TYPES[k][0]}${(k === 'banner' || k === 'emote') && cosmetics ? ` <a href="${DROPS_URL}" target="_blank" rel="noopener" style="font-size:11px;color:var(--blue)">which ones →</a>` : ''}</td><td>${c.toFixed(2)}%</td><td>${fmtNum(DROP_AMOUNTS[st][k][lvl - 1])}</td></tr>`).join('')}
+      </table>
+    </details>`;
+}
+
+function renderDropRates() {
+  const el = document.getElementById('drops-pane');
+  if (!el) return;
+  const data = window._currentProfile?.data;
+  const mine = arenaNumber(data);
+  if (!mine) {
+    el.innerHTML = `<div class="card"><div class="empty-msg">Load your profile on the Player screen first — the drop rates depend on your arena.</div></div>`;
+    return;
+  }
+  const a = mine, lvl = chestLevelFor(a), low = lvl < 13;
+  const magicAvg = dropAverage(MAGIC_STARS[1], MAGIC_CHANCES, lvl, a), stdAvg = dropAverage(STANDARD_STARS[1], STANDARD_CHANCES, lvl, a);
+  const L = LIGHTNING[Math.min(a, 28) - 1], K = a >= 11 ? KINGS[Math.min(a, 16) - 11] : null;
+  const lowNote = low ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">Supercell only publishes the reward chances for chest level 13+ (Arena 19+); below that they shift toward what your arena has unlocked, so treat these as a guide.</div>` : '';
+  el.innerHTML = `
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <span style="min-width:0"><b>${esc(data.arena?.name || `Arena ${a}`)}</b><span style="color:var(--muted)"> · Arena ${a}</span></span>
+        <span style="font-size:13px;white-space:nowrap">Chest level <b class="text-accent" style="font-size:16px">${lvl}</b></span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">${esc(data.name)}'s arena. Chests only hold cards you've unlocked, from your arena or below.</div>
+    </div>
+
+    <div class="card">
+      <div class="mu-sub" style="margin-top:0">✨ Magic Lucky Chest <span style="font-weight:400">· 4 spins</span></div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Chance to end on each star, by the star it starts on:</div>
+      <table class="dr-table">${starsHead(1, 5)}${[1, 2, 3, 4, 5].map(st => starRow(st + '★', MAGIC_STARS[st], 5)).join('')}</table>
+      ${dropAverageHTML('On average, a 1-star chest gives', magicAvg)}
+      ${lowNote}
+      <div style="margin-top:6px">${[1, 2, 3, 4, 5].map(st => dropStarHTML(st, MAGIC_CHANCES, lvl, a, true)).join('')}</div>
+    </div>
+
+    <div class="card">
+      <div class="mu-sub" style="margin-top:0">🍀 Standard Lucky Chest <span style="font-weight:400">· 3 spins, cards and gold</span></div>
+      <table class="dr-table">${starsHead(1, 4)}${starRow('1★', STANDARD_STARS[1], 4)}</table>
+      ${dropAverageHTML('On average, one gives', stdAvg)}
+      ${lowNote}
+      <div style="margin-top:6px">${[1, 2, 3, 4].map(st => dropStarHTML(st, STANDARD_CHANCES, lvl, a, false)).join('')}</div>
+    </div>
+
+    <div class="card">
+      <div class="mu-sub" style="margin-top:0">🧬 Evolution Box <span style="font-weight:400">· 3 taps, from events</span></div>
+      <table class="dr-table">${starsHead(3, 3)}${[3, 4, 5].map(st => starRow(st + '★', EVO_BOX_STARS[st], 3)).join('')}
+        <tr><td>Evolution Shards</td>${EVO_BOX_SHARDS.map(n => `<td>${n}</td>`).join('')}</tr></table>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Shards for an evolution you already have (or beyond what it needs) turn into cards of that troop.</div>
+    </div>
+
+    <div class="card">
+      <div class="mu-sub" style="margin-top:0">⚡ Lightning Chest <span style="font-weight:400">· Arena ${Math.min(a, 28)}</span></div>
+      <table class="dr-table">
+        <tr><td>Strikes (swap a card)</td><td>${L[0]}</td></tr>
+        <tr><td>Cards in total · 3 different</td><td>${L[1]}</td></tr>
+        <tr><td>Common / Rare / Epic</td><td>${L[2]} / ${L[3]}${L[4] ? ` / ${L[4]}` : ''}</td></tr>
+        ${L[5] ? `<tr><td>Chance of a Legendary</td><td>${L[5].toFixed(2)}%</td></tr>` : ''}
+        ${L[6] ? `<tr><td>Chance of a Champion</td><td>${L[6].toFixed(2)}%</td></tr>` : ''}
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="mu-sub" style="margin-top:0">👑 Legendary King's Chest <span style="font-weight:400">· Arena 11+</span></div>
+      ${K ? `<table class="dr-table">
+        <tr><td>Cards in total · 7 different</td><td>${K[0]}</td></tr>
+        <tr><td>Common / Rare / Epic</td><td>${K[1]} / ${K[2]} / ${K[3]}</td></tr>
+        <tr><td>Legendary</td><td>always 1</td></tr>
+        <tr><td>Champion</td><td>${a >= 16 ? 'always 1' : 'from Arena 16'}</td></tr>
+      </table>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Card drafting: you pick one of two cards at a time.</div>`
+      : `<div style="font-size:12px;color:var(--muted)">Unlocks at Arena 11.</div>`}
+    </div>
+
+    <div style="font-size:11px;color:var(--muted);text-align:center;margin:4px 0 16px;line-height:1.5">
+      From <a href="${DROPS_URL}" target="_blank" rel="noopener" style="color:var(--blue)">Supercell's drop rate page</a> (${DROPS_AS_OF}) — it also shows the possible banners and emotes. Rates can change with updates.
+    </div>`;
+}
 
 // ── Trophy history ──
 // The API only knows today's numbers, so the history is built up on this device:
