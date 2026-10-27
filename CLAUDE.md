@@ -237,7 +237,7 @@ The API **only returns masteries a player has already started** — there are no
 ---
 
 ## Evolution / hero slots (gotcha)
-The first three deck slots are special: evolutions, heroes and champions go there (two evos + one hero/champion, or one evo + two heroes/champions). Battle-log decks list cards **in slot order**, and each card's `evolutionLevel` says which form it was *played* in — `1` = evolution, `2` = hero (`3` only appears in Boat Battle defences). No `evolutionLevel` means the plain card, even if the player owns its evolution. Checked Oct 2026: in 8-card decks it only appears on slots 0–2.
+The first three deck slots are special: **slot 1 only activates an evolution, slot 2 a hero or champion, slot 3 any of the three**; slots 4–8 are plain. A plain card may still sit in the first three (common in 2v2). Where a deck has no slot order of its own — Meta decks (sorted ids) and Decks-tab entries saved alphabetically before Oct 2026 — `slotOrder()` / `deckSlotNames()` rebuild it; an order that already fits (battle log, `currentDeck`) is kept. It matters beyond looks: Copy Deck sends the cards in this order, which sets the in-game slots. Battle-log decks list cards **in slot order**, and each card's `evolutionLevel` says which form it was *played* in — `1` = evolution, `2` = hero (`3` only appears in Boat Battle defences). No `evolutionLevel` means the plain card, even if the player owns its evolution. Checked Oct 2026: in 8-card decks it only appears on slots 0–2.
 
 On `/players/{tag}` cards and `currentDeck`, `evolutionLevel` means something else — what the player *owns*, as the same bits (1 = evo, 2 = hero, 3 = both) — so don't reuse `cardVariant()` there; use `ownsEvo()` / `ownsHero()`. Checked Oct 2026 across ~500 cards: evolution-only cards read 1, hero-only 2, dual cards 2 or 3. An older rule read dual cards as "evolution only at max, hero at anything > 0" — same answers for today's four dual cards, wrong the day an evolution card gains a hero form (an owned evo would count as the hero).
 
@@ -347,3 +347,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 41. Card level chart, folded out from the Account tab's Cards count
 42. Tap players in the battle log to open them; where you'd rank in Meta → Players; Progress handles Path of Legends season resets
 43. Cards tab level filter (chart bars open it); Inactive members threshold set by the user
+44. Decks in Meta and the Decks tab shown (and copied) in game slot order: evolution, hero/champion, either

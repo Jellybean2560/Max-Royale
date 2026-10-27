@@ -4432,6 +4432,31 @@ function deckKeyOf(cards) {
   return (cards||[]).map(c => { const v = cardVariant(c); return v ? `${c.name}[${v}]` : c.name; }).sort().join('|');
 }
 
+// Deck slots as in game: slot 1 only activates an evolution, slot 2 a hero or
+// champion, slot 3 any of the three; the other five are plain. A plain card may
+// sit in the first three (2v2 decks do that). items: [{ form: 'evo'|'hero'|'',
+// champion }]. With keep, an order that already fits (battle log, currentDeck —
+// the player's real slots) stays; otherwise evolution, hero/champion and the
+// remaining one go first, in the order given, then the plain cards.
+const isChampionCard = name => (allCards.find(c => c.name === name)?.rarity || '').toLowerCase() === 'champion';
+function slotOrder(items, keep = true) {
+  const special = x => !!(x.form || x.champion);
+  const fits = items.every((x, i) => i > 2 ? !special(x)
+    : i === 0 ? x.form !== 'hero' && !x.champion
+    : i === 1 ? x.form !== 'evo' : true);
+  if (keep && fits) return items;
+  const rest = items.slice();
+  const take = test => { const i = rest.findIndex(test); return i < 0 ? null : rest.splice(i, 1)[0]; };
+  const plain = () => take(x => !special(x)) || rest.shift();
+  const s1 = take(x => x.form === 'evo') || plain();
+  const s2 = take(x => x.form === 'hero' || x.champion) || plain();
+  const s3 = take(special) || plain();
+  return [s1, s2, s3, ...rest].filter(Boolean);
+}
+// A deck's card names (with their played forms) in slot order
+const deckSlotNames = (names, variants) =>
+  slotOrder(names.map(name => ({ name, form: variants?.[name] || '', champion: isChampionCard(name) }))).map(x => x.name);
+
 // name → { medium, evo, hero }. The catalog wins; battle records fill the gaps
 // (cards the catalog doesn't know yet).
 function buildCardArtMap(battles) {
@@ -4807,8 +4832,9 @@ function _renderDeckList(scope) {
     const total = d.wins + d.losses + d.draws;
     const wr = total ? Math.round(d.wins / total * 100) : 0;
     const avgElixir = d.elixir.length ? (d.elixir.reduce((a,b)=>a+b,0)/d.elixir.length).toFixed(1) : '—';
-    const cardChips = d.cards.map(c => deckTileHTML(c, d.variants[c], st.art[c], 'deck-list-tile')).join('');
-    const names = d.cards.join(', ');
+    const slots = deckSlotNames(d.cards, d.variants);
+    const cardChips = slots.map(c => deckTileHTML(c, d.variants[c], st.art[c], 'deck-list-tile')).join('');
+    const names = slots.join(', ');
     const statRow = (lbl, val, cls) =>
       `<div style="margin-bottom:5px;text-align:center"><div class="${cls}" style="font-size:15px;font-weight:700;line-height:1.1">${val}</div><div style="font-size:10px;color:var(--muted)">${lbl}</div></div>`;
     return `
@@ -4902,10 +4928,12 @@ function metaCardOf(key) {
   const c = allCards.find(x => x.id === id);
   return { key, id, form, name: c?.name || `Card ${id}`, elixir: c?.elixirCost ?? 0, card: c };
 }
-// Evolution / hero slots first (as in game), then by elixir
+// In game slot order (slotOrder): the key holds no order, so cheaper cards go first
+// within the evolution / hero-or-champion slots and among the plain cards
 function metaDeckCards(key) {
-  return key.split(',').map(metaCardOf)
-    .sort((a, b) => (!!b.form - !!a.form) || (a.elixir - b.elixir) || a.name.localeCompare(b.name));
+  return slotOrder(key.split(',').map(metaCardOf)
+    .map(c => ({ ...c, champion: (c.card?.rarity || '').toLowerCase() === 'champion' }))
+    .sort((a, b) => (a.elixir - b.elixir) || a.name.localeCompare(b.name)), false);
 }
 // Decks and cards decoded once per /meta (300 decks × 8 card lookups)
 function metaParsed(m) {
