@@ -212,11 +212,11 @@
   .deck-list-tile img { width: 100%; height: auto; display: block; }
   .deck-tile { position: relative; }
   .deck-tile.v-evo  { box-shadow: 0 0 0 2px var(--purple); }
-  .deck-tile.v-hero { box-shadow: 0 0 0 2px var(--accent); }
+  .deck-tile.v-hero, .deck-tile.v-champ { box-shadow: 0 0 0 2px var(--accent); }
   .deck-tile-text { display: flex; align-items: center; justify-content: center; text-align: center; font-size: 9px; color: var(--text); min-height: 46px; padding: 2px; }
   .variant-tag { position: absolute; left: 50%; bottom: 1px; transform: translateX(-50%); font-size: 7px; font-weight: 700; letter-spacing: 0.3px; line-height: 11px; padding: 0 3px; border-radius: 3px; pointer-events: none; }
   .variant-tag.v-evo  { background: var(--purple); color: #fff; }
-  .variant-tag.v-hero { background: var(--accent); color: #1a1a2e; }
+  .variant-tag.v-hero, .variant-tag.v-champ { background: var(--accent); color: #1a1a2e; }
 
   /* ── Deck builder ── */
   .deck-item { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-bottom: 12px; }
@@ -4473,14 +4473,16 @@ function buildCardArtMap(battles) {
   return map;
 }
 
-const VARIANT_LABEL = { evo: 'EVO', hero: 'HERO' };
-const VARIANT_TITLE = { evo: 'Evolved', hero: 'Hero' };
+const VARIANT_LABEL = { evo: 'EVO', hero: 'HERO', champ: 'CHAMP' };
+const VARIANT_TITLE = { evo: 'Evolved', hero: 'Hero', champ: 'Champion' };
 // One deck tile. Evolution / hero art falls back to the plain card art when it
 // isn't published yet or 404s — new evolutions often ship before their art.
+// Champions get the hero look with a CHAMP tag (they share the hero slots).
 function deckTileHTML(name, variant, art, cls) {
+  if (!variant && isChampionCard(name)) variant = 'champ';
   const plain = art?.medium || '';
   const src = (variant && art?.[variant]) || plain;
-  const title = variant ? `${VARIANT_TITLE[variant]} ${name}` : name;
+  const title = variant === 'champ' ? name : variant ? `${VARIANT_TITLE[variant]} ${name}` : name;
   const vCls = variant ? ` v-${variant}` : '';
   const tag = variant ? `<span class="variant-tag v-${variant}">${VARIANT_LABEL[variant]}</span>` : '';
   const body = src
