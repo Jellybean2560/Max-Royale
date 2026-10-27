@@ -20,6 +20,7 @@
 //
 // GET /meta    the latest stats (CORS open, for the app)
 // GET /top     the top 1,000 with rank, rating, clan and main deck
+// GET /history one card tally per day, for the app's trend lines
 // GET /status  collection progress, reads used today and the last error
 
 const MINUTE = 60e3, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
@@ -37,12 +38,17 @@ const TOP_DECKS = 300;              // enough to search by card and find similar
 // kept between 1 and 24 hours — every few hours while the window is young and
 // runs are cheap, less often once a full week (and the week before) is read
 const STATS_SHARE = 1.1e6, TOP_SHARE = 0.45e6;
+const HISTORY_DAYS = 35;            // /history keeps a card tally per day this long
 const MIN_REFRESH = HOUR, MAX_REFRESH = 24 * HOUR;
 const refreshEvery = (reads, share) => Math.min(MAX_REFRESH, Math.max(MIN_REFRESH, DAY * (reads || 0) / share));
 // 2M of D1's free 5M rows read a day (Cloudflare mails warnings from 80%), all
 // queries counted; heavy jobs leave POLL_RESERVE for polling (~150k a day),
 // the leaderboard, pruning and /status
 const READ_BUDGET = 2e6, POLL_RESERVE = 250e3;
+// next_poll of players who fell off the leaderboard: past the end of the poll
+// index's range, so picking who to poll no longer walks over them (700 stale
+// overdue rows were read on every poll — ~1M rows a day — before this)
+const PARKED = 9e15;
 
 export default {
   async scheduled(event, env, ctx) {
@@ -52,7 +58,7 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
-    if (url.pathname === '/meta' || url.pathname === '/top') {
+    if (url.pathname === '/meta' || url.pathname === '/top' || url.pathname === '/history') {
       const row = await env.DB.prepare(`SELECT v FROM state WHERE k = ?1`).bind(url.pathname.slice(1)).first();
       return new Response(row?.v || JSON.stringify({ empty: true }), { headers: { ...headers, 'Cache-Control': 'public, max-age=600' } });
     }
@@ -118,7 +124,10 @@ async function refreshBoard(env, now) {
            json_extract(value, '$.rating'), json_extract(value, '$.clan'), ?2, ?2
     FROM json_each(?1) WHERE true
     ON CONFLICT (tag) DO UPDATE SET name = excluded.name, rank = excluded.rank,
-      rating = excluded.rating, clan = excluded.clan, seen_at = excluded.seen_at`).bind(JSON.stringify(items), now).run();
+      rating = excluded.rating, clan = excluded.clan, seen_at = excluded.seen_at,
+      next_poll = CASE WHEN players.next_poll >= ${PARKED} THEN excluded.next_poll ELSE players.next_poll END`).bind(JSON.stringify(items), now).run();
+  // Players no longer on it are parked until they come back
+  await env.DB.prepare(`UPDATE players SET next_poll = ${PARKED} WHERE seen_at < ?1 AND next_poll < ${PARKED}`).bind(now).run();
   await setState(env, { board_at: now, board_size: items.length });
 }
 
@@ -226,11 +235,23 @@ async function computeStats(env, now) {
     ...(havePrev ? [env.DB.prepare(`${grouped} ${cardsOfG}`).bind(prevSince, since)] : []),
   ]);
   const [range, both, prev] = results;
+  // Trend lines: each run's card tally (a 7-day window) is that day's point — the
+  // day's last run replaces earlier ones. Nothing extra is scanned for it. With
+  // no history yet, the previous run's stats seed a first point.
+  const stored = await env.DB.batch([
+    env.DB.prepare(`SELECT v FROM state WHERE k = 'history'`),
+    env.DB.prepare(`SELECT v FROM state WHERE k = 'meta'`),
+  ]);
+  const hist = JSON.parse(stored[0].results[0]?.v || '{"days":[]}');
+  if (!hist.days.length) {
+    const old = JSON.parse(stored[1].results[0]?.v || 'null');
+    if (old?.cards && dayKey(old.updated) !== dayKey(now)) hist.days.push([old.updated, old.matches, Object.fromEntries(old.cards.map(c => [c[0], c[1]]))]);
+  }
   const decks = both.results.filter(r => r.kind === 'd');
   const cards = both.results.filter(r => r.kind === 'c').sort((a, b) => b.n - a.n);
   const t = range.results[0] || {};
   const count = rows => Math.round(rows.reduce((sum, r) => sum + r.n, 0) / 16);
-  const reads = rowsRead(results);
+  const reads = rowsRead(results) + rowsRead(stored);
   const meta = {
     updated: now,
     next: now + refreshEvery(reads, STATS_SHARE),  // when these stats are recomputed
@@ -246,7 +267,11 @@ async function computeStats(env, now) {
     // The week before, for trends: { matches, cards: [card, decks, wins] }; null until collected
     prev: prev ? { matches: count(prev.results), cards: prev.results.sort((a, b) => b.n - a.n).map(r => [r.k, r.n, r.w]) } : null,
   };
-  await countReads(env, 'stats', now, reads, { stats_at: now, meta: JSON.stringify(meta) });
+  // [time, matches, { card id + form: decks it was in }]
+  hist.days = hist.days.filter(d => dayKey(d[0]) !== dayKey(now) && d[0] > now - HISTORY_DAYS * DAY)
+    .concat([[now, meta.matches, Object.fromEntries(cards.map(r => [r.k, r.n]))]]);
+  hist.updated = now;
+  await countReads(env, 'stats', now, reads, { stats_at: now, meta: JSON.stringify(meta), history: JSON.stringify(hist) });
 }
 
 // The current top 1,000 with each player's most played ranked deck over the
@@ -290,7 +315,7 @@ async function prune(env, now) {
 }
 
 async function getState(env) {
-  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top')`).all();
+  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top', 'history')`).all();
   return Object.fromEntries(results.map(r => [r.k, r.v]));
 }
 async function setState(env, values) {

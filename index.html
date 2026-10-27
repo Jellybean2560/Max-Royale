@@ -5015,7 +5015,7 @@ function drawMeta() {
   const sorts = view === 'cards' && !P.hasPrev
     ? Object.fromEntries(Object.entries(META_SORTS.cards).filter(([v]) => v !== 'trend'))
     : META_SORTS[view];
-  const controls = view === 'you' ? '' : view === 'players' ? `
+  const controls = view === 'you' || view === 'stats' ? '' : view === 'players' ? `
     <input type="search" value="${esc(_metaTopQuery)}" placeholder="🔍 Player or clan name…" oninput="setMetaTopQuery(this.value)"
       style="width:100%;margin-bottom:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:14px;font-family:'Inter',sans-serif">` : `
     <select onchange="setMetaSort(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
@@ -5034,7 +5034,7 @@ function drawMeta() {
       <div style="font-size:11px;color:var(--muted);margin-top:4px">${metaUpdatedText(m)}${young ? ` · still collecting — the numbers settle once there's a full week of matches` : ''}</div>
     </div>
     <div class="seg" style="margin-bottom:10px">
-      ${[['decks', 'Decks'], ['cards', 'Cards'], ['players', 'Players'], ['you', 'You']].map(([v, l]) => `<button class="${view === v ? 'active' : ''}" onclick="setMetaView('${v}')">${l}</button>`).join('')}
+      ${[['decks', 'Decks'], ['cards', 'Cards'], ['stats', 'Stats'], ['players', 'Players'], ['you', 'You']].map(([v, l]) => `<button class="${view === v ? 'active' : ''}" style="padding:6px 4px" onclick="setMetaView('${v}')">${l}</button>`).join('')}
     </div>
     ${controls}
     <div id="meta-list">${metaListHTML()}</div>`;
@@ -5045,6 +5045,7 @@ function metaListHTML() {
   if (_metaView === 'decks') return metaDecksHTML(P, _metaSort.decks);
   if (_metaView === 'cards') return metaCardsHTML(P, _metaSort.cards);
   if (_metaView === 'players') return metaPlayersHTML();
+  if (_metaView === 'stats') return metaStatsHTML(P);
   return metaYouHTML(P);
 }
 function redrawMetaList() {
@@ -5087,7 +5088,9 @@ function metaDeckItemHTML(d, P, head) {
 function metaDecksHTML(P, sort) {
   let decks = P.decks;
   const q = _metaQuery.trim().toLowerCase();
-  if (q) decks = decks.filter(d => d.search.includes(q));
+  // A full card name finds that card only ("Giant" not Goblin Giant), anything else is a substring
+  const exact = q && allCards.some(c => c.name.toLowerCase() === q);
+  if (q) decks = decks.filter(d => exact ? d.names.some(n => n.toLowerCase() === q) : d.search.includes(q));
   if (sort === 'winrate') decks = decks.filter(d => d.n >= META_MIN_DECK_GAMES).sort((a, b) => b.rate - a.rate || b.n - a.n);
   if (sort === 'three') decks = decks.filter(d => d.n >= META_MIN_DECK_GAMES).sort((a, b) => b.three / b.n - a.three / a.n || b.n - a.n);
   if (!decks.length) return `<div class="empty-msg">${q ? `No top deck with "${esc(_metaQuery.trim())}"${sort !== 'played' ? ` and ${META_MIN_DECK_GAMES}+ games` : ''}.` : `No deck has ${META_MIN_DECK_GAMES}+ games yet.`}</div>`;
@@ -5137,6 +5140,274 @@ function metaCardsHTML(P, sort) {
       ${sort === 'trend' ? `<div style="font-size:11px;color:var(--muted);margin-top:8px">Change in the share of decks a card is in, in percentage points, against the week before.</div>` : ''}
     </div>`;
 }
+
+// ── Stats: charts over the same /meta, plus card trend lines from /history ──
+const META_HISTORY_URL = 'https://max-royale-meta.jellevandenwouwer.workers.dev/history';
+const META_HISTORY_CACHE_KEY = 'cr_meta_history_cache';
+const META_SCATTER_MIN = 0.01;   // cards in 1%+ of decks get a dot
+const META_ROW_MIN = 0.005;      // archetypes / forms listed from 0.5% of decks
+// Win conditions that name an archetype; a deck with two counts for both
+const META_WIN_CONS = ['Hog Rider', 'Golem', 'X-Bow', 'Mortar', 'Lava Hound', 'Graveyard', 'Giant', 'Royal Giant',
+  'Balloon', 'Miner', 'Goblin Barrel', 'P.E.K.K.A', 'Mega Knight', 'Electro Giant', 'Ram Rider', 'Battle Ram',
+  'Royal Hogs', 'Goblin Drill', 'Three Musketeers', 'Elixir Golem', 'Wall Breakers', 'Skeleton Barrel',
+  'Goblin Giant', 'Sparky', 'Giant Skeleton', 'Royal Recruits', 'Rune Giant', 'Goblin Machine', 'Boss Bandit'];
+const META_FORM_COLOR = { '': 'var(--blue)', evo: 'var(--purple)', hero: 'var(--accent)' };
+const META_FORM_NAME = { '': 'Plain', evo: 'Evo', hero: 'Hero' };
+let _metaHist = null, _metaHistLoading = false, _metaTrendId = null, _metaScatter = null, _metaTrend = null;
+const mPct = (v, d = 1) => (v * 100).toFixed(d) + '%';
+const winCls = r => r >= 0.52 ? 'text-green' : r <= 0.48 ? 'text-red' : '';
+
+// Per card id with every form added up (a deck holds a card in one form only)
+function metaCardTotals(P) {
+  const by = {};
+  P.cards.forEach(c => {
+    const t = by[c.id] || (by[c.id] = { id: c.id, name: c.name, card: c.card, n: 0, w: 0, forms: [] });
+    t.n += c.n; t.w += c.rate * c.n; t.forms.push(c);
+  });
+  return Object.values(by).map(t => ({ ...t, share: t.n / P.totalDecks, rate: t.w / Math.max(t.n, 1) }));
+}
+
+function metaStatsHTML(P) {
+  const totals = metaCardTotals(P);
+  return [metaScatterHTML(P), metaArchetypesHTML(totals), metaElixirHTML(P), metaTrendsHTML(P, totals), metaFormsHTML(totals)].join('');
+}
+
+// 1 · Popularity against win rate, one dot per card form
+function metaScatterHTML(P) {
+  const pts = P.cards.filter(c => c.share >= META_SCATTER_MIN);
+  if (pts.length < 3) return '';
+  const W = 320, H = 210, L = 30, R = 8, T = 8, B = 20;
+  const maxS = Math.max(...pts.map(c => c.share));
+  const lo = Math.min(0.47, ...pts.map(c => c.rate)) - 0.005, hi = Math.max(0.53, ...pts.map(c => c.rate)) + 0.005;
+  // Square-root x: most cards sit under 5%, a few over 20%
+  const x = v => L + Math.sqrt(v / maxS) * (W - L - R);
+  const y = r => T + (hi - r) / (hi - lo) * (H - T - B);
+  _metaScatter = pts.map(c => ({ c, x: x(c.share), y: y(c.rate) }));
+  const yTicks = [];
+  for (let r = Math.ceil(lo * 50) / 50; r <= hi; r += 0.02) yTicks.push(r);
+  const xTicks = [0.01, 0.05, 0.1, 0.2, 0.3, 0.5].filter(v => v <= maxS);
+  return `
+    <div class="card">
+      <div class="mu-sub" style="margin-top:0">Popularity vs win rate</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Each dot is a card (in 1%+ of decks). Up = wins more, right = played more.</div>
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;touch-action:pan-y" role="img" aria-label="Card popularity against win rate"
+           onpointermove="metaScatterHover(event)" onpointerdown="metaScatterHover(event)">
+        ${yTicks.map(r => `<line x1="${L}" x2="${W - R}" y1="${y(r).toFixed(1)}" y2="${y(r).toFixed(1)}" stroke="var(--border)" stroke-width="1"${Math.abs(r - 0.5) < 1e-9 ? ' stroke-dasharray="3 3" style="stroke:var(--muted)"' : ''}/>
+          <text x="${L - 4}" y="${(y(r) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--muted)">${Math.round(r * 100)}%</text>`).join('')}
+        ${xTicks.map(v => `<text x="${x(v).toFixed(1)}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${Math.round(v * 100)}%</text>`).join('')}
+        <text x="${L + 4}" y="${T + 9}" font-size="9" fill="var(--muted)" opacity=".8">strong, rarely played</text>
+        <text x="${W - R - 2}" y="${H - B - 4}" font-size="9" fill="var(--muted)" opacity=".8" text-anchor="end">popular, losing</text>
+        ${_metaScatter.map(d => `<circle cx="${d.x.toFixed(1)}" cy="${d.y.toFixed(1)}" r="4" fill="${META_FORM_COLOR[d.c.form]}" stroke="var(--surface)" stroke-width="1.5"/>`).join('')}
+        <circle id="meta-scatter-sel" r="7" fill="none" stroke="var(--text)" stroke-width="2" style="display:none"/>
+      </svg>
+      <div style="display:flex;gap:12px;font-size:11px;color:var(--muted);margin:6px 0 4px">
+        ${Object.entries(META_FORM_NAME).map(([f, l]) => `<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:${META_FORM_COLOR[f]}"></span>${l}</span>`).join('')}
+        <span style="margin-left:auto">x: in % of decks</span>
+      </div>
+      <div id="meta-scatter-readout" style="font-size:12px;color:var(--muted);min-height:32px">Tap a dot to see the card.</div>
+    </div>`;
+}
+window.metaScatterHover = function(e) {
+  const svg = e.currentTarget, r = svg.getBoundingClientRect(), vb = svg.viewBox.baseVal;
+  const px = (e.clientX - r.left) / r.width * vb.width, py = (e.clientY - r.top) / r.height * vb.height;
+  let best = null, bd = 18 * 18;
+  (_metaScatter || []).forEach(d => { const dd = (d.x - px) ** 2 + (d.y - py) ** 2; if (dd < bd) { bd = dd; best = d; } });
+  if (!best) return;
+  const sel = document.getElementById('meta-scatter-sel'), out = document.getElementById('meta-scatter-readout');
+  sel.setAttribute('cx', best.x); sel.setAttribute('cy', best.y); sel.style.display = '';
+  const c = best.c;
+  out.innerHTML = `<div style="display:flex;align-items:center;gap:8px">
+      <span style="flex:1;min-width:0"><b style="color:var(--text)">${esc(c.name)}</b>${metaFormTag(c.form)} · in ${mPct(c.share)} of decks · <span class="${winCls(c.rate)}" style="font-weight:600">${mPct(c.rate)} win rate</span></span>
+      <button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 8px;flex-shrink:0" onclick="metaDecksWith('${esc(c.name)}')">Decks →</button>
+    </div>`;
+};
+// Decks view, searched for one card
+window.metaDecksWith = function(name) {
+  _metaQuery = name; _metaView = 'decks'; _metaShown = META_PAGE;
+  drawMeta();
+  document.getElementById('content').scrollTop = 0;
+};
+
+// One horizontal bar row: card art, name, bar (share of the longest), share, win rate
+const metaBarRow = (c, max, extra = '') => `
+  <div class="mu-row" onclick="metaDecksWith('${esc(c.name)}')" style="cursor:pointer">
+    ${c.card?.iconUrls?.medium ? `<img src="${c.card.iconUrls.medium}" alt="" loading="lazy" decoding="async">` : ''}
+    <span style="flex:1;min-width:0">
+      <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)}${extra}</span>
+      <span style="display:block;height:6px;margin-top:3px;width:${(c.share / max * 100).toFixed(1)}%;background:var(--blue);border-radius:0 3px 3px 0"></span>
+    </span>
+    <span style="font-size:12px;color:var(--muted);width:42px;text-align:right">${mPct(c.share)}</span>
+    <span class="${winCls(c.rate)}" style="font-weight:700;width:42px;text-align:right">${mPct(c.rate, 0)}</span>
+  </div>`;
+
+// 2 · Archetypes by win condition
+function metaArchetypesHTML(totals) {
+  const rows = totals.filter(t => META_WIN_CONS.includes(t.name) && t.share >= META_ROW_MIN).sort((a, b) => b.share - a.share);
+  if (!rows.length) return '';
+  return `
+    <div class="card">
+      <div class="mu-sub" style="margin-top:0">Archetypes</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Decks by win condition — a deck with two counts for both. Tap one for its decks.</div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding-bottom:4px;border-bottom:1px solid var(--border)">
+        <span>Win condition</span><span>In decks · Win rate</span>
+      </div>
+      ${rows.map(t => metaBarRow(t, rows[0].share)).join('')}
+    </div>`;
+}
+
+// 3 · Win rate by average elixir, from the top decks (the only decks with a known cost)
+function metaElixirHTML(P) {
+  const b = {};
+  let covered = 0;
+  P.decks.forEach(d => {
+    const e = d.cards.reduce((sum, c) => sum + c.elixir, 0) / 8;
+    const k = Math.min(4.4, Math.max(2.6, Math.floor(e * 5 + 1e-9) / 5));
+    const x = b[k] || (b[k] = { n: 0, w: 0, decks: 0 });
+    x.n += d.n; x.w += d.w; x.decks++; covered += d.n;
+  });
+  const keys = Object.keys(b).map(Number).sort((a, c) => a - c);
+  if (keys.length < 2) return '';
+  const max = Math.max(...keys.map(k => b[k].n));
+  const label = k => k <= 2.6 ? '≤2.7' : k >= 4.4 ? '4.4+' : k.toFixed(1);
+  return `
+    <div class="card">
+      <div class="mu-sub" style="margin-top:0">Elixir curve</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:10px">Games and win rate by average elixir, over the ${P.decks.length} most played decks (${mPct(covered / P.totalDecks, 0)} of all decks played).</div>
+      <div style="display:flex;align-items:flex-end;gap:4px;height:130px">
+        ${keys.map(k => { const x = b[k], r = x.w / Math.max(x.n, 1); return `
+          <div title="${label(k)} elixir: ${fmtNum(x.n)} games in ${x.decks} deck${x.decks > 1 ? 's' : ''}, ${mPct(r)} win rate" style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%">
+            <span class="${winCls(r)}" style="font-size:10px;font-weight:700;margin-bottom:3px">${mPct(r, 0)}</span>
+            <span style="width:100%;max-width:30px;height:${Math.max(2, x.n / max * 96).toFixed(0)}px;background:var(--blue);border-radius:4px 4px 0 0"></span>
+          </div>`; }).join('')}
+      </div>
+      <div style="display:flex;gap:4px;border-top:1px solid var(--border);padding-top:4px">
+        ${keys.map(k => `<span style="flex:1;min-width:0;text-align:center;font-size:10px;color:var(--muted)">${label(k)}</span>`).join('')}
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">Bar height: games played · number: win rate · 💧 average elixir</div>
+    </div>`;
+}
+
+// 4 · Cards played in more than one form: how often and how well each form does.
+// A form needs META_FORM_MIN_GAMES and 2% of the card's games — a handful of
+// games gives a meaningless win rate.
+const META_FORM_MIN_GAMES = 30, META_FORMS_SHOWN = 10;
+let _metaFormsAll = false;
+window.metaFormsShowAll = function() { _metaFormsAll = true; redrawMetaList(); };
+const metaRealForms = t => t.forms.filter(c => c.n >= META_FORM_MIN_GAMES && c.n / t.n >= 0.02);
+function metaFormsHTML(totals) {
+  const order = ['', 'evo', 'hero'];
+  const rows = totals.filter(t => t.share >= META_ROW_MIN && metaRealForms(t).length > 1).sort((a, b) => b.n - a.n);
+  if (!rows.length) return '';
+  return `
+    <div class="card">
+      <div class="mu-sub" style="margin-top:0">Evo vs Hero vs plain</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Cards top players run in more than one form: each form's share of the card's games, and its win rate.</div>
+      ${rows.slice(0, _metaFormsAll ? rows.length : META_FORMS_SHOWN).map(t => {
+        const real = metaRealForms(t), forms = order.map(f => real.find(c => c.form === f)).filter(Boolean);
+        return `
+        <div style="padding:7px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:5px">
+            ${t.card?.iconUrls?.medium ? `<img src="${t.card.iconUrls.medium}" alt="" loading="lazy" decoding="async" style="width:22px;height:27px;object-fit:contain">` : ''}
+            <span style="flex:1;min-width:0;font-weight:600">${esc(t.name)}</span>
+            <span style="font-size:12px;color:var(--muted)">in ${mPct(t.share)} of decks</span>
+          </div>
+          <div style="display:flex;gap:2px;height:8px;border-radius:4px;overflow:hidden">
+            ${forms.map(c => `<span title="${META_FORM_NAME[c.form]}: ${mPct(c.n / t.n, 0)}" style="flex:${c.n};background:${META_FORM_COLOR[c.form]}"></span>`).join('')}
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:2px 14px;font-size:11px;color:var(--muted);margin-top:4px">
+            ${forms.map(c => `<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:2px;background:${META_FORM_COLOR[c.form]}"></span>${META_FORM_NAME[c.form]} ${mPct(c.n / t.n, 0)} · <span class="${winCls(c.rate)}" style="font-weight:600">${mPct(c.rate, 0)} win</span></span>`).join('')}
+          </div>
+        </div>`; }).join('')}
+      ${!_metaFormsAll && rows.length > META_FORMS_SHOWN ? `<button class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="metaFormsShowAll()">Show all (${rows.length - META_FORMS_SHOWN} more)</button>` : ''}
+    </div>`;
+}
+
+// 5 · A card's share of decks over time, from /history (one point a day, each a
+// 7-day window, so the line is smoothed)
+async function loadMetaHistory() {
+  if (_metaHistLoading) return;
+  _metaHistLoading = true;
+  try {
+    _metaHist = await fetchMetaJSON(META_HISTORY_URL, META_HISTORY_CACHE_KEY);
+  } catch(e) {
+    if (!_metaHist) _metaHist = { error: e.message };
+  } finally {
+    _metaHistLoading = false;
+  }
+  if (currentScreen === 'meta' && _metaView === 'stats') redrawMetaList();
+}
+function metaTrendsHTML(P, totals) {
+  if (!_metaHist) { try { _metaHist = JSON.parse(localStorage.getItem(META_HISTORY_CACHE_KEY) || 'null'); } catch(e) {} }
+  if (!_metaHist?.data || Date.now() - (_metaHist.savedAt || 0) > META_MAX_AGE_MS) setTimeout(loadMetaHistory, 0);
+  const head = `<div class="mu-sub" style="margin-top:0">Card trends</div>`;
+  const days = (_metaHist?.data?.days || []).filter(d => d[1] > 0);
+  if (!_metaHist?.data) return `<div class="card">${head}${_metaHist?.error ? `<div class="error-msg">${esc(_metaHist.error)}</div>` : '<div class="spinner"></div>'}</div>`;
+  if (days.length < 2) return `<div class="card">${head}<div style="font-size:12px;color:var(--muted)">Trend lines fill in one point a day${days.length ? ` — the first is from ${new Date(days[0][0]).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : ''}. Check back tomorrow.</div></div>`;
+  // Share per card id per day, forms added up
+  const series = id => days.map(([t, matches, cards]) => {
+    let n = 0;
+    for (const k in cards) if (parseInt(k, 10) === id) n += cards[k];
+    return [t, n / (matches * 2)];
+  });
+  const choices = totals.filter(t => t.share >= META_ROW_MIN).sort((a, b) => b.share - a.share);
+  if (!choices.some(t => t.id === _metaTrendId)) {
+    // Start on the card that moved most since the first point
+    let best = 0;
+    choices.forEach(t => { const s = series(t.id), d = Math.abs(s[s.length - 1][1] - s[0][1]); if (d > best) { best = d; _metaTrendId = t.id; } });
+    if (!_metaTrendId && choices[0]) _metaTrendId = choices[0].id;
+  }
+  const pts = series(_metaTrendId);
+  const first = pts[0][1], last = pts[pts.length - 1][1], diff = (last - first) * 100;
+  return `
+    <div class="card">
+      ${head}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Share of decks a card is in, one point a day (each the 7 days before it).</div>
+      <select onchange="setMetaTrend(+this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:8px">
+        ${choices.map(t => `<option value="${t.id}"${t.id === _metaTrendId ? ' selected' : ''}>${esc(t.name)} · ${mPct(t.share)}</option>`).join('')}
+      </select>
+      ${metaTrendSVG(pts)}
+      <div id="meta-trend-readout" data-idle="" style="font-size:12px;color:var(--muted);margin-top:4px">
+        ${mPct(first)} → <b style="color:var(--text)">${mPct(last)}</b>
+        <span class="${diff >= 0.5 ? 'text-green' : diff <= -0.5 ? 'text-red' : ''}">(${diff > 0 ? '+' : ''}${diff.toFixed(1)} pts)</span>
+        since ${new Date(pts[0][0]).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+      </div>
+    </div>`;
+}
+function metaTrendSVG(pts) {
+  const W = 320, H = 120, L = 34, R = 8, T = 8, B = 18;
+  const t0 = pts[0][0], t1 = pts[pts.length - 1][0];
+  let lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1]));
+  const pad = Math.max((hi - lo) * 0.15, 0.002); lo = Math.max(0, lo - pad); hi += pad;
+  const x = t => L + (t - t0) / Math.max(t1 - t0, 1) * (W - L - R);
+  const y = v => T + (hi - v) / (hi - lo) * (H - T - B);
+  _metaTrend = pts.map(([t, v]) => [x(t), y(v), t, v]);
+  const line = _metaTrend.map(([px, py], i) => `${i ? 'L' : 'M'}${px.toFixed(1)},${py.toFixed(1)}`).join('');
+  const day = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;touch-action:pan-y" role="img" aria-label="Card share of decks over time"
+         onpointermove="metaTrendHover(event)" onpointerdown="metaTrendHover(event)" onpointerleave="metaTrendHover(null)">
+      ${[hi - pad, (hi + lo) / 2, lo + (lo > 0 ? pad : 0)].map(v => `
+        <line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--border)" stroke-width="1"/>
+        <text x="${L - 4}" y="${(y(v) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--muted)">${mPct(v)}</text>`).join('')}
+      <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${_metaTrend.map(([px, py]) => `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="3" fill="var(--accent)" stroke="var(--surface)" stroke-width="1.5"/>`).join('')}
+      <text x="${L}" y="${H - 4}" font-size="9" fill="var(--muted)">${day(t0)}</text>
+      <text x="${W - R}" y="${H - 4}" font-size="9" fill="var(--muted)" text-anchor="end">${day(t1)}</text>
+      <circle id="meta-trend-sel" r="5" fill="none" stroke="var(--text)" stroke-width="2" style="display:none"/>
+    </svg>`;
+}
+window.metaTrendHover = function(e) {
+  const sel = document.getElementById('meta-trend-sel'), out = document.getElementById('meta-trend-readout');
+  if (!sel || !out || !_metaTrend) return;
+  if (!out.dataset.idle) out.dataset.idle = out.innerHTML;
+  if (!e) { sel.style.display = 'none'; out.innerHTML = out.dataset.idle; return; }
+  const svg = e.currentTarget, r = svg.getBoundingClientRect();
+  const px = (e.clientX - r.left) / r.width * svg.viewBox.baseVal.width;
+  const p = _metaTrend.reduce((a, b) => Math.abs(b[0] - px) < Math.abs(a[0] - px) ? b : a);
+  sel.setAttribute('cx', p[0]); sel.setAttribute('cy', p[1]); sel.style.display = '';
+  out.innerHTML = `<b style="color:var(--text)">${mPct(p[3])}</b> of decks · 7 days to ${new Date(p[2]).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+};
+window.setMetaTrend = function(id) { _metaTrendId = id; redrawMetaList(); };
 
 // ── You: the loaded profile's 1v1 deck against the meta, the closest top decks,
 // and the most-used top-player cards the player hasn't maxed ──
