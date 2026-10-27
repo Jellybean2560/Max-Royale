@@ -5184,6 +5184,21 @@ function metaUpdatedText(d) {
   const next = d.next ? d.next - Date.now() : null;
   return `Updated ${fmtAgo(Date.now() - d.updated)}${next == null ? '' : next > 60e3 ? ` · next in ~${next < 3600e3 ? Math.round(next / 60e3) + ' min' : Math.round(next / 3600e3) + ' h'}` : ' · updating now'}`;
 }
+// "09:41" today, "Yesterday 21:10", else "25 Oct 21:10" (local time)
+function metaStatsTime(t) {
+  const d = new Date(t), time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const day = x => new Date(x).toDateString();
+  if (day(t) === day(Date.now())) return time;
+  if (day(t) === day(Date.now() - 864e5)) return `yesterday ${time}`;
+  return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} ${time}`;
+}
+// When the collector recomputes next; a run held up (e.g. by its daily read limit) says so
+function metaNextText(d) {
+  if (!d.next) return '';
+  const next = d.next - Date.now();
+  if (next > 60e3) return `Next update in ~${next < 3600e3 ? Math.round(next / 60e3) + ' min' : Math.round(next / 3600e3) + ' h'}`;
+  return next > -15 * 60e3 ? 'Updating now' : 'Next update delayed — it runs as soon as the collector can';
+}
 // GET a collector endpoint as { data, savedAt }, saved to localStorage
 async function fetchMetaJSON(url, cacheKey) {
   let res;
@@ -5246,9 +5261,9 @@ function drawMeta() {
       </div>`}`;
   el.innerHTML = `
     <div class="card" style="font-size:13px;line-height:1.5">
-      Ranked matches of the <b>global top 1,000</b> Path of Legends players${young ? `, collected since ${dateOf(m.started)}` : `, last ${m.window_days} days`}:
-      <b>${fmtNum(m.matches)}</b> matches.
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">${metaUpdatedText(m)}${young ? ` · still collecting — the numbers settle once there's a full week of matches` : ''}</div>
+      Ranked matches of the <b>global top 1,000</b> Path of Legends players, last ${m.window_days} days.
+      <div style="margin-top:4px"><b>${fmtNum(m.matches)}</b> matches · stats from ${metaStatsTime(m.updated)}${young ? ` · collecting since ${dateOf(m.started)} (full week from ${dateOf(m.started + m.window_days * 864e5)})` : ''}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">${metaNextText(m)}</div>
     </div>
     <div class="seg" style="margin-bottom:10px">
       ${[['decks', 'Decks'], ['cards', 'Cards'], ['stats', 'Stats'], ['players', 'Players'], ['you', 'You']].map(([v, l]) => `<button class="${view === v ? 'active' : ''}" style="padding:6px 4px" onclick="setMetaView('${v}')">${l}</button>`).join('')}
