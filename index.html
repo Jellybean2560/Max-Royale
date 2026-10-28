@@ -5057,8 +5057,9 @@ function renderDeckBuilder(battles, data, scope = 'p') {
   battles = battles || [];
   _deckState[scope] = {
     data, battles,
-    // The filter carries over within your own profile; the sort for each scope
-    filter: scope === 'p' ? (_deckState.p?.filter || 'all') : 'all',
+    // Mode filter and sort carry over per scope (a mode the player has no
+    // battles in falls back to All in _renderDeckList)
+    filter: _deckState[scope]?.filter || 'all',
     sort: _deckState[scope]?.sort || 'played',
     // Prefer the full card catalog (always complete) over icons embedded in
     // individual battle-log records, which are sometimes missing iconUrls.
