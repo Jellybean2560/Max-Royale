@@ -1714,6 +1714,7 @@ function friendRenderCards() {
         <div id="${domId}-max" style="display:none;margin-top:6px">
           <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px"><span>Cards still needed to Lv 16</span><span class="${toMax.totalCards > 0 ? 'text-red' : 'text-green'}">${toMax.totalCards > 0 ? '+'+fmtNum(toMax.totalCards) : '✓ Enough cards'}</span></div>
           <div class="flex-between" style="font-size:12px;color:var(--muted)"><span>Total gold to Lv 16</span><span style="color:var(--accent)">${fmtNum(toMax.totalGold)} 💰</span></div>
+          <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="openInCalculator(${c.id}, 'f')">🧮 Open in Calculator</button>
         </div>
       ` : ''}
     </div>`;
@@ -1760,7 +1761,7 @@ function friendRenderCollect(kind) {
   grid.innerHTML = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
     ${list.map(c => { const has = owns(c);
       return `<div style="display:flex;flex-direction:column;align-items:center;gap:4px;background:var(--surface2);border-radius:8px;padding:8px 4px;border:1px solid ${has?color:'transparent'};${has?'':'opacity:0.35;filter:grayscale(1)'}">
-        <img src="${imgOf(c)}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy" decoding="async">
+        <img src="${imgOf(c)}" alt="${esc(c.name)}" style="width:60px;height:auto;display:block;margin:0 auto" loading="lazy" decoding="async" onerror="cardImgFallback(this)" onload="if(this.naturalWidth<4)cardImgFallback(this)">
         <span style="font-size:10px;text-align:center;color:var(--text);line-height:1.2;min-height:24px;display:flex;align-items:center;justify-content:center">${esc(c.name)}</span>
         <span style="font-size:9px;color:${color};font-weight:600;min-height:11px">${has?label:''}</span>
       </div>`; }).join('')}
@@ -1800,11 +1801,16 @@ function friendTroopHTML(data) {
         <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px"><span>Cards: ${fmtNum(owned)} / ${fmtNum(needed)}</span><span>${fmtNum(nextStep.gold)} 💰 to Lv ${disp+1}</span></div>
         <div class="progress-wrap"><div class="progress-bar" style="width:${pct}%;background:${isUpgradable?'var(--green)':'var(--blue)'}"></div></div>
       ` : `<div style="font-size:12px;color:var(--accent);font-weight:600">Fully maxed! ✓</div>`}
+      ${!isMaxed && nextStep ? `
+        <div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border)">
+          <div class="flex-between" style="font-size:12px;color:var(--muted)"><span>Cards still needed to Lv ${disp+1}</span><span class="${needed > owned ? 'text-red' : 'text-green'}">${needed > owned ? '+'+fmtNum(needed - owned) : '✓ Enough cards'}</span></div>
+        </div>` : ''}
       ${showMax ? `
-        <div onclick="toggleCardMax('${domId}')" style="cursor:pointer;margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);text-align:center;user-select:none"><span id="${domId}-toggle">▼ Total to Lv 16</span></div>
+        <div onclick="toggleCardMax('${domId}')" style="cursor:pointer;margin-top:6px;font-size:11px;color:var(--muted);text-align:center;user-select:none"><span id="${domId}-toggle">▼ Total to Lv 16</span></div>
         <div id="${domId}-max" style="display:none;margin-top:6px">
-          <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px"><span>Cards still needed</span><span class="${toMax.totalCards > 0 ? 'text-red' : 'text-green'}">${toMax.totalCards > 0 ? '+'+fmtNum(toMax.totalCards) : '✓ Enough cards'}</span></div>
+          <div class="flex-between" style="font-size:12px;color:var(--muted);margin-bottom:4px"><span>Cards still needed to Lv 16</span><span class="${toMax.totalCards > 0 ? 'text-red' : 'text-green'}">${toMax.totalCards > 0 ? '+'+fmtNum(toMax.totalCards) : '✓ Enough cards'}</span></div>
           <div class="flex-between" style="font-size:12px;color:var(--muted)"><span>Total gold to Lv 16</span><span style="color:var(--accent)">${fmtNum(toMax.totalGold)} 💰</span></div>
+          <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%" onclick="openInCalculator(${c.id}, 'f')">🧮 Open in Calculator</button>
         </div>` : ''}
     </div>`;
   }).join('');
@@ -2491,10 +2497,9 @@ function buildDeckMapFromBattles(battles, playerTag, { persist = true } = {}) {
   });
   return deckMap;
 }
-// Most-played decks first. The profile reads (and extends) this device's saved
-// deck history; a friend only gets the decks in their current battle log.
+// Most-played decks first, from this device's saved deck history for that player
 function planDeckOptions(data, battles, scope) {
-  const dm = buildDeckMapFromBattles(battles || [], data.tag, { persist: scope === 'p' });
+  const dm = buildDeckMapFromBattles(battles || [], data.tag);
   return Object.values(dm).sort((a,b) => (b.wins+b.losses+b.draws) - (a.wins+a.losses+a.draws)).slice(0,8);
 }
 const planDeckOptionHTML = (d, i) =>
@@ -4117,10 +4122,15 @@ function resetCalculator() {
   calcUpdate();
 }
 
-function openInCalculator(cardId) {
+// scope 'f' loads the card as the player open in the modal has it, and closes the modal
+function openInCalculator(cardId, scope = 'p') {
+  const who = scope === 'f' ? _friendData : null;
+  if (who && document.getElementById('friend-modal').style.display === 'block') closeFriendModal();
+  if (_calcView !== 'calc') setCalcView('calc');
   goTo('calc');
   const cat = allCards.find(c => c.id === cardId);   // regular cards only
-  const pc  = _playerCardsById[cardId];               // cards + tower troops
+  const pc  = who ? [...(who.cards || []), ...(who.supportCards || [])].find(c => c.id === cardId)
+                  : _playerCardsById[cardId];         // cards + tower troops
   const name = cat?.name || pc?.name || '';
   let r = (cat?.rarity || pc?.rarity || 'common').toLowerCase();
   if (!LEVEL_DATA[r]) r = 'common';
@@ -4137,7 +4147,7 @@ function openInCalculator(cardId) {
     document.getElementById('calc-current').value = disp;
     document.getElementById('calc-count').value = pc.count || 0;
     document.getElementById('calc-target').value = MAX_LEVEL;
-    if (note) { note.textContent = `Loaded your ${name}: Level ${disp}, ${fmtNum(pc.count||0)} cards`; note.style.display = 'block'; }
+    if (note) { note.textContent = `Loaded ${who ? `${who.name}'s` : 'your'} ${name}: Level ${disp}, ${fmtNum(pc.count||0)} cards`; note.style.display = 'block'; }
   }
   calcUpdate();
   const res = document.getElementById('calc-result');

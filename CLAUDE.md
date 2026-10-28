@@ -146,6 +146,7 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compa
 | `renderFriends()` / `addFriend()` / `viewFriend(tag)` / `friendTab(name)` | Friends screen |
 | `computeUpgrade(rarity, level, count, target)` | Core upgrade math |
 | `toDisplayLevel(rarity, apiLevel)` | Converts API relative level → display level (1–16) |
+| `openInCalculator(cardId, scope)` | A card's fold-out button: loads it into the Calculator (switching off Drop Rates) at the player's level and count — scope `'f'` uses the modal's player ("Loaded Jelle's …") and closes the modal |
 | `goTo(name)` / `switchTab(name)` | Screen / tab switching. `switchTab` owns pane visibility and lazy loads — every path that shows a profile tab must go through it. `goTo` remembers each screen's scroll position; re-tapping the active bottom button scrolls to the top |
 | `revealTab(btn)` / `updateTabFade(bar)` / `attachTabSwipe()` | Keep the selected tab fully in view, edge fades on tab bars, swipe between profile tabs |
 | `formatBattleTime(ts)` | API timestamp → relative time ("2h ago") |
@@ -363,3 +364,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 46. Drop Rates in the Calculator screen: Magic / Standard Lucky Chest, Evolution Box, Lightning and King's Chest odds and rewards for your arena
 47. Friend / clan-member profiles get the same on-device history as your own: Progress card, saved Trophy History and Opponent Cards
 48. Friend / clan-member Decks tab keeps their deck win/loss history too, with delete
+49. Modal parity: friend Upgrade Planner reads their saved decks, Open in Calculator on friend cards and tower troops (their level), friend tower troop rows match yours, missing evo/hero art placeholder
