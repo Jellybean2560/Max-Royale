@@ -364,4 +364,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 46. Drop Rates in the Calculator screen: Magic / Standard Lucky Chest, Evolution Box, Lightning and King's Chest odds and rewards for your arena
 47. Friend / clan-member profiles get the same on-device history as your own: Progress card, saved Trophy History and Opponent Cards
 48. Friend / clan-member Decks tab keeps their deck win/loss history too, with delete
-49. Modal parity: friend Upgrade Planner reads their saved decks, Open in Calculator on friend cards and tower troops (their level), friend tower troop rows match yours, missing evo/hero art placeholder; the Decks mode filter carries over for friends too
+49. Modal parity: friend Upgrade Planner reads their saved decks, Open in Calculator on friend cards and tower troops (their level), friend tower troop rows match yours, missing evo/hero art placeholder; the Decks mode filter carries over for friends too; Cards / Evolutions / Heroes / Badges filters stay while a modal profile is shown (`resetFriendFilters()` per profile opened and for Overview links)

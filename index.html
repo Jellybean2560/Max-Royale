@@ -610,13 +610,13 @@ const CARD_RARITY_OPTIONS = [
 ];
 const DEFAULT_CARD_SORT = CARD_SORT_OPTIONS[0][0];
 
-const _optionsHTML = opts => opts.map(([v,label]) => `<option value="${v}">${label}</option>`).join('');
-const cardSortOptionsHTML   = () => _optionsHTML(CARD_SORT_OPTIONS);
-const cardRarityOptionsHTML = () => _optionsHTML(CARD_RARITY_OPTIONS);
+const _optionsHTML = (opts, sel) => opts.map(([v,label]) => `<option value="${v}"${String(v) === String(sel) ? ' selected' : ''}>${label}</option>`).join('');
+const cardSortOptionsHTML   = sel => _optionsHTML(CARD_SORT_OPTIONS, sel);
+const cardRarityOptionsHTML = sel => _optionsHTML(CARD_RARITY_OPTIONS, sel);
 // The levels this player's cards are at, highest first
-const cardLevelOptionsHTML = cards => _optionsHTML([['all', 'All Levels'],
+const cardLevelOptionsHTML = (cards, sel) => _optionsHTML([['all', 'All Levels'],
   ...[...new Set((cards || []).map(c => toDisplayLevel((c.rarity || 'common').toLowerCase(), c.level)))]
-    .sort((a, b) => b - a).map(l => [String(l), `Level ${l}`])]);
+    .sort((a, b) => b - a).map(l => [String(l), `Level ${l}`])], sel);
 
 const CARD_STATUS_FILTERS = {
   notfound:   c => !c.owned,
@@ -1421,6 +1421,7 @@ async function viewFriend(tag, { fromHistory = false } = {}) {
     const bar = body.querySelector('.ftab-sticky'), title = document.querySelector('#friend-modal > div > div');
     if (bar && title) bar.style.top = title.offsetHeight + 'px';
     updateTabFade(bar);
+    resetFriendFilters();
     friendTab((fromHistory && _modalTabs[tag]) || 'overview');
   } catch(e) {
     if (seq !== _friendSeq) return;
@@ -1581,9 +1582,16 @@ window.setCompareFilter = function(v) {
 };
 
 // Friend modal filter state (self-contained so it never touches the main profile)
-let _fCardStatus = 'all', _fCardRarity = 'all', _fCardLevel = 'all', _fCardSort = DEFAULT_CARD_SORT, _fCardSearch = '';
+let _fCardStatus = 'all', _fCardRarity = 'all', _fCardLevel = 'all', _fCardSort = DEFAULT_CARD_SORT, _fCardSearch = '', _fCardSearchText = '';
 let _fEvoFilter = 'all', _fHeroFilter = 'all';
 let _fBadgeFilter = 'all', _fBadgeEntries = [], _fBadgeSort = 'progress';
+// Like the profile's: the modal's list filters stay while its profile is shown
+// (switching tabs and back keeps them) and start over for each profile opened
+function resetFriendFilters() {
+  _fCardStatus = 'all'; _fCardRarity = 'all'; _fCardLevel = 'all'; _fCardSort = DEFAULT_CARD_SORT; _fCardSearch = ''; _fCardSearchText = '';
+  _fEvoFilter = 'all'; _fHeroFilter = 'all';
+  _fBadgeFilter = 'all'; _fBadgeSort = 'progress';
+}
 
 let _fTab = '';
 function friendTab(name) {
@@ -1596,11 +1604,11 @@ function friendTab(name) {
   const pane = document.getElementById('friend-pane');
   if (name === 'overview')    pane.innerHTML = renderOverview(d, _friendBattles, 'f');
   if (name === 'compare')   { _cmpFilter = 'them'; pane.innerHTML = compareHTML(window._currentProfile.data, d); }
-  if (name === 'cards')     { _fCardStatus='all'; _fCardRarity='all'; _fCardLevel='all'; _fCardSort=DEFAULT_CARD_SORT; _fCardSearch=''; pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
-  if (name === 'evolutions'){ _fEvoFilter='all';  pane.innerHTML = friendCollectShell('evolution'); friendRenderCollect('evolution'); }
-  if (name === 'heroes')    { _fHeroFilter='all'; pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
+  if (name === 'cards')     { pane.innerHTML = friendCardsShell(d); friendRenderCards(); }
+  if (name === 'evolutions'){ pane.innerHTML = friendCollectShell('evolution'); friendRenderCollect('evolution'); }
+  if (name === 'heroes')    { pane.innerHTML = friendCollectShell('hero');      friendRenderCollect('hero'); }
   if (name === 'towerTroops') pane.innerHTML = friendTroopHTML(d);
-  if (name === 'badges')    { _fBadgeFilter='all'; _fBadgeSort='progress'; pane.innerHTML = friendBadgesShell(d); friendRenderBadges(); }
+  if (name === 'badges')    { pane.innerHTML = friendBadgesShell(d); friendRenderBadges(); }
   if (name === 'decks')       pane.innerHTML = renderDeckBuilder(_friendBattles, d, 'f');
   if (name === 'battles')     pane.innerHTML = renderBattles(_friendBattles, d, 'f');
   if (name === 'account')     pane.innerHTML = accountStatsHTML(d, _friendBattles, 'f');
@@ -1642,23 +1650,21 @@ function friendCardsShell(data) {
     <div style="font-size:13px;color:var(--muted);margin-bottom:12px">${(data.cards||[]).length} / ${total} cards unlocked</div>
     <div style="display:flex;gap:8px;margin-bottom:10px">
       <select onchange="friendSetCard(this.value,'rarity')" style="${sel}">
-        ${cardRarityOptionsHTML()}
+        ${cardRarityOptionsHTML(_fCardRarity)}
       </select>
       <select id="f-card-level" onchange="friendSetCard(this.value,'level')" style="${sel}">
-        ${cardLevelOptionsHTML(data.cards)}
+        ${cardLevelOptionsHTML(data.cards, _fCardLevel)}
       </select>
     </div>
     <select onchange="friendSetCard(this.value,'sort')" style="${sel.replace('flex:1;', 'width:100%;margin-bottom:10px;')}">
-      ${cardSortOptionsHTML()}
+      ${cardSortOptionsHTML(_fCardSort)}
     </select>
     <div class="filter-bar" id="f-card-status">
-      <button class="filter-btn active" onclick="friendSetCard('all','status')">All</button>
-      <button class="filter-btn" onclick="friendSetCard('upgradable','status')">Upgradable</button>
-      <button class="filter-btn" onclick="friendSetCard('canmax','status')">Can Max</button>
-      <button class="filter-btn" onclick="friendSetCard('maxed','status')">Maxed</button>
-      ${total > (data.cards||[]).length ? `<button class="filter-btn" onclick="friendSetCard('notfound','status')">Not Found</button>` : ''}
+      ${[['all', 'All'], ['upgradable', 'Upgradable'], ['canmax', 'Can Max'], ['maxed', 'Maxed'],
+         ...(total > (data.cards||[]).length ? [['notfound', 'Not Found']] : [])]
+        .map(([v, l]) => `<button class="filter-btn${_fCardStatus === v ? ' active' : ''}" onclick="friendSetCard('${v}','status')">${l}</button>`).join('')}
     </div>
-    <input type="text" placeholder="🔍 Search card name…" oninput="friendSetCard(this.value,'search')" autocomplete="off"
+    <input type="text" placeholder="🔍 Search card name…" value="${esc(_fCardSearchText)}" oninput="friendSetCard(this.value,'search')" autocomplete="off"
       style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:8px 14px;font-size:13px;font-family:'Inter',sans-serif;margin-bottom:10px">
     <div id="f-cards-grid"></div>`;
 }
@@ -1669,7 +1675,7 @@ window.friendSetCard = function(val, type) {
   if (type === 'rarity') _fCardRarity = val;
   if (type === 'level')  _fCardLevel = val;
   if (type === 'sort')   _fCardSort = val;
-  if (type === 'search') _fCardSearch = (val||'').toLowerCase().trim();
+  if (type === 'search') { _fCardSearchText = val || ''; _fCardSearch = _fCardSearchText.toLowerCase().trim(); }
   friendRenderCards();
 };
 function friendRenderCards() {
@@ -1725,12 +1731,12 @@ function friendRenderCards() {
 function friendCollectShell(kind) {
   const setFn = kind === 'evolution' ? 'friendSetEvo' : 'friendSetHero';
   const barId = kind === 'evolution' ? 'f-evo-filter' : 'f-hero-filter';
+  const cur = kind === 'evolution' ? _fEvoFilter : _fHeroFilter;
   return `
     <div id="f-collect-count" style="font-size:13px;color:var(--muted);margin-bottom:8px"></div>
     <div class="filter-bar" id="${barId}">
-      <button class="filter-btn active" onclick="${setFn}('all')">All</button>
-      <button class="filter-btn" onclick="${setFn}('unlocked')">Unlocked</button>
-      <button class="filter-btn" onclick="${setFn}('locked')">Locked</button>
+      ${[['all', 'All'], ['unlocked', 'Unlocked'], ['locked', 'Locked']]
+        .map(([v, l]) => `<button class="filter-btn${cur === v ? ' active' : ''}" onclick="${setFn}('${v}')">${l}</button>`).join('')}
     </div>
     <div id="f-collect-grid"></div>`;
 }
@@ -3022,7 +3028,8 @@ function cardLevelChartHTML(data, [found, total], scope) {
 // A bar of the level chart: the Cards tab with only that level, other filters cleared
 window.openCardsAtLevel = function(scope, level) {
   if (scope === 'f') {
-    friendTab('cards');  // resets the modal's card filters
+    resetFriendFilters();
+    friendTab('cards');
     const sel = document.getElementById('f-card-level');
     if (sel) sel.value = String(level);
     friendSetCard(String(level), 'level');
@@ -3938,7 +3945,8 @@ function renderOverview(data, battles, scope = 'p') {
 // filtered to exactly those 54 (no leftover rarity or search filter).
 window.ovGo = function(scope, tab, filter = '') {
   if (scope === 'f') {
-    friendTab(tab);  // resets the modal pane's filters
+    resetFriendFilters();  // a clean list, so the count matches
+    friendTab(tab);
     if (tab === 'cards' && filter) friendSetCard(filter, 'status');
     if (tab === 'evolutions' && filter) friendSetEvo(filter);
     if (tab === 'heroes' && filter) friendSetHero(filter);
