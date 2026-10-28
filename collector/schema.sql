@@ -43,6 +43,15 @@ CREATE TABLE IF NOT EXISTS matches (
   PRIMARY KEY (time, pa, pb)
 ) WITHOUT ROWID;
 
+-- Everyone's rating at each UTC day's first leaderboard refresh (kept 9 days),
+-- so /top can show who climbed most over a day and a week. Added 28 Oct 2026.
+CREATE TABLE IF NOT EXISTS ratings (
+  day    TEXT NOT NULL,        -- YYYY-MM-DD (UTC)
+  tag    TEXT NOT NULL,
+  rating INTEGER,
+  PRIMARY KEY (day, tag)
+) WITHOUT ROWID;
+
 -- Timestamps of the periodic jobs, counters, last error, and the computed stats
 CREATE TABLE IF NOT EXISTS state (
   k TEXT PRIMARY KEY,

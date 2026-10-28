@@ -5202,9 +5202,10 @@ const META_PAGE = 30;               // decks shown before "Show more"
 const META_SORTS = {
   decks: { played: 'Most played', winrate: 'Best win rate', three: 'Most 3-crown wins' },
   cards: { used: 'Most used', winrate: 'Best win rate', three: 'Most 3-crown wins', trend: 'Trending' },
+  players: { rank: 'Rank', day: 'Climbing today', week: 'Climbing this week', fall: 'Falling this week' },
 };
 const META_KINDS = { all: 'All', evo: 'Evolutions', hero: 'Heroes' };
-let _meta = null, _metaView = 'decks', _metaSort = { decks: 'played', cards: 'used' }, _metaLoading = false;
+let _meta = null, _metaView = 'decks', _metaSort = { decks: 'played', cards: 'used', players: 'rank' }, _metaLoading = false;
 let _metaQuery = '', _metaKind = 'all', _metaShown = META_PAGE, _metaParsed = null;
 let _metaTop = null, _metaTopLoading = false, _metaTopQuery = '';
 
@@ -5326,13 +5327,16 @@ function drawMeta() {
     ? Object.fromEntries(Object.entries(META_SORTS.cards).filter(([v]) => v !== 'trend'))
     : META_SORTS[view];
   const controls = view === 'you' || view === 'stats' ? '' : view === 'players' ? `
+    <select onchange="setMetaSort(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
+      ${Object.entries(META_SORTS.players).map(([v, l]) => `<option value="${v}"${sort === v ? ' selected' : ''}>Sort: ${l}</option>`).join('')}
+    </select>
     <input type="search" value="${esc(_metaTopQuery)}" placeholder="🔍 Player or clan name…" oninput="setMetaTopQuery(this.value)"
       style="width:100%;margin-bottom:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:14px;font-family:'Inter',sans-serif">` : `
     <select onchange="setMetaSort(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
       ${Object.entries(sorts).map(([v, l]) => `<option value="${v}"${sort === v ? ' selected' : ''}>Sort: ${l}</option>`).join('')}
     </select>
     ${view === 'decks' ? `
-      <input id="meta-search" type="search" value="${esc(_metaQuery)}" placeholder="🔍 Decks with a card…" oninput="setMetaQuery(this.value)"
+      <input id="meta-search" type="search" value="${esc(_metaQuery)}" placeholder="🔍 Decks with cards… e.g. Hog Rider, Log" oninput="setMetaQuery(this.value)"
         style="width:100%;margin-bottom:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:14px;font-family:'Inter',sans-serif">` : `
       <div class="filter-bar" style="margin-bottom:10px">
         ${Object.entries(META_KINDS).map(([k, l]) => `<button class="filter-btn ${_metaKind === k ? 'active' : ''}" onclick="setMetaKind('${k}')">${l}</button>`).join('')}
@@ -5511,10 +5515,12 @@ function metaTowersLineHTML(d) {
 
 function metaDecksHTML(P, sort) {
   let decks = P.decks;
-  const q = _metaQuery.trim().toLowerCase();
-  // A full card name finds that card only ("Giant" not Goblin Giant), anything else is a substring
-  const exact = q && allCards.some(c => c.name.toLowerCase() === q);
-  if (q) decks = decks.filter(d => exact ? d.names.some(n => n.toLowerCase() === q) : d.search.includes(q));
+  // Several cards separated by commas or "+": decks holding all of them. A full
+  // card name finds that card only ("Giant" not Goblin Giant), anything else is a substring
+  const terms = _metaQuery.toLowerCase().split(/[,+]/).map(t => t.trim()).filter(Boolean);
+  const q = terms.length > 0;
+  const hit = (d, t) => allCards.some(c => c.name.toLowerCase() === t) ? d.names.some(n => n.toLowerCase() === t) : d.search.includes(t);
+  if (q) decks = decks.filter(d => terms.every(t => hit(d, t)));
   if (sort === 'winrate') decks = decks.filter(d => d.n >= META_MIN_DECK_GAMES).sort((a, b) => b.rate - a.rate || b.n - a.n);
   if (sort === 'three') decks = decks.filter(d => d.n >= META_MIN_DECK_GAMES).sort((a, b) => b.three / b.n - a.three / a.n || b.n - a.n);
   if (!decks.length) return `<div class="empty-msg">${q ? `No top deck with "${esc(_metaQuery.trim())}"${sort !== 'played' ? ` and ${META_MIN_DECK_GAMES}+ games` : ''}.` : `No deck has ${META_MIN_DECK_GAMES}+ games yet.`}</div>`;
@@ -5593,7 +5599,7 @@ function metaCardTotals(P) {
 
 function metaStatsHTML(P) {
   const totals = metaCardTotals(P);
-  return [metaScatterHTML(P), metaArchetypesHTML(totals), metaCountersHTML(P, totals), metaPairsHTML(P, totals), metaRatingHTML(P, totals),
+  return [metaScatterHTML(P), metaArchetypesHTML(totals), metaArchMatchupsHTML(totals), metaCountersHTML(P, totals), metaPairsHTML(P, totals), metaRatingHTML(P, totals),
           metaElixirHTML(P), metaTroopsHTML(P), metaActivityHTML(P), metaTrendsHTML(P, totals), metaMonthHTML(P, totals), metaFormsHTML(totals)].join('');
 }
 
@@ -5753,6 +5759,50 @@ const metaRateRow = (c, mid, rate) => `<div class="mu-row" style="cursor:pointer
   </div>`;
 const metaCardHead = (title, text) => `<div class="mu-sub" style="margin-top:0">${title}</div>${text ? `<div style="font-size:12px;color:var(--muted);margin-bottom:6px">${text}</div>` : ''}`;
 const META_FILLS_IN = `<div style="font-size:12px;color:var(--muted)">Fills in after the next stats update.</div>`;
+
+// Archetype matchups: the 8 most played win conditions against each other, from
+// /counters — row decks' win rate against decks with the column's card (a deck
+// with two win conditions counts for both)
+let _metaArchGrid = null;
+function metaArchMatchupsHTML(totals) {
+  const C = metaCountersMap();
+  if (!C) return '';
+  const arch = totals.filter(t => META_WIN_CONS.includes(t.name) && t.share >= META_ROW_MIN).sort((a, b) => b.share - a.share).slice(0, 8);
+  if (arch.length < 3) return '';
+  const idx = Object.fromEntries(C.cards.map((id, i) => [id, i]));
+  const grid = arch.map(() => arch.map(() => ({ n: 0, w: 0 })));
+  for (const key in C.decks) {
+    const ids = new Set(key.split(',').map(k => parseInt(k, 10))), e = C.decks[key];
+    arch.forEach((a, i) => {
+      if (!ids.has(a.id)) return;
+      arch.forEach((b, j) => { const k = idx[b.id]; if (k == null) return; grid[i][j].n += e.n[k]; grid[i][j].w += e.w[k]; });
+    });
+  }
+  _metaArchGrid = { arch, grid };
+  const img = t => t.card?.iconUrls?.medium ? `<img src="${t.card.iconUrls.medium}" alt="${esc(t.name)}" loading="lazy" decoding="async" style="width:100%;max-width:26px;aspect-ratio:5/6;object-fit:contain;display:block;margin:auto">` : `<span style="font-size:8px">${esc(t.name)}</span>`;
+  const cell = (x, i, j) => {
+    if (x.n < 30) return `<div style="font-size:10px;color:var(--muted);text-align:center;padding:6px 0">·</div>`;
+    const r = x.w / x.n, k = Math.min(1, Math.abs(r - 0.5) / 0.1);
+    const bg = `color-mix(in srgb, ${r >= 0.5 ? 'var(--green)' : 'var(--red)'} ${Math.round(8 + k * 32)}%, transparent)`;
+    return `<div onclick="metaArchCell(${i},${j})" style="cursor:pointer;font-size:10px;font-weight:700;text-align:center;padding:6px 0;border-radius:4px;background:${bg}">${Math.round(r * 100)}</div>`;
+  };
+  return `
+    <div class="card">
+      <div class="mu-sub" style="margin-top:0">Archetype matchups</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Win rate (%) of decks with the row's win condition against decks with the column's. From the top decks' games; · under 30 games.</div>
+      <div style="display:grid;grid-template-columns:repeat(${arch.length + 1},1fr);gap:2px;align-items:center">
+        <div></div>${arch.map(img).map(h => `<div>${h}</div>`).join('')}
+        ${arch.map((a, i) => `<div>${img(a)}</div>${grid[i].map((x, j) => cell(x, i, j)).join('')}`).join('')}
+      </div>
+      <div id="meta-arch-readout" style="font-size:12px;color:var(--muted);margin-top:6px;min-height:16px">Tap a number for the matchup.</div>
+    </div>`;
+}
+window.metaArchCell = function(i, j) {
+  const g = _metaArchGrid, out = document.getElementById('meta-arch-readout');
+  if (!g || !out) return;
+  const x = g.grid[i][j], r = x.w / x.n;
+  out.innerHTML = `<b style="color:var(--text)">${esc(g.arch[i].name)}</b> decks vs <b style="color:var(--text)">${esc(g.arch[j].name)}</b> decks: <span class="${winCls(r)}" style="font-weight:700">${mPct(r)}</span> over ${fmtNum(x.n)} games`;
+};
 
 // Counters: opponent cards' win rate against decks with a card, from /counters
 // (the top decks' records against every opponent card)
@@ -6130,7 +6180,7 @@ function metaYouHTML(P) {
           </div>`;
         }).join('')}
       </div>`);
-    parts.push(metaYourGamesHTML(P, prof, mine, exact));
+    parts.push(metaYourGamesHTML(P, prof, mine, exact), metaSwapsHTML(P, mine), metaYourCountersHTML(data, mine));
     // Closest top decks: most cards in common (forms aside), then most played
     const myIds = new Set(mine.map(c => c.id));
     const close = P.decks.filter(d => d.key !== myKey)
@@ -6244,6 +6294,79 @@ function metaYourGamesHTML(P, prof, mine, exact) {
     </div>`;
 }
 
+// One-card swaps: top decks with seven of your cards, grouped by the card they
+// swap (forms aside), against your eight cards' own record when top players run them
+const META_SWAP_MIN_GAMES = 20;
+function metaSwapsHTML(P, mine) {
+  const myIds = new Set(mine.map(c => c.id));
+  let bn = 0, bw = 0;
+  const swaps = {};
+  P.decks.forEach(d => {
+    const ids = d.cards.map(c => c.id);
+    const inn = ids.filter(id => !myIds.has(id)), out = [...myIds].filter(id => !ids.includes(id));
+    if (!inn.length) { bn += d.n; bw += d.w; return; }
+    if (inn.length !== 1 || out.length !== 1) return;
+    const x = swaps[out[0] + '>' + inn[0]] || (swaps[out[0] + '>' + inn[0]] = { out: out[0], inn: inn[0], n: 0, w: 0, names: d.names });
+    x.n += d.n; x.w += d.w;
+  });
+  const rows = Object.values(swaps).filter(x => x.n >= META_SWAP_MIN_GAMES).sort((a, b) => b.w / b.n - a.w / a.n).slice(0, 6);
+  const base = bn >= META_SWAP_MIN_GAMES ? bw / bn : null;
+  const head = `<div class="mu-sub" style="margin:4px 0 4px">One-card swaps</div>`;
+  if (!rows.length) return head + `<div style="font-size:12px;color:var(--muted);margin:0 0 12px">No top deck with seven of your cards has ${META_SWAP_MIN_GAMES}+ games.</div>`;
+  const img = id => { const c = metaCardOf(String(id)); return c.card?.iconUrls?.medium ? `<img src="${c.card.iconUrls.medium}" alt="" loading="lazy" decoding="async" style="width:22px;height:27px;object-fit:contain">` : ''; };
+  return head + `
+    <div class="card">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Top decks with seven of your cards and one swapped${base != null ? `, against your eight cards' <b class="${winCls(base)}">${mPct(base, 0)}</b> with top players (${fmtNum(bn)} games)` : ''}. Tap one for its decks.</div>
+      ${rows.map(x => {
+        const r = x.w / x.n, diff = base != null ? (r - base) * 100 : null;
+        return `<div class="mu-row" style="cursor:pointer" onclick="metaDecksWith('${esc(x.names.join(', '))}')">
+          ${img(x.out)}<span style="color:var(--muted)">→</span>${img(x.inn)}
+          <span class="mu-name">${esc(metaCardOf(String(x.out)).name)} → <b>${esc(metaCardOf(String(x.inn)).name)}</b></span>
+          <span style="font-size:12px;color:var(--muted);white-space:nowrap">${fmtNum(x.n)}</span>
+          <span class="${winCls(r)}" style="font-weight:700;width:38px;text-align:right">${mPct(r, 0)}</span>
+          ${diff != null ? `<span class="${diff > 0 ? 'text-green' : 'text-red'}" style="font-size:11px;width:38px;text-align:right">${diff > 0 ? '+' : ''}${diff.toFixed(1)}</span>` : ''}
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+// Your deck's hardest opponent cards with top players (from /counters, every
+// form of your eight cards) next to your own record against them (Opponent Cards)
+function metaYourCountersHTML(data, mine) {
+  const C = metaCountersMap();
+  if (!C) return '';
+  const ids = mine.map(c => c.id).sort((a, b) => a - b).join();
+  const n = new Array(C.cards.length).fill(0), w = new Array(C.cards.length).fill(0);
+  let games = 0;
+  for (const key in C.decks) {
+    if (key.split(',').map(k => parseInt(k, 10)).sort((a, b) => a - b).join() !== ids) continue;
+    const e = C.decks[key];
+    e.n.forEach((v, i) => { n[i] += v; w[i] += e.w[i]; });
+    games += e.n.reduce((a, b) => a + b, 0) / 8;
+  }
+  const head = `<div class="mu-sub" style="margin:4px 0 4px">Your deck's hardest matchups</div>`;
+  if (games < 20) return head + `<div style="font-size:12px;color:var(--muted);margin:0 0 12px">Top players haven't played your eight cards enough to show its matchups.</div>`;
+  const min = Math.max(8, games * 0.04);
+  const mu = loadMatchups(data.tag)?.cards || {};
+  const rows = C.cards.map((id, i) => ({ c: metaCardOf(String(id)), n: n[i], rate: n[i] ? w[i] / n[i] : 0 }))
+    .filter(r => r.n >= min).sort((a, b) => a.rate - b.rate).slice(0, 8);
+  return head + `
+    <div class="card">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">The opponent cards top players with your eight cards lose to most (${fmtNum(Math.round(games))} games), and your own record against them — over all your decks.</div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;font-size:10px;color:var(--muted);padding-bottom:3px;border-bottom:1px solid var(--border)"><span style="width:52px;text-align:right">Top players</span><span style="width:60px;text-align:right">You</span></div>
+      ${rows.map(r => {
+        const [mw = 0, ml = 0, md = 0] = mu[r.c.name] || [], mn = mw + ml + md;
+        return `<div class="mu-row">
+          ${r.c.card?.iconUrls?.medium ? `<img src="${r.c.card.iconUrls.medium}" alt="" loading="lazy" decoding="async">` : ''}
+          <span class="mu-name">${esc(r.c.name)}</span>
+          <span class="${winCls(r.rate)}" style="font-weight:700;width:52px;text-align:right">${mPct(r.rate, 0)}</span>
+          <span class="${mn >= 3 ? winCls(mw / mn) : 'text-muted'}" style="width:60px;text-align:right;font-size:12px">${mn >= 3 ? `<b>${mPct(mw / mn, 0)}</b> <span class="text-muted" style="font-size:10px">${mn}</span>` : mn ? `${mw}–${ml}` : '—'}</span>
+        </div>`;
+      }).join('')}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Your column: win rate and games, from the battles this device has seen (Battles → Stats → Opponent Cards).</div>
+    </div>`;
+}
+
 // Top decks you can play best right now: every card unlocked, ranked by the
 // evolutions / heroes you're missing, then the gold to bring every card up to
 // your level (your current deck's average, floored), then win rate. Only decks
@@ -6312,11 +6435,26 @@ function metaPlayersHTML() {
   const q = _metaTopQuery.trim().toLowerCase();
   let list = t.players;
   if (q) list = list.filter(([, name, clan]) => (name || '').toLowerCase().includes(q) || (clan || '').toLowerCase().includes(q));
+  // Climb: rating now against the leaderboard snapshot a day / a week ago (index 10 / 11)
+  const sortP = _metaSort.players || 'rank', since = sortP === 'day' ? 10 : 11;
+  const climb = (p, i) => p[i] == null ? null : p[4] - p[i];
+  if (sortP !== 'rank') {
+    list = list.filter(p => p[since] != null).sort((a, b) => sortP === 'fall' ? climb(a, since) - climb(b, since) : climb(b, since) - climb(a, since));
+    if (!list.length) return `<div class="empty-msg">${q ? `No top player matches "${esc(_metaTopQuery.trim())}" with a rating from then.` : `Climbs need the leaderboard from ${sortP === 'day' ? 'a day' : 'a week'} ago — saved daily since 28 Oct, so this fills in by ${sortP === 'day' ? '29 Oct' : '4 Nov'}.`}</div>`;
+  }
   if (!list.length) return `<div class="empty-msg">No top player matches "${esc(_metaTopQuery.trim())}".</div>`;
+  const shownIdx = sortP === 'rank' ? 10 : since;
+  const climbTag = p => {
+    const c = climb(p, shownIdx);
+    if (c == null) return p[10] === null && t.rating_days ? ' <span class="text-green" style="font-size:11px">new</span>' : '';
+    return c ? ` <span class="${c > 0 ? 'text-green' : 'text-red'}" style="font-size:11px">${c > 0 ? '▲' : '▼'}${fmtNum(Math.abs(c))}</span>` : '';
+  };
+  const sinceNote = t.rating_days && sortP !== 'rank' ? ` ▲▼ since the ${new Date(t.rating_days[sortP === 'day' ? 0 : 1]).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} leaderboard (00:00 UTC).` : '';
   const art = buildCardArtMap([]);
   const shown = list.slice(0, _metaShown);
-  return (q ? '' : metaYourRankHTML(t.players)) + `<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Main deck: their most played ranked deck in the last ${t.window_days} days. ${metaUpdatedText(t)}.</div>`
-    + shown.map(([tag, name, clan, rank, rating, deck, deckGames, games, wins]) => {
+  return (q ? '' : metaYourRankHTML(t.players)) + `<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Main deck: their most played ranked deck in the last ${t.window_days} days.${sinceNote} ${metaUpdatedText(t)}.</div>`
+    + shown.map(p => {
+      const [tag, name, clan, rank, rating, deck, deckGames, games, wins] = p;
       const label = mine.has(tag) ? 'You' : friends.has(tag) ? 'Friend' : '';
       const cards = deck ? metaDeckCards(deck) : [];
       return `
@@ -6326,7 +6464,7 @@ function metaPlayersHTML() {
             <span class="text-muted" style="font-size:12px">#${rank}</span> <b>${esc(name || tag)}</b>
             ${label ? `<span class="badge badge-gold" style="font-size:10px;margin-left:4px">${label}</span>` : ''}
           </span>
-          <span style="white-space:nowrap;font-weight:700;color:var(--accent)">⚔️ ${fmtNum(rating)}</span>
+          <span style="white-space:nowrap;font-weight:700;color:var(--accent)">⚔️ ${fmtNum(rating)}${climbTag(p)}</span>
         </div>
         <div style="font-size:11px;color:var(--muted);margin:2px 0 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
           ${clan ? `🛡 ${esc(clan)}` : 'No clan'}${games ? ` · ${games} ranked games · ${Math.round(wins / games * 100)}% wins` : ''}

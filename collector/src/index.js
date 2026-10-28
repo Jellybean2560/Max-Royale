@@ -40,7 +40,8 @@ const TOP_DECKS = 300;              // enough to search by card and find similar
 // runs are cheap, less often once a full week (and the week before) is read
 const STATS_SHARE = 1.1e6, TOP_SHARE = 0.45e6;
 const HISTORY_DAYS = 63;            // /history keeps a card tally per day this long: two 4-week blocks for month vs month
-const ACTIVITY_DAYS = 35;           // matches per UTC hour, tallied as they're saved
+const ACTIVITY_DAYS = 35;
+const RATING_DAYS = 9;              // daily leaderboard ratings kept, for a week's climb           // matches per UTC hour, tallied as they're saved
 // D1 allows 100 columns in a result (a CTE too) and 127 arguments to a function,
 // so per-deck counts are packed 4 to an integer column, 15 bits each (a deck
 // plays far fewer than 32,767 games a week), and unpacked in the final select
@@ -140,6 +141,10 @@ async function refreshBoard(env, now) {
       next_poll = CASE WHEN players.next_poll >= ${PARKED} THEN excluded.next_poll ELSE players.next_poll END`).bind(JSON.stringify(items), now).run();
   // Players no longer on it are parked until they come back
   await env.DB.prepare(`UPDATE players SET next_poll = ${PARKED} WHERE seen_at < ?1 AND next_poll < ${PARKED}`).bind(now).run();
+  // Each UTC day's first refresh keeps everyone's rating, for the climb over a day / week
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO ratings (day, tag, rating)
+    SELECT ?2, json_extract(value, '$.tag'), json_extract(value, '$.rating') FROM json_each(?1)`).bind(JSON.stringify(items), dayKey(now)).run();
   await setState(env, { board_at: now, board_size: items.length });
 }
 
@@ -442,16 +447,21 @@ async function computeTop(env, now) {
     /* the player's totals come from the same grouping, so the matches are read once */
     r AS (SELECT tag, deck, n, w, ROW_NUMBER() OVER (PARTITION BY tag ORDER BY n DESC) AS rk,
                  SUM(n) OVER (PARTITION BY tag) AS games, SUM(w) OVER (PARTITION BY tag) AS wins FROM g)
-    SELECT p.tag, p.name, p.clan, p.rank, p.rating, r.deck, r.n, r.games, r.wins, r.w
+    SELECT p.tag, p.name, p.clan, p.rank, p.rating, r.deck, r.n, r.games, r.wins, r.w, d1.rating AS r1, d7.rating AS r7
     FROM players p LEFT JOIN r ON r.tag = p.tag AND r.rk = 1
-    WHERE p.seen_at >= ?2 ORDER BY p.rank`).bind(since, onBoard).all();
+      LEFT JOIN ratings d1 ON d1.day = ?3 AND d1.tag = p.tag
+      LEFT JOIN ratings d7 ON d7.day = ?4 AND d7.tag = p.tag
+    WHERE p.seen_at >= ?2 ORDER BY p.rank`).bind(since, onBoard, dayKey(now - DAY), dayKey(now - 7 * DAY)).all();
   const reads = rowsRead([res]);
   const top = {
     updated: now,
     next: now + refreshEvery(reads, TOP_SHARE),
     window_days: WINDOW_DAYS,
-    // [tag, name, clan, rank, rating, main deck key, games with it, ranked games, wins, wins with the main deck]
-    players: res.results.map(r => [r.tag, r.name, r.clan, r.rank, r.rating, r.deck, r.n || 0, r.games || 0, r.wins || 0, r.w || 0]),
+    // Ratings in the leaderboard snapshots of these days (first refresh after 00:00 UTC)
+    rating_days: [dayKey(now - DAY), dayKey(now - 7 * DAY)],
+    // [tag, name, clan, rank, rating, main deck key, games with it, ranked games, wins, wins with the main deck,
+    //  rating a day ago, a week ago (null: not on the board then)]
+    players: res.results.map(r => [r.tag, r.name, r.clan, r.rank, r.rating, r.deck, r.n || 0, r.games || 0, r.wins || 0, r.w || 0, r.r1 ?? null, r.r7 ?? null]),
   };
   await countReads(env, 'top', now, reads, { top_at: now, top: JSON.stringify(top) });
 }
@@ -462,6 +472,7 @@ async function prune(env, now) {
     env.DB.prepare(`DELETE FROM matches WHERE time < ?1`).bind(cutoff),
     // Off the leaderboard for a week: stop tracking
     env.DB.prepare(`DELETE FROM players WHERE seen_at < ?1`).bind(now - 7 * DAY),
+    env.DB.prepare(`DELETE FROM ratings WHERE day < ?1`).bind(dayKey(now - RATING_DAYS * DAY)),
   ]);
   await setState(env, { prune_at: now });
 }
