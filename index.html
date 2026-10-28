@@ -5226,9 +5226,10 @@ function metaParsed(m) {
   const prev = m.prev?.matches ? Object.fromEntries(m.prev.cards.map(([k, n]) => [k, n / (m.prev.matches * 2)])) : null;
   _metaParsed = {
     updated: m.updated, catalog: allCards.length, totalDecks, hasPrev: !!prev,
-    decks: m.decks.map(([key, n, w, , players, three]) => {
+    decks: m.decks.map(([key, n, w, , players, three, dealt, taken, leak, hn]) => {
       const cards = metaDeckCards(key);
       return { key, n, w, players, three: three || 0, cards, rate: w / Math.max(n, 1),
+               dealt: dealt ?? null, taken: taken ?? null, leak: leak ?? null, hn: hn || 0,
                names: cards.map(c => c.name), search: cards.map(c => c.name.toLowerCase()).join('|') };
     }),
     cards: m.cards.map(([key, n, w, , three]) => {
@@ -5236,6 +5237,9 @@ function metaParsed(m) {
       return { ...metaCardOf(key), n, rate: w / Math.max(n, 1), three: (three || 0) / Math.max(n, 1), share,
                trend: prev ? share - (prev[key] || 0) : null, isNew: prev ? !(key in prev) : false };
     }),
+    // [id, name, art, games, wins, three-crown wins] — collected from 28 Oct 2026
+    troops: (m.troops || []).map(([id, name, img, n, w, three]) => ({ id, name: name || 'Tower troop', img, n, rate: w / Math.max(n, 1), three: three / Math.max(n, 1) })),
+    towers: m.towers || null,
   };
   return _metaParsed;
 }
@@ -5375,10 +5379,24 @@ function metaDeckItemHTML(d, P, head) {
           <div class="progress-wrap" style="margin-top:2px"><div class="progress-bar" style="width:${wr}%;background:var(--green)"></div></div>
         </div>
       </div>
+      ${metaTowersLineHTML(d)}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
         <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
         <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="upgradeDeck('${esc(names)}')">💰 Upgrade Cost</button>
       </div>
+    </div>`;
+}
+
+// Average tower damage a game (king + both princess towers, full HP minus what's
+// left) and elixir leaked — saved from 28 Oct 2026, so older games have none
+function metaTowersLineHTML(d) {
+  if (!d.hn || d.dealt == null) return '';
+  const part = d.hn < d.n ? ` <span style="opacity:.8">· from ${fmtNum(d.hn)} of ${fmtNum(d.n)} games</span>` : '';
+  return `<div style="display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:var(--muted);margin-top:8px;padding-top:6px;border-top:1px solid var(--border)">
+      <span title="Average damage to the opponent's towers per game">💥 <b class="text-green">${fmtNum(Math.round(d.dealt))}</b> dealt</span>
+      <span title="Average damage to this deck's towers per game">🏰 <b class="text-red">${fmtNum(Math.round(d.taken))}</b> taken</span>
+      ${d.leak != null ? `<span title="Average elixir leaked per game">💧 <b style="color:var(--text)">${d.leak.toFixed(1)}</b> leaked</span>` : ''}
+      <span style="width:100%;font-size:11px">Tower HP per game${part}</span>
     </div>`;
 }
 
@@ -5450,7 +5468,7 @@ const META_WIN_CONS = ['Hog Rider', 'Golem', 'X-Bow', 'Mortar', 'Lava Hound', 'G
   'Goblin Giant', 'Sparky', 'Giant Skeleton', 'Royal Recruits', 'Rune Giant', 'Goblin Machine', 'Boss Bandit'];
 const META_FORM_COLOR = { '': 'var(--blue)', evo: 'var(--purple)', hero: 'var(--accent)' };
 const META_FORM_NAME = { '': 'Plain', evo: 'Evo', hero: 'Hero' };
-let _metaHist = null, _metaHistLoading = false, _metaTrendId = null, _metaScatter = null, _metaTrend = null;
+let _metaHist = null, _metaHistLoading = false, _metaTrendId = null, _metaScatter = null, _metaTrend = null, _metaTrendMode = 'share';
 const mPct = (v, d = 1) => (v * 100).toFixed(d) + '%';
 const winCls = r => r >= 0.52 ? 'text-green' : r <= 0.48 ? 'text-red' : '';
 
@@ -5466,7 +5484,7 @@ function metaCardTotals(P) {
 
 function metaStatsHTML(P) {
   const totals = metaCardTotals(P);
-  return [metaScatterHTML(P), metaArchetypesHTML(totals), metaElixirHTML(P), metaTrendsHTML(P, totals), metaFormsHTML(totals)].join('');
+  return [metaScatterHTML(P), metaArchetypesHTML(totals), metaElixirHTML(P), metaTroopsHTML(P), metaTrendsHTML(P, totals), metaFormsHTML(totals)].join('');
 }
 
 // 1 · Popularity against win rate, one dot per card form
@@ -5584,6 +5602,33 @@ function metaElixirHTML(P) {
     </div>`;
 }
 
+// Tower troops: share of decks, win rate and 3-crown rate (collected from 28 Oct 2026)
+function metaTroopsHTML(P) {
+  const total = P.troops.reduce((sum, t) => sum + t.n, 0);
+  if (!total) return `<div class="card"><div class="mu-sub" style="margin-top:0">Tower troops</div>
+    <div style="font-size:12px;color:var(--muted)">Collected from 28 Oct — shows up after the next stats update.</div></div>`;
+  const max = Math.max(...P.troops.map(t => t.n));
+  return `
+    <div class="card">
+      <div class="mu-sub" style="margin-top:0">Tower troops</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">How often top players pick each tower troop, and how it does — over ${fmtNum(Math.round(total / 2))} matches since collection began on 28 Oct.</div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding-bottom:4px;border-bottom:1px solid var(--border)">
+        <span>Tower troop</span><span>Picked · 3-crown · Win rate</span>
+      </div>
+      ${P.troops.map(t => `
+        <div class="mu-row">
+          ${t.img ? `<img src="${t.img}" alt="" loading="lazy" decoding="async">` : ''}
+          <span style="flex:1;min-width:0">
+            <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.name)}</span>
+            <span style="display:block;height:6px;margin-top:3px;width:${(t.n / max * 100).toFixed(1)}%;background:var(--blue);border-radius:0 3px 3px 0"></span>
+          </span>
+          <span style="font-size:12px;color:var(--muted);width:42px;text-align:right">${mPct(t.n / total)}</span>
+          <span style="font-size:12px;color:var(--muted);width:34px;text-align:right">${mPct(t.three, 0)}</span>
+          <span class="${winCls(t.rate)}" style="font-weight:700;width:38px;text-align:right">${mPct(t.rate, 0)}</span>
+        </div>`).join('')}
+    </div>`;
+}
+
 // 4 · Cards played in more than one form: how often and how well each form does.
 // A form needs META_FORM_MIN_GAMES and 2% of the card's games — a handful of
 // games gives a meaningless win rate.
@@ -5640,12 +5685,15 @@ function metaTrendsHTML(P, totals) {
   const days = (_metaHist?.data?.days || []).filter(d => d[1] > 0);
   if (!_metaHist?.data) return `<div class="card">${head}${_metaHist?.error ? `<div class="error-msg">${esc(_metaHist.error)}</div>` : '<div class="spinner"></div>'}</div>`;
   if (days.length < 2) return `<div class="card">${head}<div style="font-size:12px;color:var(--muted)">Trend lines fill in one point a day${days.length ? ` — the first is from ${new Date(days[0][0]).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : ''}. Check back tomorrow.</div></div>`;
-  // Share per card id per day, forms added up
-  const series = id => days.map(([t, matches, cards]) => {
-    let n = 0;
-    for (const k in cards) if (parseInt(k, 10) === id) n += cards[k];
-    return [t, n / (matches * 2)];
+  // Share of decks per card id per day, forms added up — or its win rate, on the
+  // days that have wins (saved from 28 Oct 2026)
+  const series = (id, mode = 'share') => days.filter(d => mode === 'share' || d[3]).map(([t, matches, cards, wins]) => {
+    let n = 0, w = 0;
+    for (const k in cards) if (parseInt(k, 10) === id) { n += cards[k]; w += wins?.[k] || 0; }
+    return [t, mode === 'share' ? n / (matches * 2) : w / Math.max(n, 1)];
   });
+  const winDays = days.filter(d => d[3]).length;
+  const mode = winDays >= 2 ? _metaTrendMode : 'share';
   const choices = totals.filter(t => t.share >= META_ROW_MIN).sort((a, b) => b.share - a.share);
   if (!choices.some(t => t.id === _metaTrendId)) {
     // Start on the card that moved most since the first point
@@ -5653,16 +5701,19 @@ function metaTrendsHTML(P, totals) {
     choices.forEach(t => { const s = series(t.id), d = Math.abs(s[s.length - 1][1] - s[0][1]); if (d > best) { best = d; _metaTrendId = t.id; } });
     if (!_metaTrendId && choices[0]) _metaTrendId = choices[0].id;
   }
-  const pts = series(_metaTrendId);
+  const pts = series(_metaTrendId, mode);
   const first = pts[0][1], last = pts[pts.length - 1][1], diff = (last - first) * 100;
   return `
     <div class="card">
       ${head}
-      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Share of decks a card is in, one point a day (each the 7 days before it).</div>
+      <div class="seg" style="margin-bottom:8px">
+        ${[['share', 'Share of decks'], ['win', 'Win rate']].map(([v, l]) => `<button class="${mode === v ? 'active' : ''}" onclick="setMetaTrendMode('${v}')">${l}</button>`).join('')}
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${mode === 'share' ? 'Share of decks a card is in' : 'Win rate of decks with the card'}, one point a day (each the 7 days before it).${mode === 'share' && winDays < 2 ? ' Win rate fills in from 28 Oct.' : ''}</div>
       <select onchange="setMetaTrend(+this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:8px">
         ${choices.map(t => `<option value="${t.id}"${t.id === _metaTrendId ? ' selected' : ''}>${esc(t.name)} · ${mPct(t.share)}</option>`).join('')}
       </select>
-      ${metaTrendSVG(pts)}
+      ${metaTrendSVG(pts, mode)}
       <div id="meta-trend-readout" data-idle="" style="font-size:12px;color:var(--muted);margin-top:4px">
         ${mPct(first)} → <b style="color:var(--text)">${mPct(last)}</b>
         <span class="${diff >= 0.5 ? 'text-green' : diff <= -0.5 ? 'text-red' : ''}">(${diff > 0 ? '+' : ''}${diff.toFixed(1)} pts)</span>
@@ -5670,7 +5721,8 @@ function metaTrendsHTML(P, totals) {
       </div>
     </div>`;
 }
-function metaTrendSVG(pts) {
+function metaTrendSVG(pts, mode = 'share') {
+  _metaTrendShown = mode;
   const W = 320, H = 120, L = 34, R = 8, T = 8, B = 18;
   const t0 = pts[0][0], t1 = pts[pts.length - 1][0];
   let lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1]));
@@ -5702,9 +5754,11 @@ window.metaTrendHover = function(e) {
   const px = (e.clientX - r.left) / r.width * svg.viewBox.baseVal.width;
   const p = _metaTrend.reduce((a, b) => Math.abs(b[0] - px) < Math.abs(a[0] - px) ? b : a);
   sel.setAttribute('cx', p[0]); sel.setAttribute('cy', p[1]); sel.style.display = '';
-  out.innerHTML = `<b style="color:var(--text)">${mPct(p[3])}</b> of decks · 7 days to ${new Date(p[2]).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+  out.innerHTML = `<b style="color:var(--text)">${mPct(p[3])}</b> ${_metaTrendShown === 'share' ? 'of decks' : 'win rate'} · 7 days to ${new Date(p[2]).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
 };
 window.setMetaTrend = function(id) { _metaTrendId = id; redrawMetaList(); };
+let _metaTrendShown = 'share';
+window.setMetaTrendMode = function(v) { _metaTrendMode = v; redrawMetaList(); };
 
 // ── You: the loaded profile's 1v1 deck against the meta, the closest top decks,
 // and the most-used top-player cards the player hasn't maxed ──

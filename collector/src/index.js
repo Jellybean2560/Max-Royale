@@ -26,7 +26,7 @@
 const MINUTE = 60e3, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 const BOARD_EVERY = 6 * HOUR;       // leaderboard refresh
 const PRUNE_EVERY = DAY;
-const KEEP_DAYS = 30;               // matches older than this are deleted
+const KEEP_DAYS = 90;               // matches older than this are deleted (storage only: the stats read a 7-day window)
 const WINDOW_DAYS = 7;              // the stats cover this many days
 const PLAYERS_PER_RUN = 5;          // battle logs fetched per minute (~7,200 a day max)
 const RETRY_AFTER = 30 * MINUTE;    // a failed periodic job or battle log waits this long
@@ -49,6 +49,12 @@ const READ_BUDGET = 2e6, POLL_RESERVE = 250e3;
 // index's range, so picking who to poll no longer walks over them (700 stale
 // overdue rows were read on every poll — ~1M rows a day — before this)
 const PARKED = 9e15;
+// Full tower HP in ranked, for damage = full − left. Princess HP depends on the
+// tower troop, so each troop's full pair is learnt from the data (the most seen
+// left standing in recent matches) and kept as the highest ever seen. These are
+// the starting values, from ranked battles Oct 2026 (king 7,728; Tower Princess 4,858 each).
+const KING_HP = 7728, PRINCESS_HP = { 159000000: 2 * 4858 };
+const TOWER_SAMPLE = 3000;          // recent matches read to learn full tower HP
 
 export default {
   async scheduled(event, env, ctx) {
@@ -139,6 +145,15 @@ const deckKey = cards => cards.map(c => {
   return c.id + form;
 }).sort().join(',');
 
+// One side's tower troop, towers left and elixir leaked. Destroyed princess
+// towers drop out of the array (absent = both fell); a fallen king reads 0.
+const side = (k, p) => ({
+  [`t${k}`]: p.supportCards?.[0]?.id ?? null,
+  [`k${k}`]: p.kingTowerHitPoints ?? null,
+  [`s${k}`]: p.kingTowerHitPoints == null ? null : (p.princessTowersHitPoints || []).reduce((a, b) => a + b, 0),
+  [`l${k}`]: p.elixirLeaked ?? null,
+});
+
 async function pollPlayers(env, now, st) {
   const dueRes = await env.DB.prepare(`
     SELECT tag, last_time FROM players WHERE seen_at >= ?1 AND next_poll <= ?2
@@ -149,6 +164,8 @@ async function pollPlayers(env, now, st) {
 
   const matches = [], updates = [];
   let errors = 0;
+  // Tower troop names and art, so /meta can show them; saved when a new one turns up
+  const troopNames = JSON.parse(st.troop_names || '{}'), newTroops = {};
   due.forEach((p, i) => {
     const log = logs[i];
     if (!Array.isArray(log)) {
@@ -165,7 +182,9 @@ async function pollPlayers(env, now, st) {
       if (me?.cards?.length !== 8 || opp?.cards?.length !== 8) continue;
       const [a, o] = [me, opp].sort((x, y) => (x.tag < y.tag ? -1 : 1));
       matches.push({ t, pa: a.tag, pb: o.tag, da: deckKey(a.cards), db: deckKey(o.cards),
-                     ca: a.crowns || 0, cb: o.crowns || 0, ra: a.startingTrophies ?? null, rb: o.startingTrophies ?? null });
+                     ca: a.crowns || 0, cb: o.crowns || 0, ra: a.startingTrophies ?? null, rb: o.startingTrophies ?? null,
+                     ...side('a', a), ...side('b', o) });
+      for (const x of [a, o]) for (const c of x.supportCards || []) if (!troopNames[c.id]) newTroops[c.id] = [c.name, c.iconUrls?.medium || ''];
       last = Math.max(last, t);
     }
     // Poll again before the 30-battle log can roll over: at half the time its
@@ -179,10 +198,13 @@ async function pollPlayers(env, now, st) {
   let inserted = 0, insertRes = null;
   if (matches.length) {
     const res = insertRes = await env.DB.prepare(`
-      INSERT OR IGNORE INTO matches (time, pa, pb, da, db, ca, cb, ra, rb)
+      INSERT OR IGNORE INTO matches (time, pa, pb, da, db, ca, cb, ra, rb, ta, tb, ka, kb, sa, sb, la, lb)
       SELECT json_extract(value, '$.t'), json_extract(value, '$.pa'), json_extract(value, '$.pb'),
              json_extract(value, '$.da'), json_extract(value, '$.db'), json_extract(value, '$.ca'),
-             json_extract(value, '$.cb'), json_extract(value, '$.ra'), json_extract(value, '$.rb')
+             json_extract(value, '$.cb'), json_extract(value, '$.ra'), json_extract(value, '$.rb'),
+             json_extract(value, '$.ta'), json_extract(value, '$.tb'), json_extract(value, '$.ka'),
+             json_extract(value, '$.kb'), json_extract(value, '$.sa'), json_extract(value, '$.sb'),
+             json_extract(value, '$.la'), json_extract(value, '$.lb')
       FROM json_each(?1)`).bind(JSON.stringify(matches)).run();
     inserted = res.meta?.changes || 0;
   }
@@ -196,6 +218,7 @@ async function pollPlayers(env, now, st) {
     last_poll_at: now,
     polls_total: (+st.polls_total || 0) + due.length,
     matches_total: (+st.matches_total || 0) + inserted,
+    ...(Object.keys(newTroops).length ? { troop_names: JSON.stringify({ ...troopNames, ...newTroops }) } : {}),
     ...(errors ? { last_error: `${new Date(now).toISOString()} ${errors} battle log(s) failed: ${logs.find(l => l.error)?.error}` } : {}),
   });
 }
@@ -213,16 +236,45 @@ async function computeStats(env, now) {
   // distinct decks, and the cards are unpacked from those. Unpacking every deck
   // played instead (json_each over each side) read ~950k rows a run — D1 counts
   // each unpacked card as a row read.
+  // Full tower HP: the highest left standing in a recent sample (a match where a
+  // side's towers went untouched), never below what earlier runs saw
+  const oldMeta = JSON.parse((await env.DB.prepare(`SELECT v FROM state WHERE k = 'meta'`).first())?.v || 'null');
+  const sample = await env.DB.prepare(`
+    SELECT ta, tb, ka, kb, sa, sb FROM matches WHERE time >= ?1 ORDER BY time DESC LIMIT ?2`).bind(since, TOWER_SAMPLE).all();
+  const towers = { king: Math.max(KING_HP, oldMeta?.towers?.king || 0), princess: { ...PRINCESS_HP } };
+  for (const [id, hp] of Object.entries(oldMeta?.towers?.princess || {})) towers.princess[id] = Math.max(towers.princess[id] || 0, hp);
+  for (const r of sample.results) for (const [t, k, sp] of [[r.ta, r.ka, r.sa], [r.tb, r.kb, r.sb]]) {
+    if (t != null && sp != null) towers.princess[t] = Math.max(towers.princess[t] || 0, sp);
+    if (k != null) towers.king = Math.max(towers.king, k);
+  }
+  // Numbers only (troop ids and HP), so they can be written into the SQL: a
+  // json_each lookup per match row would count every lookup as rows read
+  const troopIds = Object.keys(towers.princess).map(Number).filter(Number.isInteger);
+  const fullP = col => `CASE ${col} ${troopIds.map(id => `WHEN ${id} THEN ${Math.round(towers.princess[id])}`).join(' ')} ELSE NULL END`;
+  // Damage a side's towers took: king + both princess towers, full minus what's left
+  const dmg = (t, k, sp) => `CASE WHEN ${k} IS NULL THEN NULL ELSE MAX(0, ${Math.round(towers.king)} - ${k} + ${fullP(t)} - ${sp}) END`;
   const grouped = `
     WITH s AS (
-      SELECT pa AS tag, da AS deck, ca > cb AS w, ca = cb AS d, ca > cb AND ca = 3 AS t FROM matches WHERE time >= ?1 AND time < ?2
+      SELECT pa AS tag, da AS deck, ca > cb AS w, ca = cb AS d, ca > cb AND ca = 3 AS t, ta AS tt,
+             ${dmg('tb', 'kb', 'sb')} AS dealt, ${dmg('ta', 'ka', 'sa')} AS taken, la AS leak
+        FROM matches WHERE time >= ?1 AND time < ?2
       UNION ALL
-      SELECT pb, db, cb > ca, ca = cb, cb > ca AND cb = 3 FROM matches WHERE time >= ?1 AND time < ?2),
+      SELECT pb, db, cb > ca, ca = cb, cb > ca AND cb = 3, tb, ${dmg('ta', 'ka', 'sa')}, ${dmg('tb', 'kb', 'sb')}, lb
+        FROM matches WHERE time >= ?1 AND time < ?2),
     g AS MATERIALIZED (
-      SELECT deck, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d, SUM(t) AS t, COUNT(DISTINCT tag) AS p FROM s GROUP BY deck)`;
+      SELECT deck, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d, SUM(t) AS t, COUNT(DISTINCT tag) AS p,
+             SUM(dealt) AS dealt, SUM(taken) AS taken, COUNT(dealt) AS hn, SUM(leak) AS leak, COUNT(leak) AS ln
+             ${troopIds.map(id => `, SUM(tt = ${id}) AS n${id}, SUM(CASE WHEN tt = ${id} THEN w END) AS w${id}, SUM(CASE WHEN tt = ${id} THEN t END) AS t${id}`).join('')}
+      FROM s GROUP BY deck)`;
   const cardsOfG = `
-    SELECT 'c' AS kind, j.value AS k, SUM(g.n) AS n, SUM(g.w) AS w, SUM(g.d) AS d, SUM(g.t) AS t, NULL AS p
+    SELECT 'c' AS kind, j.value AS k, SUM(g.n) AS n, SUM(g.w) AS w, SUM(g.d) AS d, SUM(g.t) AS t, NULL AS p,
+           NULL AS dealt, NULL AS taken, NULL AS hn, NULL AS leak, NULL AS ln
     FROM g, json_each('["' || replace(g.deck, ',', '","') || '"]') AS j GROUP BY j.value`;
+  // Tower troops: one row off the deck grouping, its totals packed as JSON so it
+  // fits the same columns (and statement) as the decks and cards
+  const troopsOfG = troopIds.length ? `
+    UNION ALL SELECT 'x', json_object(${troopIds.map(id => `'n${id}', SUM(n${id}), 'w${id}', SUM(w${id}), 't${id}', SUM(t${id})`).join(', ')}),
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM g` : '';
   // MIN / MAX read one row each off the primary key; match counts come from the
   // card tally (every match is 2 decks × 8 cards) instead of another scan
   const results = await env.DB.batch([
@@ -230,8 +282,8 @@ async function computeStats(env, now) {
                            (SELECT MAX(time) FROM matches) AS last`).bind(since),
     // top decks and every card in one statement, off one grouping
     env.DB.prepare(`${grouped}
-      SELECT * FROM (SELECT 'd' AS kind, deck AS k, n, w, d, t, p FROM g ORDER BY n DESC LIMIT ?3)
-      UNION ALL SELECT * FROM (${cardsOfG})`).bind(since, until, TOP_DECKS),
+      SELECT * FROM (SELECT 'd' AS kind, deck AS k, n, w, d, t, p, dealt, taken, hn, leak, ln FROM g ORDER BY n DESC LIMIT ?3)
+      UNION ALL SELECT * FROM (${cardsOfG}) ${troopsOfG}`).bind(since, until, TOP_DECKS),
     ...(havePrev ? [env.DB.prepare(`${grouped} ${cardsOfG}`).bind(prevSince, since)] : []),
   ]);
   const [range, both, prev] = results;
@@ -251,7 +303,9 @@ async function computeStats(env, now) {
   const cards = both.results.filter(r => r.kind === 'c').sort((a, b) => b.n - a.n);
   const t = range.results[0] || {};
   const count = rows => Math.round(rows.reduce((sum, r) => sum + r.n, 0) / 16);
-  const reads = rowsRead(results) + rowsRead(stored);
+  const reads = rowsRead(results) + rowsRead(stored) + rowsRead([sample]) + 1;
+  const tx = JSON.parse(both.results.find(r => r.kind === 'x')?.k || '{}'), names = JSON.parse(st.troop_names || '{}');
+  const avg = (sum, n) => n ? Math.round(sum / n * 10) / 10 : null;
   const meta = {
     updated: now,
     next: now + refreshEvery(reads, STATS_SHARE),  // when these stats are recomputed
@@ -260,16 +314,23 @@ async function computeStats(env, now) {
     matches: count(cards),
     first: t.first ? t.first * 1000 : null,
     last: t.last ? t.last * 1000 : null,
-    // [deck key, games, wins, draws, different players, three-crown wins]
-    decks: decks.map(r => [r.k, r.n, r.w, r.d, r.p, r.t]),
+    // [deck key, games, wins, draws, different players, three-crown wins,
+    //  avg tower damage dealt, avg taken, avg elixir leaked, games with tower data]
+    decks: decks.map(r => [r.k, r.n, r.w, r.d, r.p, r.t, avg(r.dealt, r.hn), avg(r.taken, r.hn), avg(r.leak, r.ln), r.hn || 0]),
+    // [tower troop id, name, art, games, wins, three-crown wins], most played first
+    troops: troopIds.map(id => [id, names[id]?.[0] || null, names[id]?.[1] || null, tx[`n${id}`] || 0, tx[`w${id}`] || 0, tx[`t${id}`] || 0])
+      .filter(r => r[3] > 0).sort((a, b) => b[3] - a[3]),
+    // Full tower HP the damage figures are measured against
+    towers,
     // [card id + form, decks it was in, wins, draws, three-crown wins]
     cards: cards.map(r => [r.k, r.n, r.w, r.d, r.t]),
     // The week before, for trends: { matches, cards: [card, decks, wins] }; null until collected
     prev: prev ? { matches: count(prev.results), cards: prev.results.sort((a, b) => b.n - a.n).map(r => [r.k, r.n, r.w]) } : null,
   };
-  // [time, matches, { card id + form: decks it was in }]
+  // [time, matches, { card id + form: decks it was in }, { card id + form: wins }]
+  // (days before 28 Oct 2026 have no wins)
   hist.days = hist.days.filter(d => dayKey(d[0]) !== dayKey(now) && d[0] > now - HISTORY_DAYS * DAY)
-    .concat([[now, meta.matches, Object.fromEntries(cards.map(r => [r.k, r.n]))]]);
+    .concat([[now, meta.matches, Object.fromEntries(cards.map(r => [r.k, r.n])), Object.fromEntries(cards.map(r => [r.k, r.w]))]]);
   hist.updated = now;
   await countReads(env, 'stats', now, reads, { stats_at: now, meta: JSON.stringify(meta), history: JSON.stringify(hist) });
 }

@@ -31,6 +31,15 @@ CREATE TABLE IF NOT EXISTS matches (
   cb   INTEGER,
   ra   INTEGER,                -- rating before the match
   rb   INTEGER,
+  -- Added 28 Oct 2026 (null on older matches), via ALTER TABLE matches ADD COLUMN …:
+  ta   INTEGER,                -- tower troop card id
+  tb   INTEGER,
+  ka   INTEGER,                -- king tower HP left (0 = destroyed)
+  kb   INTEGER,
+  sa   INTEGER,                -- princess towers' HP left, summed (destroyed ones count 0)
+  sb   INTEGER,
+  la   REAL,                   -- elixir leaked
+  lb   REAL,
   PRIMARY KEY (time, pa, pb)
 ) WITHOUT ROWID;
 
