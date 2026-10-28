@@ -2798,6 +2798,15 @@ function loadDeckIds(ids) {
   }
 }
 
+// App shortcuts (manifest shortcuts, long-press the icon) open ?screen=<name>
+const SHORTCUT_SCREENS = ['meta', 'calc', 'friends', 'clan', 'deckup'];
+function takeStartScreen() {
+  const screen = new URLSearchParams(location.search).get('screen');
+  if (!screen) return;
+  history.replaceState(null, '', location.pathname);
+  if (SHORTCUT_SCREENS.includes(screen)) goTo(screen);
+}
+
 // A deck shared to the installed app (manifest share_target) arrives as
 // ?title=&text=&url= — open it in Deck Upgrade once the profile is on screen.
 function takeSharedDeck() {
@@ -3689,8 +3698,113 @@ function tallyMatchups(entry, battles) {
     changed = true;
   });
   entry.seen = [...seen].slice(-300);
+  const lvChanged = tallyLevels(entry, battles || []);
+  return changed || lvChanged;
+}
+
+// ── Level advantage: your deck's average card level minus the opponent's ──
+// 1v1 Trophy Road and Path of Legends only — challenges and tournaments set the
+// levels, friendlies aren't matchmade. Within half a level counts as even.
+// Kept in the matchup entry (lv) with its own seen list, so the battles tallied
+// before this existed still count once.
+const LEVEL_EVEN = 0.5;
+const isLevelledBattle = b => b.type === 'pathOfLegend' || isTrophyRoadBattle(b);
+function deckAvgLevel(cards) {
+  const lv = (cards || []).filter(c => c.level).map(c => toDisplayLevel((c.rarity || 'common').toLowerCase(), c.level));
+  return lv.length === 8 ? lv.reduce((a, b) => a + b, 0) / 8 : null;
+}
+function tallyLevels(entry, battles) {
+  const lv = entry.lv || (entry.lv = { seen: [], n: 0, sum: 0, ahead: [0, 0, 0], even: [0, 0, 0], behind: [0, 0, 0] });
+  const seen = new Set(lv.seen);
+  let changed = false;
+  battles.forEach(b => {
+    if (!b.battleTime || seen.has(b.battleTime)) return;
+    seen.add(b.battleTime);
+    changed = true;
+    if (!isLevelledBattle(b)) return;
+    const mine = deckAvgLevel(b.team?.[0]?.cards), theirs = deckAvgLevel(b.opponent?.[0]?.cards);
+    if (mine == null || theirs == null) return;
+    const diff = mine - theirs, r = battleResult(b);
+    lv[diff >= LEVEL_EVEN ? 'ahead' : diff <= -LEVEL_EVEN ? 'behind' : 'even'][r === 'win' ? 0 : r === 'loss' ? 1 : 2]++;
+    lv.n++; lv.sum += diff;
+  });
+  lv.seen = [...seen].slice(-300);
   return changed;
 }
+// The saved tally for the tag, else one from the current log only
+function matchupEntry(data, battles) {
+  const saved = loadMatchups(data.tag);
+  if (saved?.lv) return saved;
+  const m = newMatchups(); tallyMatchups(m, battles);
+  return saved ? { ...saved, lv: m.lv } : m;
+}
+const wldRate = ([w, l, d]) => w / Math.max(w + l + d, 1);
+const rateCls = r => r < 0.45 ? 'text-red' : r > 0.55 ? 'text-green' : '';
+function levelAdvantageHTML(data, battles, scope) {
+  const lv = matchupEntry(data, battles).lv;
+  const head = `<div style="${OV_SECTION_STYLE}">Level Advantage <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· ${lv?.n || 0} battle${lv?.n === 1 ? '' : 's'}</span></div>`;
+  if (!lv || lv.n < 3) return head + `<div style="font-size:12px;color:var(--muted)">Needs a few Trophy Road or Path of Legends battles — it fills in as ${scope === 'p' ? 'you play' : 'they play'}.</div>`;
+  const avg = lv.sum / lv.n, abs = Math.abs(avg), who = scope === 'p' ? 'Your' : 'Their';
+  const rows = [['ahead', '⬆️ Higher levels'], ['even', '⚖️ About even'], ['behind', '⬇️ Lower levels']].filter(([k]) => lv[k].some(Boolean));
+  return head
+    + `<div style="font-size:12px;margin-bottom:4px">${who} cards are on average <b class="${avg >= LEVEL_EVEN ? 'text-green' : avg <= -LEVEL_EVEN ? 'text-red' : ''}">${abs < 0.05 ? 'level with' : `${abs.toFixed(1)} level${abs.toFixed(1) === '1.0' ? '' : 's'} ${avg > 0 ? 'above' : 'below'}`}</b> the opponent's.</div>`
+    + rows.map(([k, label]) => ovRow(label, `${wldText(lv[k])} · <span class="${rateCls(wldRate(lv[k]))}">${Math.round(wldRate(lv[k]) * 100)}%</span>`)).join('')
+    + `<div style="font-size:11px;color:var(--muted);margin-top:6px">Average card level of both decks · within ${LEVEL_EVEN} counts as even · Trophy Road and Path of Legends only</div>`;
+}
+
+// ── Record per archetype: the opponent-card tally read for the win conditions
+// the Meta screen names archetypes by (a deck with two counts for both) ──
+function archetypeRecordHTML(data, battles, scope) {
+  const m = matchupEntry(data, battles);
+  const art = buildCardArtMap(battles);
+  const rows = META_WIN_CONS.map(name => ({ name, r: m.cards[name] })).filter(x => x.r)
+    .map(x => ({ ...x, n: x.r[0] + x.r[1] + x.r[2], rate: wldRate(x.r) }))
+    .filter(x => x.n >= MATCHUP_MIN_GAMES).sort((a, b) => b.n - a.n).slice(0, 8);
+  const head = `<div style="${OV_SECTION_STYLE}">Against Archetypes</div>`;
+  if (!rows.length) return head + `<div style="font-size:12px;color:var(--muted)">Not enough battles yet — an archetype shows up once ${scope === 'p' ? "you've" : "they've"} faced it ${MATCHUP_MIN_GAMES} times.</div>`;
+  return head + rows.map(x => `<div class="mu-row">
+      ${art[x.name]?.medium ? `<img src="${art[x.name].medium}" alt="" loading="lazy" decoding="async">` : ''}
+      <span class="mu-name">${esc(x.name)} decks <span class="text-muted" style="font-size:11px">· ${x.n}×</span></span>
+      <span style="font-size:12px;white-space:nowrap">${wldText(x.r)}</span>
+      <span class="${rateCls(x.rate)}" style="font-weight:700;width:40px;text-align:right">${Math.round(x.rate * 100)}%</span>
+    </div>`).join('')
+    + `<div style="font-size:11px;color:var(--muted);margin-top:6px">Opponent decks named by their win condition, as in Meta → Archetypes · most faced first</div>`;
+}
+
+// ── Streaks and tilt, from the battle log (friendlies and boat battles left out) ──
+const TILT_GAP_MS = 30 * 60 * 1000;  // the next game counts as "right after" within this
+const competitiveBattles = battles => (battles || []).filter(b => b.battleTime && !/friendly|clanMate|boat/i.test(b.type || ''));
+function lossStreak(battles) {
+  let n = 0;
+  for (const b of competitiveBattles(battles)) { if (battleResult(b) !== 'loss') break; n++; }
+  return n;
+}
+function streakNoteHTML(battles, scope) {
+  const n = lossStreak(battles);
+  if (n < 3) return '';
+  return `<div class="card" style="padding:10px 12px;font-size:13px;border-color:var(--red)">😤 <b>${n} losses in a row</b>${scope === 'p' ? ' — maybe take a short break before the next one.' : '.'}</div>`;
+}
+function momentumHTML(battles, scope) {
+  const list = competitiveBattles(battles);  // newest first
+  const after = { win: [0, 0, 0], loss: [0, 0, 0] };
+  for (let i = 0; i < list.length - 1; i++) {
+    const next = list[i], prev = list[i + 1], r = battleResult(prev);
+    if (r === 'draw' || parseApiTime(next.battleTime) - parseApiTime(prev.battleTime) > TILT_GAP_MS) continue;
+    const nr = battleResult(next);
+    after[r][nr === 'win' ? 0 : nr === 'loss' ? 1 : 2]++;
+  }
+  const n = k => after[k][0] + after[k][1] + after[k][2];
+  const streak = lossStreak(battles);
+  if (n('loss') + n('win') < 4 && streak < 2) return '';
+  const row = (k, label) => n(k) ? ovRow(label, `${wldText(after[k])} · ${Math.round(wldRate(after[k]) * 100)}%`) : '';
+  const tilt = n('loss') >= 4 && n('win') >= 4 && wldRate(after.loss) < wldRate(after.win) - 0.15;
+  return `<div style="${OV_SECTION_STYLE}">Momentum <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· last ${list.length} battles</span></div>`
+    + (streak >= 2 ? ovRow('Losses in a row now', `😤 ${streak}`, 'text-red') : '')
+    + row('win', 'Right after a win') + row('loss', 'Right after a loss')
+    + (tilt ? `<div style="font-size:12px;margin-top:4px">📉 ${scope === 'p' ? 'You win' : 'They win'} clearly less right after a loss — a break after one might pay off.</div>` : '')
+    + `<div style="font-size:11px;color:var(--muted);margin-top:6px">The next game within 30 minutes · friendlies and boat battles left out</div>`;
+}
+
 const newMatchups = () => ({ since: Date.now(), battles: 0, seen: [], cards: {} });
 function loadMatchups(tag) {
   try { return JSON.parse(localStorage.getItem(MATCHUPS_KEY) || '{}')[tag] || null; }
@@ -3763,6 +3877,12 @@ function battleStatsHTML(data, battles, scope = 'p') {
       ${recentBattlesByModeHTML(battles)}
 
       ${matchupsHTML(data, battles, scope)}
+
+      ${archetypeRecordHTML(data, battles, scope)}
+
+      ${levelAdvantageHTML(data, battles, scope)}
+
+      ${momentumHTML(battles, scope)}
 
       ${pol.length ? `<div style="${OV_SECTION_STYLE}">Path of Legends</div>
       ${pol.map(([label, r]) => { const detail = polLeagueDetail(r);
@@ -4910,6 +5030,7 @@ function _renderBattleList(scope) {
 
   const filtered = battles.filter(b => (filter === 'all' || battleModeLabel(b) === filter) && (!result || battleResult(b) === result));
   if (!filtered.length) return `${bar}<div class="empty-msg">No battles for this filter.</div>`;
+  const streakNote = filter === 'all' && !result ? streakNoteHTML(battles, scope) : '';
   // Battles arrive newest-first, so each day's battles are consecutive
   const dayOf = b => b.battleTime ? battleDayLabel(b.battleTime) : '';
   const dayHead = (b, bi) => {
@@ -4925,7 +5046,7 @@ function _renderBattleList(scope) {
     return costs.length ? (costs.reduce((a, b) => a + b, 0) / costs.length).toFixed(1) : '';
   };
   const deckRow = (p) => (p.cards||[]).map(c => deckTileHTML(c.name, cardVariant(c), art[c.name], 'deck-card-chip')).join('');
-  return bar + filtered.map((b, bi) => {
+  return bar + streakNote + filtered.map((b, bi) => {
     const teamPlayers = b.team || [];
     const oppPlayers  = b.opponent || [];
     const team = teamPlayers[0] || {};
@@ -5208,6 +5329,13 @@ const META_KINDS = { all: 'All', evo: 'Evolutions', hero: 'Heroes' };
 let _meta = null, _metaView = 'decks', _metaSort = { decks: 'played', cards: 'used', players: 'rank' }, _metaLoading = false;
 let _metaQuery = '', _metaKind = 'all', _metaShown = META_PAGE, _metaParsed = null;
 let _metaTop = null, _metaTopLoading = false, _metaTopQuery = '';
+// Country leaderboards (Path of Legends, straight from the API): the chosen
+// country in cr_meta_country ('' = the global top 1,000), the country list in
+// cr_locations_cache (30 days), each board kept 30 min in memory
+const META_COUNTRY_KEY = 'cr_meta_country';
+const LOCATIONS_CACHE_KEY = 'cr_locations_cache';
+const COUNTRY_BOARD_MAX_AGE = 30 * 60 * 1000;
+let _metaCountry = null, _locations = null, _countryBoards = {};
 
 function metaCardOf(key) {
   const id = parseInt(key, 10), form = key.endsWith('e') ? 'evo' : key.endsWith('h') ? 'hero' : '';
@@ -5326,10 +5454,16 @@ function drawMeta() {
   const sorts = view === 'cards' && !P.hasPrev
     ? Object.fromEntries(Object.entries(META_SORTS.cards).filter(([v]) => v !== 'trend'))
     : META_SORTS[view];
+  const country = view === 'players' ? metaCountry() : '';
   const controls = view === 'you' || view === 'stats' ? '' : view === 'players' ? `
-    <select onchange="setMetaSort(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
-      ${Object.entries(META_SORTS.players).map(([v, l]) => `<option value="${v}"${sort === v ? ' selected' : ''}>Sort: ${l}</option>`).join('')}
+    <select onchange="setMetaCountry(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
+      <option value="">🌍 Global top 1,000</option>
+      ${(loadLocations() || []).map(l => `<option value="${l.id}"${String(l.id) === country ? ' selected' : ''}>${countryFlag(l.countryCode)} ${esc(l.name)}</option>`).join('')}
+      ${country && !loadLocations() ? `<option value="${esc(country)}" selected>Country ${esc(country)}</option>` : ''}
     </select>
+    ${country ? '' : `<select onchange="setMetaSort(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
+      ${Object.entries(META_SORTS.players).map(([v, l]) => `<option value="${v}"${sort === v ? ' selected' : ''}>Sort: ${l}</option>`).join('')}
+    </select>`}
     <input type="search" value="${esc(_metaTopQuery)}" placeholder="🔍 Player or clan name…" oninput="setMetaTopQuery(this.value)"
       style="width:100%;margin-bottom:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:14px;font-family:'Inter',sans-serif">` : `
     <select onchange="setMetaSort(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
@@ -5358,7 +5492,7 @@ function metaListHTML() {
   if (!P) return '';
   if (_metaView === 'decks') return metaDecksHTML(P, _metaSort.decks);
   if (_metaView === 'cards') return metaCardsHTML(P, _metaSort.cards);
-  if (_metaView === 'players') return metaPlayersHTML();
+  if (_metaView === 'players') return metaCountry() ? metaCountryHTML(metaCountry()) : metaPlayersHTML();
   if (_metaView === 'stats') return metaStatsHTML(P);
   return metaYouHTML(P);
 }
@@ -6477,22 +6611,128 @@ function metaPlayersHTML() {
     }).join('')
     + (list.length > shown.length ? `<button class="btn btn-secondary" style="width:100%;margin-top:4px" onclick="metaShowMore()">Show more (${list.length - shown.length} more)</button>` : '');
 }
-// Where the loaded profile stands against the top 1,000. Only Ultimate Champion
-// has a rating (leagueNumber 7); below that, how far there is to go.
-function metaYourRankHTML(players) {
+// ── Country leaderboard ──
+function loadLocations() {
+  if (_locations) return _locations;
+  try {
+    const c = JSON.parse(localStorage.getItem(LOCATIONS_CACHE_KEY) || 'null');
+    if (c?.items?.length) {
+      _locations = c.items;
+      if (Date.now() - c.savedAt > 30 * 864e5) fetchLocations();
+      return _locations;
+    }
+  } catch(e) {}
+  fetchLocations();
+  return null;
+}
+let _locationsLoading = false;
+async function fetchLocations() {
+  if (_locationsLoading) return;
+  _locationsLoading = true;
+  try {
+    const res = await apiGet('/locations?limit=300');
+    _locations = (res.items || []).filter(l => l.isCountry)
+      .map(l => ({ id: l.id, name: l.name, countryCode: l.countryCode }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    try { localStorage.setItem(LOCATIONS_CACHE_KEY, JSON.stringify({ items: _locations, savedAt: Date.now() })); } catch(e) {}
+    if (currentScreen === 'meta' && _metaView === 'players') drawMeta();
+  } catch(e) {} finally { _locationsLoading = false; }
+}
+// The chosen country; the first time, the loaded profile's clan's country if the Clan screen has it
+function metaCountry() {
+  if (_metaCountry == null) {
+    try { _metaCountry = localStorage.getItem(META_COUNTRY_KEY); } catch(e) {}
+    if (_metaCountry == null) {
+      _metaCountry = '';
+      try {
+        const clan = JSON.parse(localStorage.getItem('cr_clan_cache') || 'null')?.data;
+        const mine = window._currentProfile?.data?.clan?.tag;
+        if (clan?.location?.isCountry && clan.tag === mine) _metaCountry = String(clan.location.id);
+      } catch(e) {}
+    }
+  }
+  return _metaCountry;
+}
+window.setMetaCountry = function(v) {
+  _metaCountry = v;
+  try { localStorage.setItem(META_COUNTRY_KEY, v); } catch(e) {}
+  _metaShown = META_PAGE;
+  drawMeta();
+};
+async function loadCountryBoard(id) {
+  const b = _countryBoards[id] || (_countryBoards[id] = {});
+  if (b.loading) return;
+  b.loading = true;
+  try {
+    const res = await apiGet(`/locations/${encodeURIComponent(id)}/pathoflegend/players?limit=1000`);
+    // Same layout as /top's players: [tag, name, clan, rank, rating]
+    Object.assign(b, { players: (res.items || []).map(p => [p.tag, p.name, p.clan?.name || '', p.rank, p.eloRating]), savedAt: Date.now(), error: null });
+  } catch(e) {
+    b.error = e.status === 404 ? 'notfound' : e.message;
+  } finally {
+    b.loading = false;
+    if (currentScreen === 'meta' && _metaView === 'players' && metaCountry() === id) redrawMetaList();
+  }
+}
+function metaCountryHTML(id) {
+  const b = _countryBoards[id];
+  const loc = (loadLocations() || []).find(l => String(l.id) === id);
+  const where = loc ? `${countryFlag(loc.countryCode)} ${esc(loc.name)}` : 'this country';
+  if (!b?.players) {
+    if (b?.error) return `<div class="error-msg">${b.error === 'notfound' ? `No Path of Legends leaderboard for ${where} right now.` : esc(b.error)}</div>`;
+    loadCountryBoard(id);
+    return '<div class="spinner"></div>';
+  }
+  if (Date.now() - b.savedAt > COUNTRY_BOARD_MAX_AGE) loadCountryBoard(id);
+  if (!b.players.length) return `<div class="empty-msg">Nobody from ${where} is on the Path of Legends leaderboard yet.</div>`;
+  if (!_metaTop) loadMetaTop();  // for global ranks and main decks
+  const top = Object.fromEntries((_metaTop?.data?.players || []).map(p => [p[0], p]));
+  const mine = new Set(getSavedAccounts().map(a => a.tag));
+  const friends = new Set(getFriends().map(f => f.tag));
+  const q = _metaTopQuery.trim().toLowerCase();
+  const list = q ? b.players.filter(([, name, clan]) => (name || '').toLowerCase().includes(q) || (clan || '').toLowerCase().includes(q)) : b.players;
+  if (!list.length) return `<div class="empty-msg">No player from ${where} matches "${esc(_metaTopQuery.trim())}".</div>`;
+  const art = buildCardArtMap([]);
+  const shown = list.slice(0, _metaShown);
+  return (q ? '' : metaYourRankHTML(b.players, `in ${where}`, `${where}'s top ${fmtNum(b.players.length)}`))
+    + `<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">${where}'s Path of Legends leaderboard (Ultimate Champion), ${fmtNum(b.players.length)} players · live from the game. 🌍 = global rank, with the main deck for players in the global top 1,000.</div>`
+    + shown.map(([tag, name, clan, rank, rating]) => {
+      const label = mine.has(tag) ? 'You' : friends.has(tag) ? 'Friend' : '';
+      const g = top[tag], cards = g?.[5] ? metaDeckCards(g[5]) : [];
+      return `
+      <div class="deck-item" style="cursor:pointer" onclick="viewFriend('${esc(tag)}')">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+          <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <span class="text-muted" style="font-size:12px">#${rank}</span> <b>${esc(name || tag)}</b>
+            ${label ? `<span class="badge badge-gold" style="font-size:10px;margin-left:4px">${label}</span>` : ''}
+          </span>
+          <span style="white-space:nowrap;font-weight:700;color:var(--accent)">⚔️ ${fmtNum(rating)}</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${clan ? `🛡 ${esc(clan)}` : 'No clan'}${g ? ` · <span class="text-accent">🌍 #${fmtNum(g[3])}</span>${g[7] ? ` · ${g[7]} ranked games · ${Math.round(g[8] / g[7] * 100)}% wins` : ''}` : ''}
+        </div>
+        ${cards.length ? `<div style="display:grid;grid-template-columns:repeat(8,1fr);gap:3px;margin-top:8px">${cards.map(c => deckTileHTML(c.name, c.form, art[c.name], 'deck-list-tile')).join('')}</div>` : ''}
+      </div>`;
+    }).join('')
+    + (list.length > shown.length ? `<button class="btn btn-secondary" style="width:100%;margin-top:4px" onclick="metaShowMore()">Show more (${list.length - shown.length} more)</button>` : '');
+}
+
+// Where the loaded profile stands against the top 1,000 (or a country's board).
+// Only Ultimate Champion has a rating (leagueNumber 7); below that, how far there is to go.
+function metaYourRankHTML(players, where = 'in the world', board = 'the top 1,000') {
   const d = window._currentProfile?.data;
   if (!d || !players.length) return '';
   const r = d.currentPathOfLegendSeasonResult || {};
   const cutoff = players[players.length - 1][4];
   const box = html => `<div class="card" style="padding:12px;margin-bottom:10px;font-size:13px">${html}</div>`;
   const listed = players.find(p => p[0] === d.tag);
-  if (listed) return box(`🏅 <b>${esc(d.name)}</b> is <b class="text-accent">#${fmtNum(listed[3])}</b> in the world with ⚔️ ${fmtNum(listed[4])}.`);
+  if (listed) return box(`🏅 <b>${esc(d.name)}</b> is <b class="text-accent">#${fmtNum(listed[3])}</b> ${where} with ⚔️ ${fmtNum(listed[4])}.`);
   if (r.leagueNumber !== 7 || !r.trophies)
-    return box(`🏅 <b>${esc(d.name)}</b> is in ${r.leagueNumber ? esc(polLeagueName(r)) : 'no Path of Legends league yet'}. The top 1,000 starts at ⚔️ <b>${fmtNum(cutoff)}</b> in Ultimate Champion.`);
+    return box(`🏅 <b>${esc(d.name)}</b> is in ${r.leagueNumber ? esc(polLeagueName(r)) : 'no Path of Legends league yet'}. ${board.charAt(0).toUpperCase() + board.slice(1)} starts at ⚔️ <b>${fmtNum(cutoff)}</b> in Ultimate Champion.`);
   const rank = players.filter(p => p[4] > r.trophies).length + 1;
   return box(rank <= players.length
-    ? `🏅 With ⚔️ ${fmtNum(r.trophies)}, <b>${esc(d.name)}</b> would be <b class="text-accent">#${fmtNum(rank)}</b> in the world.`
-    : `🏅 <b>${esc(d.name)}</b> has ⚔️ ${fmtNum(r.trophies)}: <b class="text-accent">${fmtNum(cutoff - r.trophies + 1)}</b> short of the top 1,000 (⚔️ ${fmtNum(cutoff)}).`);
+    ? `🏅 With ⚔️ ${fmtNum(r.trophies)}, <b>${esc(d.name)}</b> would be <b class="text-accent">#${fmtNum(rank)}</b> ${where}.`
+    : `🏅 <b>${esc(d.name)}</b> has ⚔️ ${fmtNum(r.trophies)}: <b class="text-accent">${fmtNum(cutoff - r.trophies + 1)}</b> short of ${board} (⚔️ ${fmtNum(cutoff)}).`);
 }
 window.setMetaTopQuery = function(v) { _metaTopQuery = v; _metaShown = META_PAGE; redrawMetaList(); };
 
@@ -6890,6 +7130,87 @@ function clanStandingRow(c, rank, ourTag, extra = '', showBar = false) {
   </div>`;
 }
 
+// ── Forecast: where each clan ends today and when it finishes ──
+// During a war day `fame` is the boat's progress at the start of the day and
+// `periodPoints` the medals earned so far today; at the end of the day the
+// clans are ranked by medals, get placement progress (3000 / 1800 / … — read
+// from periodLogs) plus defense progress, and a clan finishes at 10,000.
+// periodLogs holds every finished day of this race and last week's: a clan's
+// expected day is its average day this week, else last week's.
+const RACE_DAY_PLACES = [3000, 1800, 1000, 600, 400];
+const RACE_MAX_DECKS = 50 * WAR_DECKS_PER_DAY;
+const RACE_DECK_MEDALS = 175;  // a guess for a clan with no decks played yet today
+function raceForecast(race) {
+  const dayIdx = (race.periodIndex || 0) % 7, weekStart = (race.periodIndex || 0) - dayIdx;
+  const logs = race.periodLogs || [];
+  const thisWeek = logs.filter(l => l.periodIndex >= weekStart);
+  const places = [...RACE_DAY_PLACES];
+  const recent = [...logs].sort((a, b) => b.periodIndex - a.periodIndex)[0];
+  (recent?.items || []).forEach(i => { if (i.pointsEarned && i.progressEarned && i.endOfDayRank < places.length) places[i.endOfDayRank] = i.progressEarned; });
+  const clans = race.clans.map(c => {
+    const pick = (thisWeek.length ? thisWeek : logs).map(l => l.items.find(i => i.clan?.tag === c.tag)).filter(Boolean);
+    const avg = f => pick.length ? pick.reduce((s, i) => s + f(i), 0) / pick.length : null;
+    const decks = (c.participants || []).reduce((s, p) => s + (p.decksUsedToday || 0), 0);
+    const today = c.periodPoints || 0;
+    const perDeck = decks ? today / decks : RACE_DECK_MEDALS;
+    const avgDay = avg(i => i.pointsEarned);
+    const expected = Math.min(Math.max(today, avgDay ?? today), today + (RACE_MAX_DECKS - decks) * perDeck);
+    return { c, decks, today, perDeck, expected, defense: avg(i => i.progressEndOfDay - i.progressStartOfDay - i.progressEarned) || 0,
+      dayProgress: avg(i => i.progressEndOfDay - i.progressStartOfDay), finished: raceFinished(c) };
+  });
+  // Today's placement by expected medals, then the remaining days at each clan's average
+  [...clans].sort((a, b) => b.expected - a.expected).forEach((x, i) => {
+    x.place = i;
+    x.placePts = x.expected > 0 ? places[i] : 0;  // a clan that plays no decks gets no placement
+    x.endToday = x.finished ? RACE_FINISH_FAME : Math.min(RACE_FINISH_FAME, (x.c.fame || 0) + x.placePts + x.defense);
+    x.finishDay = x.finished ? 0 : x.endToday >= RACE_FINISH_FAME ? dayIdx - 2 : null;
+    let p = x.endToday;
+    for (let d = dayIdx + 1; d <= 6 && x.finishDay == null; d++) {
+      p += x.dayProgress ?? x.placePts + x.defense;
+      if (p >= RACE_FINISH_FAME) x.finishDay = d - 2;
+    }
+    x.endWeek = Math.min(RACE_FINISH_FAME, p);
+  });
+  return { clans, dayIdx };
+}
+function raceForecastHTML(race, tag) {
+  const isColosseum = race.periodType === 'colosseum';
+  const { clans, dayIdx } = raceForecast(race);
+  const ours = clans.find(x => x.c.tag === tag);
+  const byToday = [...clans].sort((a, b) => b.today - a.today);
+  // Decks to pass the clan just ahead today, at our medals per deck so far
+  let pass = '';
+  if (ours) {
+    const i = byToday.indexOf(ours), ahead = byToday[i - 1];
+    const left = Math.max(0, _clanMembers.length * WAR_DECKS_PER_DAY - ours.decks);
+    if (!ahead) pass = `🥇 <b>${esc(ours.c.name)}</b> leads today${byToday[1] ? ` by ${fmtNum(ours.today - byToday[1].today)} medals` : ''}.`;
+    else {
+      const need = Math.ceil((ahead.today - ours.today + 1) / Math.max(ours.perDeck, 1));
+      pass = `⚔️ <b>${fmtNum(need)}</b> more deck${need === 1 ? '' : 's'} (at ~${fmtNum(Math.round(ours.perDeck))} medals each) would pass <b>${esc(ahead.c.name)}</b> today`
+        + ` — ${fmtNum(left)} left in the clan${need > left ? ', <span class="text-red">not enough on its own</span>' : ''}.`;
+    }
+  }
+  const order = isColosseum ? byToday
+    : [...clans].sort((a, b) => (a.finishDay ?? 99) - (b.finishDay ?? 99) || b.endWeek - a.endWeek || b.expected - a.expected);
+  const lastDay = 4, today = dayIdx - 2;
+  const finishText = x => x.finished ? '<span class="text-green">🏁 finished</span>'
+    : x.finishDay == null ? `<span class="text-muted">~${fmtNum(Math.round(x.endWeek))} by day ${lastDay}</span>`
+    : `<span class="text-accent">🏁 ${x.finishDay === today ? 'today' : x.finishDay === today + 1 ? 'tomorrow' : `day ${x.finishDay}`}</span>`;
+  return `
+    <div class="card">
+      <h3 style="margin-bottom:6px">📈 Forecast</h3>
+      ${pass ? `<div style="font-size:13px;margin-bottom:8px">${pass}</div>` : ''}
+      ${order.map(x => `<div class="stat-row" style="${x === ours ? 'background:rgba(232,184,75,0.08);border-radius:8px;padding-left:6px;padding-right:6px' : ''}">
+        <span class="stat-label" style="min-width:0;flex:1">
+          <span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${x === ours ? 'color:var(--accent);font-weight:700' : 'color:var(--text)'}">${esc(x.c.name)}</span>
+          <span style="font-size:11px">Today ${fmtNum(x.today)} medals · ${x.decks} deck${x.decks === 1 ? '' : 's'} · ~${fmtNum(Math.round(x.expected / 100) * 100)} expected</span>
+        </span>
+        <span style="font-size:12px;flex-shrink:0;margin-left:8px;text-align:right">${isColosseum ? `#${byToday.indexOf(x) + 1} today` : finishText(x)}</span>
+      </div>`).join('')}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Expected: medals so far today or the clan's average war day${isColosseum ? '' : ' this race (else last week), placed by that; later days at its average boat progress'} — a guide, not a promise.</div>
+    </div>`;
+}
+
 function riverRaceHTML(race, tag) {
   if (!race) return '<div class="empty-msg">River Race data isn\'t available for this clan right now.</div>';
   if (!race.clans?.length) return '<div class="empty-msg">This clan isn\'t in a River Race right now.</div>';
@@ -6908,6 +7229,7 @@ function riverRaceHTML(race, tag) {
       ${standings.map((c, i) => clanStandingRow(c, i + 1, tag, '', !isColosseum)).join('')}
       ${!isColosseum ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">The race finishes at ${fmtNum(RACE_FINISH_FAME)} fame.</div>` : ''}
     </div>
+    ${race.periodType !== 'training' && (race.periodIndex || 0) % 7 >= 3 ? raceForecastHTML(race, tag) : ''}
     <div class="card">
       <h3 style="margin-bottom:6px">🃏 Member Attacks</h3>
       <div id="war-members">${warMembersHTML(ours, race)}</div>
@@ -7067,7 +7389,7 @@ if (_savedTag) {
     _startup = loadPlayer(_savedTag);  // nothing cached to show — just load it
   }
 }
-_startup.then(takeSharedDeck);
+_startup.then(() => { takeStartScreen(); takeSharedDeck(); });
 
 // Android keeps an installed app alive in the background, so reopening it usually
 // resumes this page rather than reloading it. Refresh on foreground too, otherwise

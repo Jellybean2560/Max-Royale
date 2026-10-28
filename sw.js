@@ -1,4 +1,4 @@
-const CACHE = 'max-royale-v5';
+const CACHE = 'max-royale-v6';
 const SHELL = ['./', 'icon.png', 'manifest.json'];
 
 // Card, evolution, hero and badge art lives on other hosts and is kept in its own

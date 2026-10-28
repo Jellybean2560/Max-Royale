@@ -30,5 +30,59 @@
       "text": "text",
       "url": "url"
     }
-  }
+  },
+  "shortcuts": [
+    {
+      "name": "Meta",
+      "short_name": "Meta",
+      "description": "Top-player decks and cards",
+      "url": "/Max-Royale/?screen=meta",
+      "icons": [
+        {
+          "src": "icon.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Calculator",
+      "short_name": "Calculator",
+      "description": "Upgrade cost calculator",
+      "url": "/Max-Royale/?screen=calc",
+      "icons": [
+        {
+          "src": "icon.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Friends",
+      "short_name": "Friends",
+      "description": "Your saved friends",
+      "url": "/Max-Royale/?screen=friends",
+      "icons": [
+        {
+          "src": "icon.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Clan",
+      "short_name": "Clan",
+      "description": "Clan, River Race and war history",
+      "url": "/Max-Royale/?screen=clan",
+      "icons": [
+        {
+          "src": "icon.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ]
 }
