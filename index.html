@@ -1238,7 +1238,7 @@ function renderSavedAccounts() {
     ${list.length ? `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
       <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Accounts</span>
-      <span onclick="toggleAccountsEdit(event)" style="cursor:pointer;font-size:14px;opacity:${_accountsEditMode?1:0.6}" title="Edit accounts">⚙️</span>
+      <span onclick="toggleAccountsEdit(event)" style="cursor:pointer;font-size:14px;opacity:${_accountsEditMode?1:0.6}" title="Edit accounts &amp; export">⚙️</span>
     </div>
     <div style="display:flex;flex-direction:column;gap:6px">
       ${list.map(a => `
@@ -1261,8 +1261,76 @@ function renderSavedAccounts() {
     <div class="flex-row">
       <button class="btn btn-secondary btn-sm" style="flex:1" onclick="exportBackup()">💾 Save</button>
       <button class="btn btn-secondary btn-sm" style="flex:1" onclick="document.getElementById('backup-file').click()">📂 Restore</button>
-    </div>`;
+    </div>
+    ${_accountsEditMode && window._currentProfile?.data ? `
+    <div style="border-top:1px solid var(--border);margin:12px 0 10px"></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Export ${esc(window._currentProfile.data.name)} as a spreadsheet (CSV)</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+      <button class="btn btn-secondary btn-sm" style="justify-content:center;padding:6px 4px" onclick="exportCSV('battles', event)">⚔️ Battles</button>
+      <button class="btn btn-secondary btn-sm" style="justify-content:center;padding:6px 4px" onclick="exportCSV('decks', event)">🃏 Decks</button>
+      <button class="btn btn-secondary btn-sm" style="justify-content:center;padding:6px 4px" onclick="exportCSV('opponents', event)">🎯 Opp. cards</button>
+    </div>` : ''}`;
 }
+
+// ── CSV export of the loaded profile: the battle log, the saved deck history and
+// the opponent-card record. Written the way the device's Excel reads CSV: with
+// a decimal comma (Belgium, the Netherlands, …) columns are split by semicolons
+// and decimals use a comma, else commas and points. A BOM so it reads as UTF-8 ──
+const CSV_DECIMAL = (1.5).toLocaleString().includes(',') ? ',' : '.';
+const CSV_SEP = CSV_DECIMAL === ',' ? ';' : ',';
+const csvNum = (n, digits) => n.toFixed(digits).replace('.', CSV_DECIMAL);
+function csvFile(name, rows) {
+  const cell = v => { const t = v == null ? '' : String(v); return /[",;\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+  const blob = new Blob(['\ufeff' + rows.map(r => r.map(cell).join(CSV_SEP)).join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+window.exportCSV = function(kind, ev) {
+  if (ev) ev.stopPropagation();
+  const p = window._currentProfile;
+  if (!p?.data) return;
+  const { data, battles } = p;
+  const slug = (data.name || data.tag).replace(/[^\w-]+/g, '_');
+  const day = new Date().toISOString().slice(0, 10);
+  const deckText = cards => (cards || []).map(c => { const v = cardVariant(c); return v ? `${c.name} (${v})` : c.name; }).join(', ');
+  const pct = (w, n) => n ? csvNum(w / n * 100, 1) : '';
+  if (kind === 'battles') {
+    const rows = [['Time', 'Mode', 'Type', 'Result', 'Crowns', 'Opponent crowns', 'Trophy change', 'Starting trophies / rating', 'Elixir leaked', 'Teammate', 'Opponents', 'Opponent tags', 'Deck', 'Opponent deck', 'Opponent clan']];
+    (battles || []).forEach(b => {
+      const me = (b.team || []).find(x => x.tag === data.tag) || (b.team || [])[0] || {};
+      const mate = (b.team || []).find(x => x !== me);
+      const opp = b.opponent || [];
+      rows.push([parseApiTime(b.battleTime).toISOString(), battleModeLabel(b), b.type, battleResult(b), me.crowns ?? '', opp[0]?.crowns ?? '',
+        me.trophyChange ?? '', me.startingTrophies ?? '', me.elixirLeaked != null ? csvNum(me.elixirLeaked, 2) : '',
+        mate?.name || '', opp.map(x => x.name).join(' & '), opp.map(x => x.tag).join(' & '),
+        deckText(me.cards), opp.map(x => deckText(x.cards)).join(' | '), opp[0]?.clan?.name || '']);
+    });
+    csvFile(`max-royale-${slug}-battles-${day}.csv`, rows);
+  } else if (kind === 'decks') {
+    const rows = [['Deck', 'Evolutions / heroes', 'Games', 'Wins', 'Losses', 'Draws', 'Win rate %', 'Avg elixir', 'Last played', 'Modes']];
+    Object.values(buildDeckMapFromBattles(battles || [], data.tag))
+      .sort((a, b) => (b.wins + b.losses + b.draws) - (a.wins + a.losses + a.draws))
+      .forEach(d => {
+        const n = d.wins + d.losses + d.draws;
+        rows.push([deckSlotNames(d.cards, d.variants).join(', '), Object.entries(d.variants || {}).map(([k, v]) => `${k} (${v})`).join(', '),
+          n, d.wins, d.losses, d.draws, pct(d.wins, n), d.elixir.length ? csvNum(d.elixir[0], 1) : '',
+          d.last ? parseApiTime(d.last).toISOString() : '', (d.modes || []).join(', ')]);
+      });
+    csvFile(`max-royale-${slug}-decks-${day}.csv`, rows);
+  } else {
+    const m = matchupEntry(data, battles || []);
+    const rows = [['Opponent card', 'Games', 'Wins', 'Losses', 'Draws', 'Win rate %']];
+    Object.entries(m.cards || {}).map(([name, r]) => [name, r[0] + r[1] + r[2], ...r])
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([name, n, w, l, dr]) => rows.push([name, n, w, l, dr, pct(w, n)]));
+    csvFile(`max-royale-${slug}-opponent-cards-${day}.csv`, rows);
+  }
+};
 
 // ── Backup / restore ──
 // Deck history, matchups and suggested friends only exist on this device, so a
@@ -2342,6 +2410,7 @@ function renderProfile(data, battles) {
     </div>
     </div>
     <div style="height:12px"></div>
+    <div id="p-war-note"></div>
 
     <div id="tab-overview" class="tab-pane active">${renderOverview(data, battles)}</div>
     <div id="tab-cards" class="tab-pane" style="display:none">${renderCardsPane(data)}</div>
@@ -2355,7 +2424,46 @@ function renderProfile(data, battles) {
   `;
   updateTabFade(el.querySelector('.tab-bar'));
   updateProfileAge();
+  warReminder(data);
 }
+
+// ── War-deck reminder: on a war day, a note under the profile header while the
+// loaded profile still has war decks to play for their clan today. Reads the
+// clan's /currentriverrace (cached CLAN_WAR_TTL_MS like the Clan screen) ──
+const WAR_DAY_END_UTC = [9, 45];  // a war day ended ~09:46 UTC when checked (Oct 2026)
+async function warReminder(data) {
+  const clanTag = data.clan?.tag;
+  const slot = () => document.getElementById('p-war-note');
+  if (!clanTag) { if (slot()) slot().innerHTML = ''; return; }
+  let war;
+  try { war = await loadClanWar(clanTag); } catch(e) { return; }
+  const el = slot();
+  if (!el || window._currentProfile?.data?.tag !== data.tag) return;
+  const race = war?.race;
+  if (!race || race.periodType === 'training' || (race.periodIndex || 0) % 7 < 3) { el.innerHTML = ''; return; }
+  const ours = (race.clans || []).find(c => c.tag === clanTag) || race.clan;
+  if (!ours || raceFinished(ours) && race.periodType !== 'colosseum') { el.innerHTML = ''; return; }
+  const me = (ours.participants || []).find(p => p.tag === data.tag);
+  const left = WAR_DECKS_PER_DAY - (me?.decksUsedToday || 0);
+  if (left <= 0) { el.innerHTML = ''; return; }
+  const now = new Date(), end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), ...WAR_DAY_END_UTC));
+  if (end <= now) end.setUTCDate(end.getUTCDate() + 1);
+  el.innerHTML = `<div class="card" onclick="openClanWar('${esc(clanTag)}')" style="cursor:pointer;padding:10px 12px;font-size:13px;border-color:var(--accent);display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span>⚔️ <b>${left} war deck${left === 1 ? '' : 's'} left today</b> for ${esc(ours.name || data.clan.name)} <span class="text-muted">· ${raceDayLabel(race)} · ends in ~${fmtDuration(end - now)}</span></span>
+      <span class="text-muted" style="flex-shrink:0">›</span>
+    </div>`;
+}
+// Opens the Clan screen on a clan's River Race tab
+window.openClanWar = async function(tag) {
+  if (document.getElementById('friend-modal').style.display === 'block') closeFriendModal();
+  goTo('clan');
+  setClanView('clan');
+  if (_clanTag !== tag || !document.getElementById('clan-tabs')) {
+    document.getElementById('clan-tag').value = tag;
+    await loadClan();
+  }
+  if (_clanTag === tag) clanTab('war');
+};
 
 // King level and collection level as the profile header shows them: CL is every
 // card's level, +5 per evolution and per hero, plus the tower troops' levels.
@@ -4425,9 +4533,100 @@ function renderOverview(data, battles, scope = 'p') {
           </select>
           <div id="${scope}-suggested-output">${buildSuggestedOutput(ctx)}</div>
         </div>
-        ${renderUpgradePlanner(ctx)}`;
+        ${renderUpgradePlanner(ctx)}
+        ${goldBudgetHTML(data, battles, scope, ctx.decks)}`;
     })()}`;
 }
+
+// ── Gold budget: what to upgrade with the gold you have. One level at a time,
+// only with cards already owned: for a deck the lowest card first (the deck's
+// weakest link), for collection level the cheapest level-up first (each is +1).
+// The amount is remembered in cr_budget_gold ──
+const BUDGET_KEY = 'cr_budget_gold';
+const _budgetState = {};
+function goldBudgetHTML(data, battles, scope, decks) {
+  let gold = '';
+  try { gold = localStorage.getItem(BUDGET_KEY) || ''; } catch(e) {}
+  const cur = (data.currentDeck || []).map(c => c.name);
+  const prev = _budgetState[scope];
+  const focus = prev?.tag === data.tag ? prev.focus : cur.length ? 'current' : 'cl';
+  _budgetState[scope] = { tag: data.tag, data, decks, current: cur, focus, gold };
+  const selStyle = "flex:1;min-width:0;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:20px;padding:6px 12px;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;appearance:none;-webkit-appearance:none;text-align:center";
+  return `
+    <div class="card">
+      <h3 style="margin-bottom:6px">💰 Gold Budget</h3>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">What to upgrade with the gold ${scope === 'p' ? 'you have' : 'they have'} — only with cards already collected</p>
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <input type="number" inputmode="numeric" min="0" step="1000" placeholder="Gold, e.g. 50000" value="${esc(gold)}" oninput="setBudgetGold('${scope}', this.value)" style="flex:1;min-width:120px">
+        <select onchange="setBudgetFocus('${scope}', this.value)" style="${selStyle}">
+          ${cur.length ? `<option value="current"${focus === 'current' ? ' selected' : ''}>Current deck</option>` : ''}
+          ${decks.map((d, i) => `<option value="deck-${i}"${focus === `deck-${i}` ? ' selected' : ''}>Deck #${i + 1} · ${d.wins}W ${d.losses}L (${d.cards.slice(0, 2).map(esc).join(', ')}…)</option>`).join('')}
+          <option value="cl"${focus === 'cl' ? ' selected' : ''}>Most collection levels</option>
+        </select>
+      </div>
+      <div id="${scope}-budget-output">${goldBudgetOutput(scope)}</div>
+    </div>`;
+}
+function goldBudgetPlan(cards, gold, byLowest) {
+  // Per card: its level, cards left over and the next step
+  const st = cards.map(c => {
+    const r = (c.rarity || 'common').toLowerCase();
+    return { c, r, from: toDisplayLevel(r, c.level), lv: toDisplayLevel(r, c.level), count: c.count || 0, gold: 0 };
+  });
+  const next = x => {
+    const step = (LEVEL_DATA[x.r] || [])[x.lv - (MIN_LEVEL[x.r] || 1)];
+    return x.lv < MAX_LEVEL && step && x.count >= step.cards ? step : null;
+  };
+  let left = gold, spent = 0, steps = 0;
+  for (;;) {
+    const options = st.map(x => ({ x, step: next(x) })).filter(o => o.step && o.step.gold <= left);
+    if (!options.length) break;
+    options.sort((a, b) => byLowest ? (a.x.lv - b.x.lv) || (a.step.gold - b.step.gold) : (a.step.gold - b.step.gold) || (a.x.lv - b.x.lv));
+    const { x, step } = options[0];
+    x.lv++; x.count -= step.cards; x.gold += step.gold;
+    left -= step.gold; spent += step.gold; steps++;
+  }
+  const blocked = st.map(x => ({ x, step: (LEVEL_DATA[x.r] || [])[x.lv - (MIN_LEVEL[x.r] || 1)] }))
+    .filter(o => o.x.lv < MAX_LEVEL && o.step && o.x.count >= o.step.cards).sort((a, b) => a.step.gold - b.step.gold)[0];
+  return { ups: st.filter(x => x.lv > x.from), spent, left, steps, nextGold: blocked?.step.gold || 0 };
+}
+function goldBudgetOutput(scope) {
+  const st = _budgetState[scope];
+  if (!st) return '';
+  const gold = parseInt(st.gold, 10) || 0;
+  let names = null;
+  if (st.focus === 'current') names = st.current;
+  else if (st.focus.startsWith('deck-')) names = st.decks[parseInt(st.focus.slice(5), 10)]?.cards || [];
+  const set = names ? new Set(names) : null;
+  const cards = (st.data.cards || []).filter(c => !set || set.has(c.name));
+  if (!gold) return '<div class="empty-msg" style="padding:8px 0;font-size:12px">Enter how much gold you have.</div>';
+  const plan = goldBudgetPlan(cards, gold, !!set);
+  if (!plan.ups.length) return `<div class="empty-msg" style="padding:8px 0;font-size:12px">${plan.nextGold ? `Not enough for any upgrade here — the cheapest ready one costs ${fmtNum(plan.nextGold)} 💰.` : 'No card here has enough cards for its next level yet.'}</div>`;
+  plan.ups.sort((a, b) => b.gold - a.gold);
+  return plan.ups.map(x => `<div class="stat-row">
+      <span class="stat-label" style="display:flex;align-items:center;gap:6px;min-width:0">
+        ${x.c.iconUrls?.medium ? `<img src="${x.c.iconUrls.medium}" alt="" style="width:22px;height:28px;object-fit:contain;flex-shrink:0">` : ''}
+        <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(x.c.name)} <span style="color:var(--muted);font-size:11px">(Lv ${x.from}→${x.lv})</span></span>
+      </span>
+      <span class="stat-value text-accent" style="flex-shrink:0">${fmtNum(x.gold)} 💰</span>
+    </div>`).join('')
+    + `<div class="stat-row"><span class="stat-label">Spent</span><strong>${fmtNum(plan.spent)} 💰 <span class="text-muted" style="font-weight:400">· ${fmtNum(plan.left)} left · +${plan.steps} level${plan.steps === 1 ? '' : 's'}</span></strong></div>`
+    + (plan.nextGold ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">The next ready upgrade would cost ${fmtNum(plan.nextGold)} 💰.</div>` : '')
+    + `<div style="font-size:11px;color:var(--muted);margin-top:4px">${set ? 'Lowest card first, so the deck levels up evenly' : 'Cheapest level-ups first — each one is +1 collection level'} · from the upgrade table, so approximate</div>`;
+}
+window.setBudgetGold = function(scope, v) {
+  const st = _budgetState[scope]; if (!st) return;
+  st.gold = String(v || '').replace(/\D/g, '');
+  try { localStorage.setItem(BUDGET_KEY, st.gold); } catch(e) {}
+  const el = document.getElementById(`${scope}-budget-output`);
+  if (el) el.innerHTML = goldBudgetOutput(scope);
+};
+window.setBudgetFocus = function(scope, v) {
+  const st = _budgetState[scope]; if (!st) return;
+  st.focus = v;
+  const el = document.getElementById(`${scope}-budget-output`);
+  if (el) el.innerHTML = goldBudgetOutput(scope);
+};
 
 // Overview numbers open the list they count: "Upgradable now 54" → the Cards tab
 // filtered to exactly those 54 (no leftover rarity or search filter).
@@ -7817,7 +8016,10 @@ function riverRaceHTML(race, tag) {
         <h3 style="margin:0">⛵ River Race</h3>
         <span style="font-size:12px;color:var(--muted)">Week ${(race.sectionIndex||0) + 1} · ${raceDayLabel(race)}</span>
       </div>
-      ${standings.map((c, i) => clanStandingRow(c, i + 1, tag, '', !isColosseum)).join('')}
+      ${standings.map((c, i) => c.tag === tag ? clanStandingRow(c, i + 1, tag, '', !isColosseum) : `
+        <div onclick="toggleCardMax('rival-${i}')" style="cursor:pointer" title="Scout this clan">${clanStandingRow(c, i + 1, tag, `<span id="rival-${i}-toggle" data-closed="▼" data-open="▲" style="font-size:10px;color:var(--muted)">▼</span>`, !isColosseum)}</div>
+        <div id="rival-${i}-max" style="display:none">${rivalScoutHTML(c, race)}</div>`).join('')}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Tap another clan to scout it.</div>
       ${!isColosseum ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">The race finishes at ${fmtNum(RACE_FINISH_FAME)} fame.</div>` : ''}
     </div>
     ${race.periodType !== 'training' && (race.periodIndex || 0) % 7 >= 3 ? raceForecastHTML(race, tag) : ''}
@@ -7825,6 +8027,29 @@ function riverRaceHTML(race, tag) {
       <h3 style="margin-bottom:6px">🃏 Member Attacks</h3>
       <div id="war-members">${warMembersHTML(ours, race)}</div>
     </div>`;
+}
+
+// A rival clan in the race: its war decks today and this week, from its race
+// participants (members who haven't played have no entry, so "of N" is only
+// those seen), its top attackers and a button into its Clan screen
+function rivalScoutHTML(c, race) {
+  // The list also holds past members with nothing played; only players who attacked count
+  const parts = (c.participants || []).filter(p => p.decksUsed > 0 || p.fame > 0);
+  const today = parts.reduce((s, p) => s + (p.decksUsedToday || 0), 0);
+  const attacked = parts.filter(p => p.decksUsedToday > 0).length;
+  const week = parts.reduce((s, p) => s + (p.decksUsed || 0), 0);
+  const warDay = race.periodType !== 'training' && (race.periodIndex || 0) % 7 >= 3;
+  const top = [...parts].sort((a, b) => (b.fame || 0) - (a.fame || 0)).slice(0, 5);
+  return `<div style="margin:2px 0 8px;padding:8px 10px;background:var(--surface2);border-radius:10px;font-size:12px">
+    ${warDay ? ovRow('Decks used today', `${fmtNum(today)} <span class="text-muted">· ${attacked} player${attacked === 1 ? '' : 's'}${c.periodPoints && today ? ` · ~${fmtNum(Math.round(c.periodPoints / today))} medals each` : ''}</span>`) : ''}
+    ${ovRow('Decks this week', `${fmtNum(week)} <span class="text-muted">· ${parts.length} player${parts.length === 1 ? '' : 's'} took part</span>`)}
+    ${top.length ? `<div style="margin:6px 0 2px;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.5px">Top attackers</div>
+    ${top.map(p => `<div class="stat-row" style="cursor:pointer" onclick="event.stopPropagation();viewFriend('${esc(p.tag)}')">
+      <span class="stat-label" style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${esc(p.name)}</span>
+      <span style="flex-shrink:0;margin-left:8px">⭐ ${fmtNum(p.fame || 0)}${warDay ? ` · <span style="color:${p.decksUsedToday >= 4 ? 'var(--green)' : p.decksUsedToday ? 'var(--accent)' : 'var(--red)'}">${p.decksUsedToday || 0}/4</span>` : ''}</span>
+    </div>`).join('')}` : ''}
+    <button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px;justify-content:center" onclick="event.stopPropagation();openClanWar('${esc(c.tag)}')">🛡 Open ${esc(c.name)}</button>
+  </div>`;
 }
 
 // Current members joined with their race entries — a member who hasn't played
