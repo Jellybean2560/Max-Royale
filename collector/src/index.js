@@ -39,6 +39,8 @@ const TOP_DECKS = 300;              // enough to search by card and find similar
 // kept between 1 and 24 hours — every few hours while the window is young and
 // runs are cheap, less often once a full week (and the week before) is read
 const STATS_SHARE = 1.1e6, TOP_SHARE = 0.45e6;
+const DECK_DAYS = 8;                // deck_days keeps each day's top decks this long, for rising / new decks
+const GAP_STEP = 40, GAPS = 8;      // rating gap buckets for the skill adjustment: < -120, -120…-80, …, ≥ +120
 const HISTORY_DAYS = 63;            // /history keeps a card tally per day this long: two 4-week blocks for month vs month
 const ACTIVITY_DAYS = 35;
 const RATING_DAYS = 9;              // daily leaderboard ratings kept, for a week's climb           // matches per UTC hour, tallied as they're saved
@@ -308,20 +310,31 @@ async function computeStats(env, now) {
   };
   const cx = side => counters ? `CASE WHEN ${side === 'a' ? 'da' : 'db'} IN (${topKeys.map(k => `'${k}'`).join(',')}) THEN ',' || ${side === 'a' ? 'db' : 'da'} END` : 'NULL';
   const bandsOf = col => `json_array(${[0, 1, 2, 3].map(i => unpack(col, i)).join(', ')})`;
+  // Rating gap (own rating − opponent's, both before the match) → bucket 0…GAPS-1
+  const gap = (a, b) => `CASE WHEN ${a} IS NULL OR ${b} IS NULL THEN NULL ELSE MIN(${GAPS - 1}, MAX(0, (${a} - ${b} + ${GAP_STEP * GAPS / 2} + ${GAP_STEP * 100}) / ${GAP_STEP} - 100)) END`;
+  // Per deck: [games per gap bucket ×8, wins per gap bucket ×8, close wins, close losses, three-crowned losses]
+  const gapVals = (fn = x => x) => ['z', 'y'].flatMap(c => [0, 1].flatMap(j => [0, 1, 2, 3].map(i => fn(unpack(`${c}${j}`, i)))));
+  const extraOf = `json_array(${gapVals().join(', ')}, ${[0, 1, 2].map(i => unpack('cg', i)).join(', ')})`;
   // full: the current window, with everything; else the week before, for trends (cards only)
   const grouped = full => `
     WITH s AS (
       SELECT pa AS tag, da AS deck, ca > cb AS w, ca = cb AS d, ca > cb AND ca = 3 AS t, ta AS tt,
-             ${dmg('tb', 'kb', 'sb')} AS dealt, ${dmg('ta', 'ka', 'sa')} AS taken, la AS leak, ra AS rt, ${full ? cx('a') : 'NULL'} AS cx
+             ${dmg('tb', 'kb', 'sb')} AS dealt, ${dmg('ta', 'ka', 'sa')} AS taken, la AS leak, ra AS rt, ${full ? cx('a') : 'NULL'} AS cx,
+             ${gap('ra', 'rb')} AS gb, ca - cb AS mg, cb AS oc
         FROM matches WHERE time >= ?1 AND time < ?2
       UNION ALL
-      SELECT pb, db, cb > ca, ca = cb, cb > ca AND cb = 3, tb, ${dmg('ta', 'ka', 'sa')}, ${dmg('tb', 'kb', 'sb')}, lb, rb, ${full ? cx('b') : 'NULL'}
+      SELECT pb, db, cb > ca, ca = cb, cb > ca AND cb = 3, tb, ${dmg('ta', 'ka', 'sa')}, ${dmg('tb', 'kb', 'sb')}, lb, rb, ${full ? cx('b') : 'NULL'},
+             ${gap('rb', 'ra')}, cb - ca, ca
         FROM matches WHERE time >= ?1 AND time < ?2),
     g AS MATERIALIZED (
       SELECT deck, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d, SUM(t) AS t, COUNT(DISTINCT tag) AS p,
              SUM(dealt) AS dealt, SUM(taken) AS taken, COUNT(dealt) AS hn, SUM(leak) AS leak, COUNT(leak) AS ln,
              /* games and wins at #1–100 rating, then at #101–1000 */
              SUM(CASE WHEN rt >= ${bands.hi} THEN 1 + (w << ${BITS}) WHEN rt >= ${bands.lo} THEN (1 << ${2 * BITS}) + (w << ${3 * BITS}) END) AS bd
+             /* games (z) and wins (y) per rating gap bucket, four buckets to a column */
+             ${[0, 1].map(j => `, SUM(CASE WHEN gb / 4 = ${j} THEN 1 << ((gb % 4) * ${BITS}) END) AS z${j}, SUM(CASE WHEN gb / 4 = ${j} AND w THEN 1 << ((gb % 4) * ${BITS}) END) AS y${j}`).join('')}
+             /* close games: won by one crown (not three), lost by one (not to three), lost to three crowns */
+             , SUM(CASE WHEN mg = 1 AND oc < 2 THEN 1 WHEN mg = -1 AND oc < 3 THEN 1 << ${BITS} WHEN mg < 0 AND oc = 3 THEN 1 << ${2 * BITS} ELSE 0 END) AS cg
              /* per tower troop: games, wins, three-crown wins */
              ${troopIds.map(id => `, SUM(CASE WHEN tt = ${id} THEN 1 + (w << ${BITS}) + (t << ${2 * BITS}) END) AS q${id}`).join('')}
              /* per opponent card: games against it (o) and wins (v) */
@@ -330,13 +343,17 @@ async function computeStats(env, now) {
   const cardsOfG = `
     SELECT 'c' AS kind, j.value AS k, SUM(g.n) AS n, SUM(g.w) AS w, SUM(g.d) AS d, SUM(g.t) AS t, NULL AS p,
            NULL AS dealt, NULL AS taken, NULL AS hn, NULL AS leak, NULL AS ln, NULL AS tr,
-           json_array(${[0, 1, 2, 3].map(i => `SUM(${unpack('g.bd', i)})`).join(', ')}) AS bd, NULL AS cn, NULL AS cw
+           json_array(${[0, 1, 2, 3].map(i => `SUM(${unpack('g.bd', i)})`).join(', ')}) AS bd, NULL AS cn, NULL AS cw, NULL AS ex
     FROM g, json_each('["' || replace(g.deck, ',', '","') || '"]') AS j GROUP BY j.value`;
   // Tower troops: one row off the deck grouping, its totals packed as JSON so it
   // fits the same columns (and statement) as the decks and cards
   const troopsOfG = troopIds.length ? `
     UNION ALL SELECT 'x', json_object(${troopIds.map(id => `'n${id}', SUM(${unpack(`q${id}`, 0)}), 'w${id}', SUM(${unpack(`q${id}`, 1)}), 't${id}', SUM(${unpack(`q${id}`, 2)})`).join(', ')}),
-      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM g` : '';
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM g` : '';
+  // Calibration for the skill adjustment: games and wins per rating gap bucket over every deck
+  const gapsOfG = `
+    UNION ALL SELECT 'z', json_array(${gapVals(v => `SUM(${v})`).join(', ')}),
+      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM g`;
   const troopsOfDeck = troopIds.length ? `json_array(${troopIds.map(id => [0, 1, 2].map(i => unpack(`q${id}`, i)).join(', ')).join(', ')})` : 'NULL';
   // MIN / MAX read one row each off the primary key; match counts come from the
   // card tally (every match is 2 decks × 8 cards) instead of another scan
@@ -346,9 +363,9 @@ async function computeStats(env, now) {
     // top decks and every card in one statement, off one grouping
     env.DB.prepare(`${grouped(true)}
       SELECT * FROM (SELECT 'd' AS kind, deck AS k, n, w, d, t, p, dealt, taken, hn, leak, ln, ${troopsOfDeck} AS tr, ${bandsOf('bd')} AS bd,
-                            ${counters ? `${cardArray('o')} AS cn, ${cardArray('v')} AS cw` : 'NULL AS cn, NULL AS cw'}
+                            ${counters ? `${cardArray('o')} AS cn, ${cardArray('v')} AS cw` : 'NULL AS cn, NULL AS cw'}, ${extraOf} AS ex
                      FROM g ORDER BY n DESC LIMIT ?3)
-      UNION ALL SELECT * FROM (${cardsOfG}) ${troopsOfG}`).bind(since, until, TOP_DECKS),
+      UNION ALL SELECT * FROM (${cardsOfG}) ${troopsOfG} ${gapsOfG}`).bind(since, until, TOP_DECKS),
     ...(havePrev ? [env.DB.prepare(`${grouped(false)} ${cardsOfG}`).bind(prevSince, since)] : []),
   ]);
   const [range, both, prev] = results;
@@ -358,6 +375,7 @@ async function computeStats(env, now) {
   const stored = await env.DB.batch([
     env.DB.prepare(`SELECT v FROM state WHERE k = 'history'`),
     env.DB.prepare(`SELECT v FROM state WHERE k = 'meta'`),
+    env.DB.prepare(`SELECT v FROM state WHERE k = 'deck_days'`),
   ]);
   const hist = JSON.parse(stored[0].results[0]?.v || '{"days":[]}');
   if (!hist.days.length) {
@@ -389,6 +407,25 @@ async function computeStats(env, now) {
     const a = JSON.parse(r.tr || '[]');
     return troopIds.map((id, i) => [id, a[3 * i] || 0, a[3 * i + 1] || 0, a[3 * i + 2] || 0]).filter(x => x[1] > 0);
   };
+  // Skill adjustment: the win rate at each rating gap, from every deck played
+  const zr = JSON.parse(both.results.find(r => r.kind === 'z')?.k || '[]');
+  const gapRates = Array.from({ length: GAPS }, (_, i) => [zr[i] || 0, zr[GAPS + i] || 0]);
+  const exOf = r => JSON.parse(r.ex || '[]');
+  // A deck's expected wins: its games at each gap × the win rate there
+  const expected = ex => {
+    let e = 0, n = 0;
+    for (let i = 0; i < GAPS; i++) if (ex[i] && gapRates[i][0]) { e += ex[i] * gapRates[i][1] / gapRates[i][0]; n += ex[i]; }
+    return [Math.round(e * 10) / 10, n];
+  };
+  // Top decks per day, for rising / new decks: the 7-day tally a week ago is
+  // the snapshot taken then. Seeded from the previous run's stats.
+  const deckDays = JSON.parse(stored[2].results[0]?.v || '{"days":[]}');
+  if (!deckDays.days.length && oldMeta?.decks && dayKey(oldMeta.updated) !== dayKey(now))
+    deckDays.days.push([oldMeta.updated, oldMeta.matches, oldMeta.decks.map(d => [d[0], d[1], d[2]])]);
+  deckDays.days = deckDays.days.filter(d => dayKey(d[0]) !== dayKey(now) && d[0] > now - DECK_DAYS * DAY)
+    .concat([[now, count(cards), decks.map(r => [r.k, r.n, r.w])]]);
+  // The snapshot closest to a week before (else the oldest there is)
+  const weekAgo = deckDays.days.filter(d => d[0] <= now - 6.5 * DAY).pop() || deckDays.days[0];
   const meta = {
     updated: now,
     next: now + refreshEvery(reads, STATS_SHARE),  // when these stats are recomputed
@@ -400,8 +437,14 @@ async function computeStats(env, now) {
     // [deck key, games, wins, draws, different players, three-crown wins,
     //  avg tower damage dealt, avg taken, avg elixir leaked, games with tower data,
     //  [[tower troop id, games, wins, three-crown wins]], rating bands]
-    decks: decks.map(r => [r.k, r.n, r.w, r.d, r.p, r.t, avg(r.dealt, r.hn), avg(r.taken, r.hn), avg(r.leak, r.ln), r.hn || 0,
-                           troopsOfRow(r), bandsOfRow(r)]),
+    //  [expected wins from the rating gaps, games with both ratings known],
+    //  [close wins, close losses, three-crowned losses]]
+    decks: decks.map(r => { const ex = exOf(r); return [r.k, r.n, r.w, r.d, r.p, r.t, avg(r.dealt, r.hn), avg(r.taken, r.hn), avg(r.leak, r.ln), r.hn || 0,
+                           troopsOfRow(r), bandsOfRow(r), expected(ex), ex.slice(2 * GAPS, 2 * GAPS + 3).map(v => v || 0)]; }),
+    // Win rate by rating gap (own − opponent's): [[games, wins]] per GAP_STEP bucket, from the lowest
+    gaps: { step: GAP_STEP, rates: gapRates },
+    // Top decks of the snapshot about a week before: { at, matches, decks: [[key, games, wins]] }
+    prev_decks: weekAgo && weekAgo[0] < now - DAY ? { at: weekAgo[0], matches: weekAgo[1], decks: weekAgo[2] } : null,
     // Rating bands: [games, wins] at #1–100 rating (≥ hi), then #101–1000 (≥ lo);
     // the rest of a deck's or card's games were below lo
     bands,
@@ -427,7 +470,7 @@ async function computeStats(env, now) {
   // ~200 KB, and the CPU limit is 10 ms.
   const counterJSON = counters ? `{"updated":${now},"cards":${JSON.stringify(cardIds)},"decks":[${
     decks.filter(r => r.cn).map(r => `[${JSON.stringify(r.k)},${r.cn},${r.cw}]`).join(',')}]}` : null;
-  await countReads(env, 'stats', now, reads, { stats_at: now, meta: JSON.stringify(meta), history: JSON.stringify(hist),
+  await countReads(env, 'stats', now, reads, { stats_at: now, meta: JSON.stringify(meta), history: JSON.stringify(hist), deck_days: JSON.stringify(deckDays),
     ...(counterJSON ? { counters: counterJSON } : {}), ...(seed ? { activity: JSON.stringify(act) } : {}) });
 }
 
@@ -478,7 +521,7 @@ async function prune(env, now) {
 }
 
 async function getState(env) {
-  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top', 'history', 'counters')`).all();
+  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top', 'history', 'counters', 'deck_days')`).all();
   return Object.fromEntries(results.map(r => [r.k, r.v]));
 }
 async function setState(env, values) {

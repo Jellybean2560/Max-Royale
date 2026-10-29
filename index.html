@@ -6288,7 +6288,7 @@ const META_MIN_DECK_GAMES = 10;     // win rate / 3-crown sorts need this many g
 const META_MIN_CARD_SHARE = 0.02;   // … and a card in 2% of decks
 const META_PAGE = 30;               // decks shown before "Show more"
 const META_SORTS = {
-  decks: { played: 'Most played', winrate: 'Best win rate', three: 'Most 3-crown wins' },
+  decks: { played: 'Most played', winrate: 'Best win rate', three: 'Most 3-crown wins', edge: 'Beats its ratings' },
   cards: { used: 'Most used', winrate: 'Best win rate', three: 'Most 3-crown wins', trend: 'Trending' },
   players: { rank: 'Rank', day: 'Climbing today', week: 'Climbing this week', fall: 'Falling this week' },
 };
@@ -6323,9 +6323,12 @@ function metaParsed(m) {
   const prev = m.prev?.matches ? Object.fromEntries(m.prev.cards.map(([k, n]) => [k, n / (m.prev.matches * 2)])) : null;
   _metaParsed = {
     updated: m.updated, catalog: allCards.length, totalDecks, hasPrev: !!prev,
-    decks: m.decks.map(([key, n, w, , players, three, dealt, taken, leak, hn, troops, bands]) => {
+    decks: m.decks.map(([key, n, w, dr, players, three, dealt, taken, leak, hn, troops, bands, exp, close]) => {
       const cards = metaDeckCards(key);
-      return { key, n, w, players, three: three || 0, cards, rate: w / Math.max(n, 1),
+      return { key, n, w, draws: dr || 0, players, three: three || 0, cards, rate: w / Math.max(n, 1),
+               // [expected wins from the rating gaps, games with both ratings] and
+               // [won by one crown, lost by one crown, lost to three] — from 29 Oct 2026
+               exp: exp?.[1] ? { e: exp[0], n: exp[1] } : null, close: close || null,
                dealt: dealt ?? null, taken: taken ?? null, leak: leak ?? null, hn: hn || 0,
                troops: (troops || []).map(([id, tn, tw, tt]) => ({ id, n: tn, w: tw, three: tt })), bands: metaBands(bands, n, w),
                names: cards.map(c => c.name), search: cards.map(c => c.name.toLowerCase()).join('|') };
@@ -6340,6 +6343,10 @@ function metaParsed(m) {
     towers: m.towers || null,
     ratingBands: m.bands || null,   // { hi: #100's rating, lo: #1000's }
     activity: m.activity || [],
+    gaps: m.gaps || null,           // { step, rates: [[games, wins]] per rating gap bucket }
+    // The top decks of about a week before, for new / rising decks
+    prevDecks: m.prev_decks?.matches ? { at: m.prev_decks.at, total: m.prev_decks.matches * 2,
+      by: Object.fromEntries(m.prev_decks.decks.map(([k, n, w]) => [k, { n, w }])) } : null,
   };
   return _metaParsed;
 }
@@ -6412,15 +6419,17 @@ function drawMeta() {
     return;
   }
   const P = metaParsed(m);
+  const hasExp = P.decks.some(d => d.exp);
   if (_metaSort.cards === 'trend' && !P.hasPrev) _metaSort.cards = 'used';
+  if (_metaSort.decks === 'edge' && !hasExp) _metaSort.decks = 'played';
   const dateOf = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
   // Collection began on m.started; older matches only came from the first logs
   // read, so until a full window has passed, say since when
   const young = m.started && Date.now() - m.started < m.window_days * 864e5;
   const view = _metaView, sort = _metaSort[view];
-  const sorts = view === 'cards' && !P.hasPrev
-    ? Object.fromEntries(Object.entries(META_SORTS.cards).filter(([v]) => v !== 'trend'))
-    : META_SORTS[view];
+  // Sorts whose data isn't there yet are left out
+  const hide = [...(P.hasPrev ? [] : ['trend']), ...(hasExp ? [] : ['edge'])];
+  const sorts = Object.fromEntries(Object.entries(META_SORTS[view] || {}).filter(([v]) => !hide.includes(v)));
   const country = view === 'players' ? metaCountry() : '';
   const controls = view === 'you' || view === 'stats' ? '' : view === 'players' ? `
     <select onchange="setMetaCountry(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
@@ -6492,12 +6501,12 @@ function metaDeckItemHTML(d, P, head) {
             ${metaStat('3-Crown wins', Math.round(d.three / Math.max(d.n, 1) * 100) + '%', 'text-accent')}
             ${metaStat(d.players === 1 ? 'Player' : 'Players', fmtNum(d.players || 0), 'text-muted')}
           </div>
-          ${metaStat('Win Rate', wr + '%', wr >= 50 ? 'text-green' : 'text-red')}
+          <div style="${metaFew(d.n)}" title="${metaPmTitle(d.rate, d.n)}">${metaStat(d.n < META_FEW ? 'Win Rate · few games' : 'Win Rate', `${wr}%<span style="font-size:10px;font-weight:600;color:var(--muted)"> ${metaPm(d.rate, d.n)}</span>`, wr >= 50 ? 'text-green' : 'text-red')}</div>
           <div class="progress-wrap" style="margin-top:2px"><div class="progress-bar" style="width:${wr}%;background:var(--green)"></div></div>
         </div>
       </div>
       ${metaTowersLineHTML(d)}
-      <button class="meta-more-btn" onclick="toggleMetaDeck('${d.key}')">${_metaDeckOpen.has(d.key) ? 'Hide details ▴' : 'Matchups, tower troops & players ▾'}</button>
+      <button class="meta-more-btn" onclick="toggleMetaDeck('${d.key}')">${_metaDeckOpen.has(d.key) ? 'Hide details ▴' : 'Matchups, close games, ratings & players ▾'}</button>
       ${_metaDeckOpen.has(d.key) ? metaDeckMoreHTML(d, P) : ''}
       <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-top:10px">
         <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
@@ -6523,6 +6532,23 @@ const metaRateTxt = (w, n) => n ? mPct(w / n, 0) : '—';
 function metaDeckMoreHTML(d, P) {
   const parts = [];
   const sub = t => `<div class="mu-sub" style="margin:10px 0 4px">${t}</div>`;
+  // How its games end: by how many crowns it won or lost
+  if (d.close) {
+    const [cw, cl, blown] = d.close, L = Math.max(0, d.n - d.w - d.draws), p = v => mPct(Math.max(0, v) / Math.max(d.n, 1), 0);
+    const line = t => `<div style="font-size:11px;color:var(--muted);margin:4px 0 2px">${t}</div>`;
+    parts.push(sub('How its games end') + line(`Wins · ${p(d.w)} of games`)
+      + `<div style="display:flex;gap:6px">${metaMini(p(cw), 'by one crown', 'text-green')}${metaMini(p(d.w - cw - d.three), 'by two', 'text-green')}${metaMini(p(d.three), 'three crowns', 'text-green')}</div>`
+      + line(`Losses · ${p(L)} of games`)
+      + `<div style="display:flex;gap:6px">${metaMini(p(cl), 'by one crown', 'text-red')}${metaMini(p(L - cl - blown), 'by two', 'text-red')}${metaMini(p(blown), 'three-crowned', 'text-red')}</div>`
+      + `<div style="font-size:11px;color:var(--muted);margin-top:4px">${p(cw + cl)} of its games were decided by a single crown.</div>`);
+  }
+  // Against its players' ratings
+  const edge = metaEdge(d);
+  if (edge != null) {
+    const top = P.gaps?.rates?.[P.gaps.rates.length - 1];
+    parts.push(sub('Against its players\' ratings') + `<div style="display:flex;gap:6px">${metaMini(mPct(d.exp.e / d.exp.n), 'expected from<br>rating gaps')}${metaMini(mPct(d.rate), 'actual', winCls(d.rate))}${metaMini(`${edge > 0 ? '+' : ''}${(edge * 100).toFixed(1)}`, 'points', Math.abs(edge) < 0.01 ? 'text-muted' : edge > 0 ? 'text-green' : 'text-red')}</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">Each game counted at the win rate top players have at that rating gap${top?.[0] >= 30 ? ` (${P.gaps.step * (P.gaps.rates.length / 2 - 1)}+ rating ahead: ${mPct(top[1] / top[0], 0)})` : ''}. Above 0: the deck wins more than its players' ratings predict${d.n < 100 ? ` — over ${fmtNum(d.n)} games, ${metaPm(d.rate, d.n)} is normal noise` : ''}.</div>`);
+  }
   // Tower troops
   const troopName = id => P.troops.find(t => t.id === id) || { name: 'Tower troop', img: '' };
   const troops = d.troops.filter(t => t.n).sort((a, b) => b.n - a.n);
@@ -6628,9 +6654,13 @@ function metaDecksHTML(P, sort) {
   if (q) decks = decks.filter(d => terms.every(t => hit(d, t)));
   if (sort === 'winrate') decks = decks.filter(d => d.n >= META_MIN_DECK_GAMES).sort((a, b) => b.rate - a.rate || b.n - a.n);
   if (sort === 'three') decks = decks.filter(d => d.n >= META_MIN_DECK_GAMES).sort((a, b) => b.three / b.n - a.three / a.n || b.n - a.n);
+  // 100+ games: below that, a deck's edge over its ratings is mostly noise
+  if (sort === 'edge') decks = decks.filter(d => metaEdge(d) != null && d.n >= 100).sort((a, b) => metaEdge(b) - metaEdge(a));
   if (!decks.length) return `<div class="empty-msg">${q ? `No top deck with "${esc(_metaQuery.trim())}"${sort !== 'played' ? ` and ${META_MIN_DECK_GAMES}+ games` : ''}.` : `No deck has ${META_MIN_DECK_GAMES}+ games yet.`}</div>`;
   const shown = decks.slice(0, _metaShown);
-  return shown.map((d, i) => metaDeckItemHTML(d, P, `#${i + 1} · in ${(d.n / P.totalDecks * 100).toFixed(1)}% of decks`)).join('')
+  const edgeTxt = d => { const e = metaEdge(d); return sort === 'edge' && e != null ? ` · <b class="${e >= 0 ? 'text-green' : 'text-red'}">${e > 0 ? '+' : ''}${(e * 100).toFixed(1)} pts</b> vs its ratings` : ''; };
+  return (!q && sort === 'played' ? metaWeekHTML(P) : '')
+    + shown.map((d, i) => metaDeckItemHTML(d, P, `#${i + 1} · in ${(d.n / P.totalDecks * 100).toFixed(1)}% of decks${edgeTxt(d)}`)).join('')
     + (decks.length > shown.length ? `<button class="btn btn-secondary" style="width:100%;margin-top:4px" onclick="metaShowMore()">Show more (${decks.length - shown.length} more)</button>` : '');
 }
 
@@ -6659,7 +6689,7 @@ function metaCardsHTML(P, sort) {
     }
     if (sort === 'three') return `${Math.round(c.three * 100)}%`;
     const wr = Math.round(c.rate * 100);
-    return `<span class="${wr >= 52 ? 'text-green' : wr <= 48 ? 'text-red' : ''}">${wr}%</span>`;
+    return `<span class="${wr >= 52 ? 'text-green' : wr <= 48 ? 'text-red' : ''}" style="${metaFew(c.n)}" title="${metaPmTitle(c.rate, c.n)}">${wr}%<span style="font-size:10px;font-weight:500;color:var(--muted)"> ${metaPm(c.rate, c.n)}</span></span>`;
   };
   return `
     <div class="card">
@@ -6670,9 +6700,222 @@ function metaCardsHTML(P, sort) {
           ${metaCardImg(c) ? `<img src="${metaCardImg(c)}" alt="" loading="lazy" decoding="async">` : ''}
           <span class="mu-name">${esc(c.name)}${metaFormTag(c.form)}</span>
           <span style="font-size:12px;white-space:nowrap;color:var(--muted)">${(c.share * 100).toFixed(1)}%</span>
-          <span style="font-weight:700;width:46px;text-align:right">${lastCell(c)}</span>
+          <span style="font-weight:700;min-width:46px;text-align:right;white-space:nowrap">${lastCell(c)}</span>
         </div>`).join('')}
-      ${sort === 'trend' ? `<div style="font-size:11px;color:var(--muted);margin-top:8px">Change in the share of decks a card is in, in percentage points, against the week before.</div>` : ''}
+      ${sort === 'trend' ? `<div style="font-size:11px;color:var(--muted);margin-top:8px">Change in the share of decks a card is in, in percentage points, against the week before.</div>` : sort === 'three' ? '' : `<div style="font-size:11px;color:var(--muted);margin-top:8px">± is the range the true win rate likely sits in (95%) — it shrinks with more games. Faded: under ${META_FEW} games.</div>`}
+    </div>`;
+}
+
+// ── Sample-size honesty: the range a win rate likely sits in (95%), and numbers
+// from few games faded ──
+const META_FEW = 30;
+const metaMargin = (p, n) => n ? 1.96 * Math.sqrt(Math.max(p * (1 - p), 0.01) / n) : 1;
+const metaPm = (p, n) => `±${Math.max(1, Math.round(metaMargin(p, n) * 100))}`;
+const metaPmTitle = (p, n) => `${fmtNum(n)} games: likely between ${mPct(Math.max(0, p - metaMargin(p, n)), 0)} and ${mPct(Math.min(1, p + metaMargin(p, n)), 0)}`;
+const metaFew = n => n < META_FEW ? 'opacity:.5' : '';
+// Skill-adjusted: a deck's win rate against what its players' rating gaps predict
+// (top players' own win rate per rating gap). Needs 20 games with ratings.
+const metaEdge = d => d.exp && d.exp.n >= 20 ? d.rate - d.exp.e / d.exp.n : null;
+// A deck as one row of 8 small card images
+const metaDeckStrip = cards => `<div style="display:grid;grid-template-columns:repeat(8,1fr);gap:2px;flex:1;min-width:0">${cards.map(c => metaCardImg(c)
+  ? `<img src="${metaCardImg(c)}" alt="${esc(c.name)}" title="${esc(c.name)}" loading="lazy" decoding="async" style="width:100%;aspect-ratio:5/6;object-fit:contain">`
+  : `<span style="font-size:8px;overflow:hidden">${esc(c.name)}</span>`).join('')}</div>`;
+const metaDay = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+
+// ── Deck families: top decks that share 7 of their 8 cards (forms included),
+// with every version of the flex slot. Greedy: the most played core first, each
+// deck in one family. ──
+let _metaFam = null;
+function metaFamilies(P) {
+  if (_metaFam?.P === P) return _metaFam.list;
+  const byCore = new Map();
+  P.decks.forEach(d => {
+    const keys = d.cards.map(c => c.key);
+    keys.forEach((k, i) => {
+      const core = keys.filter((_, j) => j !== i).sort().join(',');
+      if (!byCore.has(core)) byCore.set(core, []);
+      byCore.get(core).push({ d, flex: d.cards[i] });
+    });
+  });
+  const used = new Set(), list = [];
+  [...byCore.entries()].filter(([, ms]) => ms.length >= 2)
+    .map(([core, ms]) => ({ core, ms, n: ms.reduce((a, m) => a + m.d.n, 0) }))
+    .sort((a, b) => b.n - a.n)
+    .forEach(f => {
+      const ms = f.ms.filter(m => !used.has(m.d.key));
+      if (ms.length < 2) return;
+      ms.forEach(m => used.add(m.d.key));
+      const keys = new Set(f.core.split(','));
+      const n = ms.reduce((a, m) => a + m.d.n, 0), w = ms.reduce((a, m) => a + m.d.w, 0);
+      ms.sort((a, b) => b.d.n - a.d.n);
+      // Best version: highest win rate with enough games, else the most played
+      const sure = ms.filter(m => m.d.n >= META_FEW);
+      const best = (sure.length ? sure : ms).reduce((a, b) => b.d.rate > a.d.rate ? b : a);
+      list.push({ core: ms[0].d.cards.filter(c => keys.has(c.key)), members: ms, n, w, rate: w / Math.max(n, 1), best });
+    });
+  _metaFam = { P, list };
+  return list;
+}
+const META_FAMILIES_SHOWN = 6;
+let _metaFamAll = false;
+window.metaFamiliesAll = function() { _metaFamAll = true; redrawMetaList(); };
+function metaFamiliesHTML(P) {
+  const fams = metaFamilies(P).filter(f => f.n >= META_FEW);
+  if (!fams.length) return '';
+  return `
+    <div class="card">
+      ${metaCardHead('Deck families', 'Top decks that share 7 of 8 cards, counted together. Each row is a version of the eighth card.')}
+      ${fams.slice(0, _metaFamAll ? fams.length : META_FAMILIES_SHOWN).map(f => `
+        <div style="padding:8px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:8px">
+            ${metaDeckStrip(f.core)}
+            <div style="width:74px;text-align:right;flex-shrink:0;${metaFew(f.n)}">
+              <div class="${winCls(f.rate)}" style="font-size:14px;font-weight:700">${mPct(f.rate, 0)}<span style="font-size:10px;color:var(--muted);font-weight:500"> ${metaPm(f.rate, f.n)}</span></div>
+              <div style="font-size:10px;color:var(--muted)">${fmtNum(f.n)} games · ${f.members.length} versions</div>
+            </div>
+          </div>
+          ${f.members.map(m => `<div class="mu-row" style="padding:3px 0">
+              ${metaCardImg(m.flex) ? `<img src="${metaCardImg(m.flex)}" alt="" loading="lazy" decoding="async">` : ''}
+              <span class="mu-name">+ ${esc(m.flex.name)}${metaFormTag(m.flex.form)}${m === f.best && f.members.length > 1 ? ' <span class="badge badge-green" style="font-size:9px;padding:1px 5px">best</span>' : ''}</span>
+              <span style="font-size:12px;color:var(--muted);white-space:nowrap">${fmtNum(m.d.n)} games</span>
+              <span class="${winCls(m.d.rate)}" style="font-weight:700;min-width:56px;text-align:right;white-space:nowrap;${metaFew(m.d.n)}" title="${metaPmTitle(m.d.rate, m.d.n)}">${mPct(m.d.rate, 0)}<span style="font-size:10px;color:var(--muted);font-weight:500"> ${metaPm(m.d.rate, m.d.n)}</span></span>
+            </div>`).join('')}
+          <button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 10px;margin-top:4px" onclick="metaDecksWith('${esc(f.core.map(c => c.name).join(', '))}')">Decks →</button>
+        </div>`).join('')}
+      ${!_metaFamAll && fams.length > META_FAMILIES_SHOWN ? `<button class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="metaFamiliesAll()">Show all (${fams.length - META_FAMILIES_SHOWN} more)</button>` : ''}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">± is the range the true win rate likely sits in; faded under ${META_FEW} games.</div>
+    </div>`;
+}
+
+// ── New & rising decks: this week's top decks against the top 300 of about a
+// week before (the collector's deck snapshots, kept from 29 Oct 2026) ──
+const META_RISING_MIN = 20;
+function metaDeckMoves(P) {
+  const R = P.prevDecks;
+  if (!R) return null;
+  const rows = P.decks.filter(d => d.n >= META_RISING_MIN).map(d => {
+    const p = R.by[d.key];
+    return { d, from: p ? p.n / R.total : null, to: d.n / P.totalDecks };
+  });
+  return {
+    since: R.at,
+    fresh: rows.filter(r => r.from == null).sort((a, b) => b.d.n - a.d.n),
+    rising: rows.filter(r => r.from != null && r.to > r.from).sort((a, b) => (b.to - b.from) - (a.to - a.from)),
+  };
+}
+function metaMoveRowHTML(r) {
+  return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="metaDecksWith('${esc(r.d.names.join(', '))}')">
+      ${metaDeckStrip(r.d.cards)}
+      <div style="width:84px;text-align:right;flex-shrink:0">
+        <div style="font-size:12px;white-space:nowrap">${r.from == null ? '<b class="text-green">new</b> · ' : `${mPct(r.from)} → `}${mPct(r.to)}</div>
+        <div class="${winCls(r.d.rate)}" style="font-size:11px;font-weight:700;${metaFew(r.d.n)}">${mPct(r.d.rate, 0)} <span style="color:var(--muted);font-weight:500">${metaPm(r.d.rate, r.d.n)} · ${fmtNum(r.d.n)}</span></div>
+      </div>
+    </div>`;
+}
+function metaRisingHTML(P) {
+  const M = metaDeckMoves(P);
+  const head = metaCardHead('New & rising decks', M ? `This week's top decks (${META_RISING_MIN}+ games) against the top ${P.decks.length} of the week to ${metaDay(M.since)}. Share of decks, then win rate and games. Tap for the deck.` : '');
+  if (!M) return `<div class="card">${head}<div style="font-size:12px;color:var(--muted)">Compares this week's top decks with the week before's. The collector keeps a snapshot a day from 29 Oct — the first comparison shows tomorrow, a full week from 5 Nov.</div></div>`;
+  const block = (t, rows) => rows.length ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">${t}</div>${rows.slice(0, 5).map(metaMoveRowHTML).join('')}` : '';
+  return `<div class="card">${head}${block('🆕 New in the top decks', M.fresh)}${block('📈 Growing fastest', M.rising)}${!M.fresh.length && !M.rising.length ? '<div style="font-size:12px;color:var(--muted)">No deck has grown since then.</div>' : ''}</div>`;
+}
+
+// ── Balance update impact: each card's share and win rate in the 7 days before
+// a monthly balance update (first Tuesday) against the 7 days after, from /history
+// (each point a 7-day tally; win rates in it from 28 Oct 2026) ──
+function metaBalanceHTML(totals) {
+  const days = (_metaHist?.data?.days || []).filter(d => d[1] > 0);
+  if (!_metaHist?.data || !days.length) return '';
+  const D = 864e5, now = Date.now();
+  const ups = [];
+  for (let i = 0, d0 = new Date(days[0][0]); i < 24; i++) {
+    const u = _firstTuesdayOfMonth(d0.getFullYear(), d0.getMonth() + i);
+    ups.push(u);
+    if (u > now) break;
+  }
+  const before = u => days.filter(d => d[0] < u && d[0] >= u - 3 * D).pop();
+  const after = u => days.filter(d => d[0] >= u + 2 * D).reduce((a, d) => !a || Math.abs(d[0] - u - 7.5 * D) < Math.abs(a[0] - u - 7.5 * D) ? d : a, null);
+  const U = ups.filter(u => u <= now && before(u)).pop();
+  const head = metaCardHead('Balance update', '');
+  const next = ups.find(u => u > now && u - 3 * D >= days[0][0]) || ups.find(u => u > now);
+  if (!U || !after(U)) {
+    const u = U || next;
+    return `<div class="card">${head}<div style="font-size:12px;color:var(--muted)">Compares every card's share of decks and win rate in the week before a balance update (the first Tuesday of the month) with the week after.${u ? ` The first: the ${metaDay(u)} update, ready around ${metaDay(u + 8 * D)}.` : ''}</div></div>`;
+  }
+  const A = before(U), B = after(U), partial = B[0] < U + 7 * D;
+  const tally = ([, m, cards, wins]) => {
+    const by = {};
+    for (const k in cards) {
+      const id = parseInt(k, 10), x = by[id] || (by[id] = { n: 0, wn: 0, w: 0 });
+      x.n += cards[k];
+      if (wins) { x.wn += cards[k]; x.w += wins[k] || 0; }
+    }
+    return { by, total: m * 2 };
+  };
+  const a = tally(A), b = tally(B);
+  const rows = metaCardChoices(totals).map(t => {
+    const x = a.by[t.id] || { n: 0, wn: 0, w: 0 }, y = b.by[t.id] || { n: 0, wn: 0, w: 0 };
+    return { t, sa: x.n / a.total, sb: y.n / b.total, ra: x.wn >= 200 ? x.w / x.wn : null, rb: y.wn >= 200 ? y.w / y.wn : null };
+  }).filter(r => r.sa >= 0.01 || r.sb >= 0.01).sort((p, q) => Math.abs(q.sb - q.sa) - Math.abs(p.sb - p.sa)).slice(0, 10);
+  const chg = (from, to) => from == null || to == null ? '<span class="text-muted">—</span>'
+    : `<span class="${to - from >= 0.005 ? 'text-green' : to - from <= -0.005 ? 'text-red' : 'text-muted'}">${mPct(from, 0)}→${mPct(to, 0)}</span>`;
+  return `
+    <div class="card">
+      ${head}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">The ${metaDay(U)} update: the 7 days before it against the 7 days to ${metaDay(B[0])}${partial ? ` (still ${Math.round((U + 7 * D - B[0]) / D)} days before the update in it)` : ''}. Cards whose share moved most.</div>
+      <div style="display:flex;font-size:10px;color:var(--muted);padding-bottom:3px;border-bottom:1px solid var(--border)"><span style="flex:1">Card</span><span style="width:84px;text-align:right">In decks</span><span style="width:74px;text-align:right">Win rate</span></div>
+      ${rows.map(r => `<div class="mu-row" style="cursor:pointer" onclick="metaDecksWith('${esc(r.t.name)}')">
+          ${r.t.card?.iconUrls?.medium ? `<img src="${r.t.card.iconUrls.medium}" alt="" loading="lazy" decoding="async">` : ''}
+          <span class="mu-name">${esc(r.t.name)}</span>
+          <span style="font-size:12px;width:84px;text-align:right;white-space:nowrap">${chg(r.sa, r.sb)}</span>
+          <span style="font-size:12px;width:74px;text-align:right;white-space:nowrap">${chg(r.ra, r.rb)}</span>
+        </div>`).join('')}
+    </div>`;
+}
+
+// ── This week in the meta: the card that rose and fell most, the most played
+// new deck and the top player who climbed most ──
+function metaCardMoves(P) {
+  if (P.hasPrev) return { since: null, moves: P.cards.filter(c => c.trend != null && !c.isNew).map(c => ({ c, from: c.share - c.trend, to: c.share })) };
+  if (!_metaHist) { try { _metaHist = JSON.parse(localStorage.getItem(META_HISTORY_CACHE_KEY) || 'null'); } catch(e) {} }
+  if (!_metaHist?.data || Date.now() - (_metaHist.savedAt || 0) > META_MAX_AGE_MS) setTimeout(loadMetaHistory, 0);
+  // Else the /history point nearest a week ago (at least 2 days old, 2,000+ matches)
+  const D = 864e5, target = Date.now() - 7 * D;
+  const pts = (_metaHist?.data?.days || []).filter(d => d[1] >= 2000 && d[0] <= Date.now() - 2 * D);
+  if (!pts.length) return null;
+  const pt = pts.reduce((a, d) => Math.abs(d[0] - target) < Math.abs(a[0] - target) ? d : a);
+  return { since: pt[0], moves: P.cards.map(c => ({ c, from: (pt[2][c.key] || 0) / (pt[1] * 2), to: c.share })) };
+}
+function metaWeekHTML(P) {
+  const lines = [];
+  const line = (icon, html, click) => `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--border);${click ? 'cursor:pointer' : ''}"${click ? ` onclick="${click}"` : ''}><span style="font-size:16px;width:22px;text-align:center">${icon}</span><div style="flex:1;min-width:0;font-size:13px">${html}</div></div>`;
+  const cardLine = (icon, verb, x) => line(icon, `<div style="display:flex;align-items:center;gap:8px">
+      ${metaCardImg(x.c) ? `<img src="${metaCardImg(x.c)}" alt="" style="width:24px;height:29px;object-fit:contain">` : ''}
+      <span style="flex:1;min-width:0"><b>${esc(x.c.name)}</b>${metaFormTag(x.c.form)} ${verb}</span>
+      <span class="${x.to > x.from ? 'text-green' : 'text-red'}" style="font-weight:700;white-space:nowrap">${mPct(x.from)} → ${mPct(x.to)}</span></div>`, `metaDecksWith('${esc(x.c.name)}')`);
+  const C = metaCardMoves(P);
+  let since = null;
+  if (C) {
+    const mv = C.moves.filter(x => Math.max(x.from, x.to) >= META_MIN_CARD_SHARE);
+    const up = mv.reduce((a, x) => !a || x.to - x.from > a.to - a.from ? x : a, null);
+    const down = mv.reduce((a, x) => !a || x.to - x.from < a.to - a.from ? x : a, null);
+    if (up && up.to - up.from >= 0.005) lines.push(cardLine('📈', 'rose most', up));
+    if (down && down.to - down.from <= -0.005) lines.push(cardLine('📉', 'fell most', down));
+    if (lines.length) since = C.since;
+  }
+  const M = metaDeckMoves(P), fresh = M?.fresh[0];
+  if (fresh) lines.push(line('🆕', `<div style="font-size:12px;color:var(--muted);margin-bottom:3px">Hottest new deck · in ${mPct(fresh.to)} of decks · <span class="${winCls(fresh.d.rate)}" style="font-weight:600">${mPct(fresh.d.rate, 0)} win</span></div>${metaDeckStrip(fresh.d.cards)}`, `metaDecksWith('${esc(fresh.d.names.join(', '))}')`));
+  if (!_metaTop) { try { _metaTop = JSON.parse(localStorage.getItem(META_TOP_CACHE_KEY) || 'null'); } catch(e) {} }
+  if (!_metaTop?.data || metaStale(_metaTop)) setTimeout(loadMetaTop, 0);
+  const players = _metaTop?.data?.players || [];
+  const col = players.some(p => p[11] != null) ? 11 : 10;
+  const climb = players.filter(p => p[col] != null && p[4] != null).reduce((a, p) => !a || p[4] - p[col] > a[4] - a[col] ? p : a, null);
+  if (climb && climb[4] > climb[col]) lines.push(line('🚀', `<b>${esc(climb[1] || climb[0])}</b> climbed most: <b class="text-green">+${fmtNum(climb[4] - climb[col])}</b> ${col === 11 ? 'this week' : 'today'} <span class="text-muted">· #${climb[3]} ⚔️ ${fmtNum(climb[4])}</span>`, `viewFriend('${esc(climb[0])}')`));
+  if (!lines.length) return '';
+  return `<div class="card" style="padding-bottom:6px">
+      <div class="mu-sub" style="margin-top:0">This week in the meta</div>
+      ${since ? `<div style="font-size:11px;color:var(--muted);margin-bottom:4px">Cards against the 7 days to ${metaDay(since)}.</div>` : ''}
+      ${lines.join('')}
     </div>`;
 }
 
@@ -6704,8 +6947,8 @@ function metaCardTotals(P) {
 
 function metaStatsHTML(P) {
   const totals = metaCardTotals(P);
-  return [metaScatterHTML(P), metaArchetypesHTML(totals), metaArchMatchupsHTML(totals), metaCountersHTML(P, totals), metaPairsHTML(P, totals), metaRatingHTML(P, totals),
-          metaElixirHTML(P), metaTroopsHTML(P), metaActivityHTML(P), metaTrendsHTML(P, totals), metaMonthHTML(P, totals), metaFormsHTML(totals)].join('');
+  return [metaScatterHTML(P), metaArchetypesHTML(totals), metaArchMatchupsHTML(totals), metaFamiliesHTML(P), metaRisingHTML(P), metaCountersHTML(P, totals), metaPairsHTML(P, totals), metaRatingHTML(P, totals),
+          metaElixirHTML(P), metaTroopsHTML(P), metaActivityHTML(P), metaTrendsHTML(P, totals), metaBalanceHTML(totals), metaMonthHTML(P, totals), metaFormsHTML(totals)].join('');
 }
 
 // 1 · Popularity against win rate, one dot per card form
@@ -7160,7 +7403,7 @@ async function loadMetaHistory() {
   } finally {
     _metaHistLoading = false;
   }
-  if (currentScreen === 'meta' && _metaView === 'stats') redrawMetaList();
+  if (currentScreen === 'meta' && (_metaView === 'stats' || _metaView === 'decks')) redrawMetaList();
 }
 function metaTrendsHTML(P, totals) {
   if (!_metaHist) { try { _metaHist = JSON.parse(localStorage.getItem(META_HISTORY_CACHE_KEY) || 'null'); } catch(e) {} }
@@ -7642,7 +7885,7 @@ async function loadMetaTop() {
     if (!_metaTop) _metaTop = { error: e.message };
   } finally {
     _metaTopLoading = false;
-    if (currentScreen === 'meta' && (_metaView === 'players' || _metaDeckOpen.size)) redrawMetaList();
+    if (currentScreen === 'meta' && (_metaView === 'players' || _metaView === 'decks' || _metaDeckOpen.size)) redrawMetaList();
   }
 }
 function metaPlayersHTML() {
