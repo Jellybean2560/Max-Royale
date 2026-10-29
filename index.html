@@ -9,6 +9,10 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Max Royale">
 <link rel="manifest" href="manifest.json">
+<script>
+  // Theme before first paint: cr_theme = 'light' / 'dark', or nothing for the phone's setting
+  try { const t = localStorage.getItem('cr_theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch(e) {}
+</script>
 <link rel="apple-touch-icon" href="icon.png">
 <title>Max Royale</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -32,6 +36,58 @@
     --border: #33334d;
     --nav-h: 64px;
     --radius: 12px;
+    --badge-gold: #3d2f00;
+    --badge-blue: #002244;
+    --badge-green: #003322;
+    --badge-red: #330011;
+    --badge-purple: #220033;
+    color-scheme: dark;
+  }
+  /* Light theme: the phone's setting (Auto), or picked in the Accounts menu —
+     data-theme is set before the page draws, by the script in <head> */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f2f2f7;
+      --surface: #ffffff;
+      --surface2: #ebebf2;
+      --surface3: #dedeea;
+      --accent: #b8860b;
+      --accent2: #c99a10;
+      --blue: #1f6fd1;
+      --green: #17924a;
+      --red: #cc3326;
+      --purple: #8a3fae;
+      --text: #1a1a2e;
+      --muted: #66667a;
+      --border: #d2d2df;
+      --badge-gold: #fbefcf;
+      --badge-blue: #dceaff;
+      --badge-green: #d8f3e3;
+      --badge-red: #fbe0dd;
+      --badge-purple: #efe0f7;
+      color-scheme: light;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f2f2f7;
+    --surface: #ffffff;
+    --surface2: #ebebf2;
+    --surface3: #dedeea;
+    --accent: #b8860b;
+    --accent2: #c99a10;
+    --blue: #1f6fd1;
+    --green: #17924a;
+    --red: #cc3326;
+    --purple: #8a3fae;
+    --text: #1a1a2e;
+    --muted: #66667a;
+    --border: #d2d2df;
+    --badge-gold: #fbefcf;
+    --badge-blue: #dceaff;
+    --badge-green: #d8f3e3;
+    --badge-red: #fbe0dd;
+    --badge-purple: #efe0f7;
+    color-scheme: light;
   }
 
   html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 15px; overflow: hidden; }
@@ -80,11 +136,11 @@
 
   /* ── Tags / Badges ── */
   .badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 12px; font-weight: 600; }
-  .badge-gold { background: #3d2f00; color: var(--accent); }
-  .badge-blue { background: #002244; color: var(--blue); }
-  .badge-green { background: #003322; color: var(--green); }
-  .badge-red { background: #330011; color: var(--red); }
-  .badge-purple { background: #220033; color: var(--purple); }
+  .badge-gold { background: var(--badge-gold); color: var(--accent); }
+  .badge-blue { background: var(--badge-blue); color: var(--blue); }
+  .badge-green { background: var(--badge-green); color: var(--green); }
+  .badge-red { background: var(--badge-red); color: var(--red); }
+  .badge-purple { background: var(--badge-purple); color: var(--purple); }
 
   /* ── Progress bar ── */
   .progress-wrap { background: var(--surface3); border-radius: 4px; height: 8px; overflow: hidden; }
@@ -126,7 +182,7 @@
   /* ── Loading / Error states ── */
   .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 40px auto; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .error-msg { color: var(--red); background: #330011; border: 1px solid var(--red); border-radius: 8px; padding: 12px; margin: 12px 0; font-size: 14px; }
+  .error-msg { color: var(--red); background: var(--badge-red); border: 1px solid var(--red); border-radius: 8px; padding: 12px; margin: 12px 0; font-size: 14px; }
   .empty-msg { color: var(--muted); text-align: center; padding: 40px 0; font-size: 14px; }
 
 
@@ -1257,6 +1313,11 @@ function renderSavedAccounts() {
       <button class="btn btn-primary btn-sm" onclick="menuLookup()">Go</button>
     </div>
     <div style="border-top:1px solid var(--border);margin:12px 0 10px"></div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Theme</div>
+    <div class="seg" style="margin-bottom:0">
+      ${[['auto', 'Auto'], ['light', '☀️ Light'], ['dark', '🌙 Dark']].map(([v, l]) => `<button class="${themeChoice() === v ? 'active' : ''}" onclick="setTheme('${v}', event)">${l}</button>`).join('')}
+    </div>
+    <div style="border-top:1px solid var(--border);margin:12px 0 10px"></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Backup: accounts, friends, deck, matchup, trophy &amp; progress history</div>
     <div class="flex-row">
       <button class="btn btn-secondary btn-sm" style="flex:1" onclick="exportBackup()">💾 Save</button>
@@ -1330,6 +1391,18 @@ window.exportCSV = function(kind, ev) {
       .forEach(([name, n, w, l, dr]) => rows.push([name, n, w, l, dr, pct(w, n)]));
     csvFile(`max-royale-${slug}-opponent-cards-${day}.csv`, rows);
   }
+};
+
+// ── Theme: Auto follows the phone, or Light / Dark (cr_theme, this device only) ──
+function themeChoice() {
+  try { const t = localStorage.getItem('cr_theme'); return t === 'light' || t === 'dark' ? t : 'auto'; } catch(e) { return 'auto'; }
+}
+window.setTheme = function(v, ev) {
+  if (ev) ev.stopPropagation();
+  try { v === 'auto' ? localStorage.removeItem('cr_theme') : localStorage.setItem('cr_theme', v); } catch(e) {}
+  if (v === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = v;
+  renderSavedAccounts();
 };
 
 // ── Backup / restore ──
@@ -2023,7 +2096,63 @@ function _renderFriendsList() {
       </div>
     </div>`;
   }).join('');
-  wrap.innerHTML = header + rows + suggestedFriendsHTML();
+  wrap.innerHTML = friendsFeedHTML(list) + header + rows + suggestedFriendsHTML();
+}
+
+// ── What's new: friends' changes over the last FEED_DAYS, read from the Progress
+// snapshots this device keeps for them (one a day, saved whenever their profile
+// is fetched — the Friends list refresh does that). Each pair of snapshots in a
+// row gives the changes on the later one's date ──
+const FEED_DAYS = 14, FEED_SHOWN = 12;
+let _feedAll = false;
+function friendFeedItems(f) {
+  const list = progressList(f.tag);
+  const from = Date.now() - FEED_DAYS * 864e5;
+  const byId = Object.fromEntries(allCards.map(c => [String(c.id), c]));
+  const name = esc(f.name || f.tag);
+  const items = [];
+  for (let i = 1; i < list.length; i++) {
+    const a = list[i - 1], b = list[i];
+    if (b.at < from) continue;
+    const push = (icon, text) => items.push({ at: b.at, tag: f.tag, html: `${icon} <b>${name}</b> ${text}` });
+    const ups = [];
+    Object.entries(b.cards || {}).forEach(([id, v]) => {
+      const c = byId[id], old = a.cards?.[id];
+      if (!c) return;
+      if (old == null) { if (a.cards && Object.keys(a.cards).length) push('🆕', `unlocked ${esc(c.name)}`); return; }
+      if (v >> 2 > old >> 2) ups.push([c, v >> 2]);
+      if ((v & 1) && !(old & 1)) push('🟣', `unlocked Evo ${esc(c.name)}`);
+      if ((v & 2) && !(old & 2)) push('🟡', `unlocked Hero ${esc(c.name)}`);
+    });
+    ups.sort((x, y) => y[1] - x[1]);
+    if (ups.length === 1) push('⬆️', `upgraded ${esc(ups[0][0].name)} to ${ups[0][1]}`);
+    else if (ups.length > 1) push('⬆️', `upgraded ${ups.length} cards <span class="text-muted">(${ups.slice(0, 3).map(([c, l]) => `${esc(c.name)} ${l}`).join(', ')}${ups.length > 3 ? ', …' : ''})</span>`);
+    if (a.king != null && b.king > a.king) push('👑', `reached King Tower ${b.king}`);
+    const reset = (a.lastSeason && b.lastSeason && a.lastSeason !== b.lastSeason) || (a.league != null && b.league != null && b.league < a.league);
+    if (!reset && a.league != null && b.league > a.league) push('⚔️', `reached ${esc(polLeagueName({ leagueNumber: b.league }))}`);
+    if (!reset && b.league === 7 && a.pol != null && b.pol != null && Math.floor(b.pol / 100) > Math.floor(a.pol / 100)) push('📈', `climbed to ⚔️ ${fmtNum(b.pol)}`);
+    if (a.trophies != null && Math.floor(b.trophies / 1000) > Math.floor(a.trophies / 1000)) push('🏆', `passed 🏆 ${fmtNum(Math.floor(b.trophies / 1000) * 1000)}`);
+    if (a.clan !== b.clan) push('🛡', b.clan ? `joined ${esc(b.clan)}` : `left ${esc(a.clan)}`);
+  }
+  return items;
+}
+const feedDay = t => {
+  const today = new Date().setHours(0, 0, 0, 0);
+  return t >= today ? 'today' : t >= today - 864e5 ? 'yesterday' : new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+};
+function friendsFeedHTML(list) {
+  const items = list.flatMap(friendFeedItems).sort((x, y) => y.at - x.at);
+  if (!items.length) return '';
+  const shown = _feedAll ? items : items.slice(0, FEED_SHOWN);
+  return `<div class="card">
+      <h3 style="margin-bottom:6px">🆕 What's new <span style="font-weight:400;font-size:12px;color:var(--muted)">· last ${FEED_DAYS} days</span></h3>
+      ${shown.map(x => `<div class="stat-row" style="cursor:pointer" onclick="viewFriend('${esc(x.tag)}')">
+        <span class="stat-label" style="min-width:0;flex:1;color:var(--text);font-size:13px">${x.html}</span>
+        <span style="font-size:11px;color:var(--muted);flex-shrink:0;margin-left:8px">${feedDay(x.at)}</span>
+      </div>`).join('')}
+      ${items.length > FEED_SHOWN ? `<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px;justify-content:center" onclick="_feedAll=!_feedAll;_renderFriendsList()">${_feedAll ? 'Show less' : `Show all ${items.length}`}</button>` : ''}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">From what this device saw when it refreshed them</div>
+    </div>`;
 }
 
 // ── Suggested friends ──
@@ -2411,6 +2540,7 @@ function renderProfile(data, battles) {
     </div>
     <div style="height:12px"></div>
     <div id="p-war-note"></div>
+    <div id="p-ready-note"></div>
 
     <div id="tab-overview" class="tab-pane active">${renderOverview(data, battles)}</div>
     <div id="tab-cards" class="tab-pane" style="display:none">${renderCardsPane(data)}</div>
@@ -2425,7 +2555,50 @@ function renderProfile(data, battles) {
   updateTabFade(el.querySelector('.tab-bar'));
   updateProfileAge();
   warReminder(data);
+  readyNote(data);
 }
+
+// ── Upgrade-ready note: cards that became ready to upgrade (enough copies for
+// the next level) since the profile was last seen on this device. cr_ready_v1
+// keeps per tag the ready set now (ids) and the one before it changed (prev);
+// the note lists ids − prev until it's dismissed or the set changes again ──
+const READY_KEY = 'cr_ready_v1';
+function readyCardIds(data) {
+  return (data.cards || []).filter(c => {
+    const r = (c.rarity || 'common').toLowerCase(), l = toDisplayLevel(r, c.level);
+    const step = (LEVEL_DATA[r] || [])[l - (MIN_LEVEL[r] || 1)];
+    return l < MAX_LEVEL && step && (c.count || 0) >= step.cards;
+  }).map(c => c.id).sort((a, b) => a - b);
+}
+function readyNote(data) {
+  const el = document.getElementById('p-ready-note');
+  if (!el || !data?.tag) return;
+  let all = {};
+  try { all = JSON.parse(localStorage.getItem(READY_KEY) || '{}') || {}; } catch(e) {}
+  const now = readyCardIds(data), saved = all[data.tag];
+  if (!saved) all[data.tag] = { ids: now, prev: now };
+  else if (saved.ids.join() !== now.join()) all[data.tag] = { ids: now, prev: saved.ids, at: Date.now() };
+  // Only the tags still kept elsewhere
+  pruneHistoryTags(all, e => e.at || 0);
+  try { localStorage.setItem(READY_KEY, JSON.stringify(all)); } catch(e) {}
+  const prev = new Set(all[data.tag].prev);
+  const fresh = now.filter(id => !prev.has(id));
+  if (!fresh.length) { el.innerHTML = ''; return; }
+  const byId = Object.fromEntries((data.cards || []).map(c => [c.id, c]));
+  const names = fresh.map(id => byId[id]?.name).filter(Boolean);
+  el.innerHTML = `<div class="card" style="padding:10px 12px;font-size:13px;border-color:var(--green);display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span onclick="ovGo('p','cards','upgradable')" style="cursor:pointer;min-width:0">⬆️ <b>${names.length} card${names.length === 1 ? '' : 's'} ready to upgrade</b> since last time <span class="text-muted">· ${names.slice(0, 3).map(esc).join(', ')}${names.length > 3 ? ', …' : ''}</span> ›</span>
+      <button class="btn btn-secondary btn-sm" title="Dismiss" style="font-size:11px;padding:2px 7px;flex-shrink:0" onclick="dismissReadyNote('${esc(data.tag)}')">✕</button>
+    </div>`;
+}
+window.dismissReadyNote = function(tag) {
+  try {
+    const all = JSON.parse(localStorage.getItem(READY_KEY) || '{}') || {};
+    if (all[tag]) { all[tag].prev = all[tag].ids; localStorage.setItem(READY_KEY, JSON.stringify(all)); }
+  } catch(e) {}
+  const el = document.getElementById('p-ready-note');
+  if (el) el.innerHTML = '';
+};
 
 // ── War-deck reminder: on a war day, a note under the profile header while the
 // loaded profile still has war decks to play for their clan today. Reads the
@@ -2806,6 +2979,7 @@ function renderDeckUpgradeScreen() {
       <button class="filter-btn ${_deckUpMode==='recent'?'active':''}" onclick="setDeckUpMode('recent')">Recent Decks</button>
       <button class="filter-btn ${_deckUpMode==='custom'?'active':''}" onclick="setDeckUpMode('custom')">Custom Deck</button>
       <button class="filter-btn ${_deckUpMode==='saved'?'active':''}" onclick="setDeckUpMode('saved')">⭐ Saved (${loadSavedDecks().length})</button>
+      <button class="filter-btn ${_deckUpMode==='compare'?'active':''}" onclick="setDeckUpMode('compare')">⚖️ Compare</button>
     </div>`;
 
   let body = '';
@@ -2825,6 +2999,8 @@ function renderDeckUpgradeScreen() {
     }
   } else if (_deckUpMode === 'saved') {
     body = null;
+  } else if (_deckUpMode === 'compare') {
+    body = deckCompareHTML(data, battles, decks, tracked);
   } else {
     body = renderCustomDeckBuilder(data);
   }
@@ -2848,6 +3024,83 @@ function renderDeckUpgradeScreen() {
 }
 
 window.setDeckUpMode = function(m) { _deckUpMode = m; renderDeckUpgradeScreen(); };
+
+// ── Deck compare: two decks side by side — the decks in use, your tracked decks
+// and saved decks — with elixir, archetype, your record, your levels and the gold
+// to bring each to the target, and top players' record with the exact deck ──
+let _deckCmp = [0, 1];
+function deckCompareOptions(data, battles, decks) {
+  const out = [];
+  const formsOf = d => {
+    if (d.variants) return d.variants;
+    if (d.current === '1v1') { const f = currentDeckVariants(data.currentDeck, battles, data.tag), v = {}; data.currentDeck.forEach((c, i) => { if (f[i]) v[c.name] = f[i]; }); return v; }
+    if (d.current === '2v2') return deckVariantsOf(latest2v2Deck(battles, data.tag) || []);
+    return {};
+  };
+  decks.forEach((d, i) => {
+    const v = formsOf(d);
+    out.push({ label: d.current ? `🃏 Current ${d.current} deck` : `Deck #${i + 1 - decks.filter(x => x.current).length} · ${d.wins}W ${d.losses}L`, cards: deckSlotNames(d.cards, v).map(n => ({ name: n, form: v[n] || '' })) });
+  });
+  loadSavedDecks().forEach(d => out.push({ label: `⭐ ${d.from || 'Saved deck'}`, cards: d.cards }));
+  return out;
+}
+function deckCompareHTML(data, battles, decks, tracked) {
+  const opts = deckCompareOptions(data, battles, decks);
+  if (opts.length < 2) return '<div class="empty-msg">Needs two decks — play a few, or save some with ☆ in the Decks tab or on the Meta screen.</div>';
+  _deckCmp = _deckCmp.map((x, i) => x < opts.length ? x : i);
+  if (!_meta) { try { _meta = JSON.parse(localStorage.getItem(META_CACHE_KEY) || 'null'); } catch(e) {} }
+  const P = _meta?.data ? metaParsed(_meta.data) : null;
+  const history = buildDeckMapFromBattles(battles, data.tag);
+  const owned = Object.fromEntries((data.cards || []).map(c => [c.name, c]));
+  const byName = Object.fromEntries(allCards.map(c => [c.name, c]));
+  const art = buildCardArtMap(battles);
+  const info = [0, 1].map(k => {
+    const o = opts[_deckCmp[k]], names = o.cards.map(c => c.name);
+    const costs = names.map(n => byName[n]?.elixirCost).filter(x => x != null);
+    const levels = names.map(n => owned[n]).filter(Boolean).map(cardDisplayLevel);
+    const gold = names.reduce((sum, n) => {
+      const c = owned[n]; if (!c) return sum;
+      const l = cardDisplayLevel(c);
+      return l < _deckUpTarget ? sum + computeUpgrade((c.rarity || 'common').toLowerCase(), l, c.count || 0, _deckUpTarget).totalGold : sum;
+    }, 0);
+    const mine = history[o.cards.map(c => c.form ? `${c.name}[${c.form}]` : c.name).sort().join('|')];
+    const metaKey = o.cards.map(c => { const id = byName[c.name]?.id; return id == null ? null : id + (c.form === 'evo' ? 'e' : c.form === 'hero' ? 'h' : ''); });
+    const exact = P && !metaKey.includes(null) ? P.decks.find(d => d.key === metaKey.slice().sort().join(',')) : null;
+    return { o, names, elixir: costs.length === 8 ? costs.reduce((a, b) => a + b, 0) / 8 : null,
+      wincons: META_WIN_CONS.filter(w => names.includes(w)), avgLv: levels.length ? levels.reduce((a, b) => a + b, 0) / levels.length : null,
+      locked: names.filter(n => !owned[n]), gold, mine, exact };
+  });
+  const sel = k => `<select onchange="setDeckCmp(${k}, this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:8px">
+      ${opts.map((o, i) => `<option value="${i}"${i === _deckCmp[k] ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
+  const shared = info[0].names.filter(n => info[1].names.includes(n));
+  // One row: label, then each deck's value; better marks the side that wins (1 = higher is better, -1 = lower)
+  const row = (label, vals, nums, better) => {
+    const best = better && nums[0] != null && nums[1] != null && nums[0] !== nums[1] ? ((nums[0] > nums[1]) === (better > 0) ? 0 : 1) : -1;
+    return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+      <div style="grid-column:1 / -1;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">${label}</div>
+      ${vals.map((v, i) => `<div style="font-size:13px;${best === i ? 'color:var(--green);font-weight:700' : ''}">${v}</div>`).join('')}
+    </div>`;
+  };
+  const rec = d => d ? `${d.wins}W ${d.losses}L${d.draws ? ` ${d.draws}D` : ''} · ${Math.round(d.wins / Math.max(d.wins + d.losses + d.draws, 1) * 100)}%` : '—';
+  const recN = d => d ? d.wins / Math.max(d.wins + d.losses + d.draws, 1) : null;
+  return `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      ${[0, 1].map(k => `<div style="min-width:0">${sel(k)}
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:3px">${info[k].o.cards.map(c => deckTileHTML(c.name, c.form, art[c.name], 'deck-list-tile')).join('')}</div>
+      </div>`).join('')}
+    </div>
+    <div style="margin-top:10px">
+      ${row('Avg elixir', info.map(x => x.elixir != null ? `💧 ${x.elixir.toFixed(1)}` : '—'), info.map(x => x.elixir), -1)}
+      ${row('Archetype', info.map(x => x.wincons.length ? x.wincons.map(esc).join(' + ') : '<span class="text-muted">no win condition from the list</span>'))}
+      ${row('Your record', info.map(x => rec(x.mine)), info.map(x => x.mine && x.mine.wins + x.mine.losses + x.mine.draws >= 3 ? recN(x.mine) : null), 1)}
+      ${row('Top players', info.map(x => x.exact ? `${fmtNum(x.exact.n)} games · ${Math.round(x.exact.rate * 100)}%` : `<span class="text-muted">${P ? 'not in the top 300' : 'open Meta once'}</span>`), info.map(x => x.exact?.rate ?? null), 1)}
+      ${row('Your avg level', info.map(x => x.avgLv != null ? x.avgLv.toFixed(1) : '—'), info.map(x => x.avgLv), 1)}
+      ${row(`Gold to Lv ${_deckUpTarget}`, info.map(x => x.gold ? `${fmtNum(x.gold)} 💰` : '<span class="text-green">at target ✓</span>'), info.map(x => x.gold), -1)}
+      ${info.some(x => x.locked.length) ? row('Not unlocked', info.map(x => x.locked.length ? `<span class="text-red">${x.locked.map(esc).join(', ')}</span>` : '—')) : ''}
+    </div>
+    <div style="font-size:12px;color:var(--muted);margin-top:8px">${shared.length ? `${shared.length} card${shared.length === 1 ? '' : 's'} in common: ${shared.map(esc).join(', ')}` : 'No cards in common.'} · green = the better side</div>`;
+}
+window.setDeckCmp = function(k, v) { _deckCmp[k] = parseInt(v, 10) || 0; renderDeckUpgradeScreen(); };
 window.setDeckUpRecent = function(idx) { _deckUpSelectedDeckIdx = parseInt(idx,10) || 0; renderDeckUpgradeScreen(); };
 window.setDeckUpTarget = function(v) { _deckUpTarget = parseInt(v,10) || MAX_LEVEL; renderDeckUpgradeScreen(); };
 
@@ -4874,7 +5127,7 @@ function cardImgFallback(el) {
   if (el._fallbackDone) return;
   el._fallbackDone = true;
   const d = document.createElement('div');
-  d.style.cssText = 'width:60px;height:72px;background:#2a2a45;border-radius:6px;margin:0 auto;flex-shrink:0';
+  d.style.cssText = 'width:60px;height:72px;background:var(--surface3);border-radius:6px;margin:0 auto;flex-shrink:0';
   el.replaceWith(d);
 }
 let _evoPlayerCards = [];
@@ -6981,6 +7234,7 @@ function metaYouHTML(P) {
     parts.push(`<div class="empty-msg" style="margin-bottom:12px">The API didn't return your full current deck — play a 1v1 battle with it and it'll show here.</div>`);
   }
   parts.push(bestDecksForYouHTML(P, data, mine));
+  parts.push(deckFinisherHTML(P));
   // Most-used top-player cards (all forms together) you own but haven't maxed
   const share = {};
   P.cards.forEach(c => { share[c.id] = (share[c.id] || 0) + c.share; });
@@ -7146,6 +7400,83 @@ function metaYourCountersHTML(data, mine) {
 // your level (your current deck's average, floored), then win rate. Only decks
 // with META_FIT_MIN_GAMES+ games and a winning record; one per card set.
 const META_FIT_MIN_GAMES = 20, META_FIT_SHOWN = 5;
+
+// ── Deck finisher: pick up to 4 cards, get the top-player decks that hold them
+// all (any form), ranked by how well your collection fits — cards not unlocked,
+// evo / hero forms you lack, then the gold to bring the other cards to your
+// picks' level — then win rate. Only the search box's suggestions and the box
+// under it redraw, so the input keeps focus ──
+const FINISH_MAX = 4;
+let _finishIds = [];
+function deckFinisherHTML(P) {
+  return `<div class="card" style="margin-top:4px">
+      <h3 style="margin-bottom:6px">🧩 Deck finisher</h3>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Pick up to ${FINISH_MAX} cards you want to play — the top-player decks with all of them, best fit for your cards first.</div>
+      <input type="search" id="finish-search" placeholder="🔍 Add a card…" autocomplete="off" oninput="finishSearch(this.value)"
+        style="width:100%;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:14px;font-family:'Inter',sans-serif">
+      <div id="finish-sugg"></div>
+    </div>
+    <div id="finish-box">${deckFinisherBox(P)}</div>`;
+}
+window.finishSearch = function(q) {
+  const el = document.getElementById('finish-sugg');
+  if (!el) return;
+  q = (q || '').trim().toLowerCase();
+  if (!q || _finishIds.length >= FINISH_MAX) { el.innerHTML = ''; return; }
+  const hits = allCards.filter(c => !_finishIds.includes(c.id) && c.name.toLowerCase().includes(q))
+    .sort((a, b) => a.name.toLowerCase().startsWith(q) === b.name.toLowerCase().startsWith(q) ? a.name.localeCompare(b.name) : a.name.toLowerCase().startsWith(q) ? -1 : 1).slice(0, 6);
+  el.innerHTML = hits.map(c => `<div class="stat-row" style="cursor:pointer" onclick="finishPick(${c.id})">
+      <span class="stat-label" style="display:flex;align-items:center;gap:8px;color:var(--text)">${c.iconUrls?.medium ? `<img src="${c.iconUrls.medium}" alt="" style="width:22px;height:28px;object-fit:contain">` : ''}${esc(c.name)}</span>
+      <span class="text-muted">＋</span></div>`).join('') || '<div style="font-size:12px;color:var(--muted);padding:6px 0">No card matches.</div>';
+};
+window.finishPick = function(id) {
+  if (!_finishIds.includes(id) && _finishIds.length < FINISH_MAX) _finishIds.push(id);
+  const input = document.getElementById('finish-search');
+  if (input) { input.value = ''; input.focus(); }
+  finishSearch('');
+  redrawFinisher();
+};
+window.finishDrop = function(id) { _finishIds = _finishIds.filter(x => x !== id); redrawFinisher(); };
+function redrawFinisher() {
+  const el = document.getElementById('finish-box');
+  if (el && _meta?.data) el.innerHTML = deckFinisherBox(metaParsed(_meta.data));
+}
+function deckFinisherBox(P) {
+  if (!_finishIds.length) return '';
+  const art = buildCardArtMap([]);
+  const chips = `<div style="display:flex;flex-wrap:wrap;gap:6px;margin:-4px 0 10px">${_finishIds.map(id => {
+    const c = allCards.find(x => x.id === id);
+    return `<button class="btn btn-secondary btn-sm" style="font-size:12px;padding:4px 10px" onclick="finishDrop(${id})" title="Remove">${esc(c?.name || id)} ✕</button>`;
+  }).join('')}</div>`;
+  const data = window._currentProfile?.data;
+  const owned = Object.fromEntries((data?.cards || []).map(c => [c.id, c]));
+  const lvl = pc => toDisplayLevel((pc.rarity || 'common').toLowerCase(), pc.level);
+  const picked = _finishIds.map(id => owned[id]).filter(Boolean).map(lvl);
+  const target = picked.length ? Math.max(...picked) : null;
+  const fits = P.decks.filter(d => d.n >= META_MIN_DECK_GAMES && _finishIds.every(id => d.cards.some(c => c.id === id)))
+    .map(d => {
+      let gold = 0, locked = 0;
+      const missing = [];
+      d.cards.forEach(c => {
+        const pc = owned[c.id];
+        if (!pc) { locked++; return; }
+        const l = lvl(pc);
+        if (target && l < target) gold += computeUpgrade((pc.rarity || 'common').toLowerCase(), l, pc.count || 0, target).totalGold;
+        if ((c.form === 'evo' && !ownsEvo(pc)) || (c.form === 'hero' && !ownsHero(pc))) missing.push(c);
+      });
+      return { d, gold, locked, missing };
+    })
+    .sort((a, b) => data ? a.locked - b.locked || a.missing.length - b.missing.length || a.gold - b.gold || b.d.rate - a.d.rate : b.d.rate - a.d.rate)
+    .filter((x, i, all) => all.findIndex(y => y.d.names.slice().sort().join() === x.d.names.slice().sort().join()) === i)
+    .slice(0, META_FIT_SHOWN);
+  if (!fits.length) return chips + `<div class="empty-msg" style="margin-bottom:12px">No top deck with ${META_MIN_DECK_GAMES}+ games holds all of these cards — try fewer.</div>`;
+  return chips + fits.map(({ d, gold, locked, missing }) => metaDeckItemHTML(d, P, [
+      `${Math.round(d.rate * 100)}% wins`,
+      locked ? `<span class="text-red">${locked} card${locked === 1 ? '' : 's'} not unlocked</span>` : '',
+      missing.length ? `<span class="text-red">no ${missing.map(c => `${c.form === 'evo' ? 'Evo' : 'Hero'} ${esc(c.name)}`).join(', ')}</span>` : '',
+      target ? (gold ? `<span class="text-accent">${fmtNum(gold)} 💰</span> to get the rest to ${target}` : `<span class="text-green">all at ${target}+ ✓</span>`) : ''
+    ].filter(Boolean).join(' · '))).join('');
+}
 function bestDecksForYouHTML(P, data, mine) {
   const owned = Object.fromEntries((data.cards || []).map(c => [c.id, c]));
   const lvl = pc => toDisplayLevel((pc.rarity || 'common').toLowerCase(), pc.level);
@@ -8089,11 +8420,50 @@ window.setWarSort = function(v) {
   el.innerHTML = warMembersHTML(war.race.clans.find(c => c.tag === _clanTag) || war.race.clan, war.race);
 };
 
+// ── War MVPs: current members by average fame per race they played, over the
+// races in the log, with the last 3 races against the ones before ──
+const MVP_SHOWN = 10;
+let _mvpAll = false;
+function warMvpHTML(log, tag) {
+  const members = new Map(_clanMembers.map(m => [m.tag, m]));
+  const per = {};
+  log.forEach((race, ri) => {
+    const mine = (race.standings || []).find(s => s.clan.tag === tag);
+    (mine?.clan.participants || []).forEach(p => {
+      if (!members.has(p.tag) || !(p.decksUsed || p.fame)) return;
+      const e = per[p.tag] || (per[p.tag] = { tag: p.tag, name: p.name, races: [] });
+      e.races.push({ ri, fame: p.fame || 0, decks: p.decksUsed || 0 });
+    });
+  });
+  const avg = list => list.length ? list.reduce((s, r) => s + r.fame, 0) / list.length : null;
+  const rows = Object.values(per).map(e => {
+    const recent = e.races.filter(r => r.ri < 3), older = e.races.filter(r => r.ri >= 3);
+    return { ...e, avg: avg(e.races), perDeck: e.races.reduce((s, r) => s + r.fame, 0) / Math.max(e.races.reduce((s, r) => s + r.decks, 0), 1),
+      trend: recent.length && older.length ? avg(recent) - avg(older) : null };
+  }).sort((a, b) => b.avg - a.avg);
+  if (!rows.length) return '';
+  const shown = _mvpAll ? rows : rows.slice(0, MVP_SHOWN);
+  const rising = rows.filter(r => r.trend > 0).sort((a, b) => b.trend - a.trend)[0];
+  return `<div class="card">
+      <h3 style="margin-bottom:6px">🏅 War MVPs <span style="font-weight:400;font-size:12px;color:var(--muted)">· last ${log.length} races</span></h3>
+      ${rising && rising.trend >= 100 ? `<div style="font-size:12px;margin-bottom:6px">📈 Most improved: <b>${esc(rising.name)}</b> <span class="text-green">+${fmtNum(Math.round(rising.trend))}</span> fame a race lately</div>` : ''}
+      ${shown.map((r, i) => `<div class="stat-row" style="cursor:pointer" onclick="viewFriend('${esc(r.tag)}')">
+        <span class="stat-label" style="min-width:0;flex:1">
+          <span style="display:block;color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="text-muted" style="font-size:12px;font-weight:400">#${i + 1}</span> ${i < 3 ? ['🥇', '🥈', '🥉'][i] + ' ' : ''}${esc(r.name)}</span>
+          <span style="font-size:11px">${r.races.length} race${r.races.length === 1 ? '' : 's'} · ~${fmtNum(Math.round(r.perDeck))} a deck${r.trend != null ? ` · <span class="${r.trend >= 0 ? 'text-green' : 'text-red'}">${r.trend >= 0 ? '▲' : '▼'} ${fmtNum(Math.abs(Math.round(r.trend)))}</span> lately` : ''}</span>
+        </span>
+        <span class="text-accent" style="font-weight:700;flex-shrink:0;margin-left:8px">⭐ ${fmtNum(Math.round(r.avg))}</span>
+      </div>`).join('')}
+      ${rows.length > MVP_SHOWN ? `<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px;justify-content:center" onclick="_mvpAll=!_mvpAll;clanTab('history')">${_mvpAll ? 'Show less' : `Show all ${rows.length}`}</button>` : ''}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Average fame per race played · current members · "lately" = the last 3 races against the ones before</div>
+    </div>`;
+}
+
 function warHistoryHTML(log, tag) {
   if (!log) return '<div class="empty-msg">War history isn\'t available for this clan right now.</div>';
   if (!log.length) return '<div class="empty-msg">No finished River Races yet.</div>';
   const memberTags = new Set(_clanMembers.map(m => m.tag));
-  return (clanTools().participation ? participationHTML(log, tag) : '') + log.map((race, i) => {
+  return (clanTools().participation ? participationHTML(log, tag) : '') + warMvpHTML(log, tag) + log.map((race, i) => {
     const standings = [...(race.standings || [])].sort((a,b) => a.rank - b.rank);
     const mine = standings.find(s => s.clan.tag === tag);
     if (!mine) return '';
