@@ -480,7 +480,7 @@ async function computeStats(env, now) {
 async function computeTop(env, now) {
   const st = await getState(env);
   const since = Math.floor((now - WINDOW_DAYS * DAY) / 1000), onBoard = (+st.board_at || 0) - HOUR;
-  const res = await env.DB.prepare(`
+  const [res, pairs] = await env.DB.batch([env.DB.prepare(`
     WITH s AS (
       SELECT pa AS tag, da AS deck, ca > cb AS w FROM matches WHERE time >= ?1
       UNION ALL
@@ -494,8 +494,14 @@ async function computeTop(env, now) {
     FROM players p LEFT JOIN r ON r.tag = p.tag AND r.rk = 1
       LEFT JOIN ratings d1 ON d1.day = ?3 AND d1.tag = p.tag
       LEFT JOIN ratings d7 ON d7.day = ?4 AND d7.tag = p.tag
-    WHERE p.seen_at >= ?2 ORDER BY p.rank`).bind(since, onBoard, dayKey(now - DAY), dayKey(now - 7 * DAY)).all();
-  const reads = rowsRead([res]);
+    WHERE p.seen_at >= ?2 ORDER BY p.rank`).bind(since, onBoard, dayKey(now - DAY), dayKey(now - 7 * DAY)),
+    // Rivalries: the pairs who met most (tags are stored sorted, so a pair is one
+    // group). One more pass over the window, ~140k rows a run (Oct 2026); only
+    // pairs where both are on the board are kept, checked against the list above
+    env.DB.prepare(`SELECT pa, pb, COUNT(*) AS n, SUM(ca > cb) AS w, SUM(ca = cb) AS d FROM matches WHERE time >= ?1
+      GROUP BY pa, pb HAVING n >= 3 ORDER BY n DESC LIMIT 400`).bind(since)]);
+  const reads = rowsRead([res, pairs]);
+  const board = new Set(res.results.map(r => r.tag));
   const top = {
     updated: now,
     next: now + refreshEvery(reads, TOP_SHARE),
@@ -505,6 +511,8 @@ async function computeTop(env, now) {
     // [tag, name, clan, rank, rating, main deck key, games with it, ranked games, wins, wins with the main deck,
     //  rating a day ago, a week ago (null: not on the board then)]
     players: res.results.map(r => [r.tag, r.name, r.clan, r.rank, r.rating, r.deck, r.n || 0, r.games || 0, r.wins || 0, r.w || 0, r.r1 ?? null, r.r7 ?? null]),
+    // [tag a, tag b, ranked games against each other, a's wins, draws], both on the board, most games first
+    rivals: pairs.results.filter(r => board.has(r.pa) && board.has(r.pb)).slice(0, 50).map(r => [r.pa, r.pb, r.n, r.w, r.d]),
   };
   await countReads(env, 'top', now, reads, { top_at: now, top: JSON.stringify(top) });
 }

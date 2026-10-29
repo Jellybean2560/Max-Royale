@@ -210,6 +210,9 @@
   .ph-head { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 12px; }
   .ph-name { background: none; border: none; padding: 0; color: var(--text); font-family: 'Rajdhani', sans-serif; font-size: 22px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 6px; min-width: 0; }
   .ph-name > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .link-pop { position: fixed; z-index: 1000; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px; width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+  .name-link { cursor: pointer; }
+  .name-link .ph-caret { font-size: 13px; color: var(--muted); margin-left: 4px; }
   .ph-caret { font-size: 12px; color: var(--muted); }
   .ph-icon { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 50%; width: 30px; height: 30px; cursor: pointer; font-size: 14px; line-height: 1; flex-shrink: 0; }
   .ph-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
@@ -1290,7 +1293,15 @@ function renderSavedAccounts() {
   if (!wrap) return;
   const list = getSavedAccounts();
   const current = localStorage.getItem('cr_player_tag');
+  const shown = window._currentProfile?.data;
   wrap.innerHTML = `
+    ${shown ? `
+    <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Link to ${esc(shown.name)}'s profile</div>
+    <div class="flex-row" style="margin-bottom:10px">
+      <button class="btn btn-secondary btn-sm" style="flex:1;justify-content:center" onclick="copyAppLink(event,'player','${esc(shown.tag)}')">🔗 Copy link</button>
+      ${navigator.share ? `<button class="btn btn-secondary btn-sm" style="flex:1;justify-content:center" onclick="shareAppLink(event,'player','${esc(shown.tag)}')">📤 Share</button>` : ''}
+    </div>
+    <div style="border-top:1px solid var(--border);margin:0 0 10px"></div>` : ''}
     ${list.length ? `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
       <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px">Accounts</span>
@@ -1410,7 +1421,7 @@ window.setTheme = function(v, ev) {
 // new phone or cleared site data would lose them. A backup is one JSON file of
 // those localStorage keys (caches are left out — they refetch); restoring
 // replaces them.
-const BACKUP_KEYS = ['cr_player_tag', 'cr_saved_accounts', 'cr_friends', 'cr_friends_sort',
+const BACKUP_KEYS = ['cr_clan_log_v1', 'cr_player_tag', 'cr_saved_accounts', 'cr_friends', 'cr_friends_sort',
                      'cr_deck_history_v1', 'cr_matchups_v1', 'cr_coplayers_v1', 'cr_trophy_history_v1',
                      'cr_progress_v1', 'cr_clan_tools', 'cr_play_v1', 'cr_goals_v1', 'cr_saved_decks'];
 window.exportBackup = function() {
@@ -1557,7 +1568,7 @@ async function viewFriend(tag, { fromHistory = false } = {}) {
     if (!fromHistory) recordHistory(data, battles);
     body.innerHTML = `
       <div class="lookup-header" style="margin-bottom:12px">
-        <div class="player-name">${esc(_friendData.name)}</div>
+        <div class="player-name name-link" onclick="linkMenu(event,'player','${esc(_friendData.tag)}')" title="Copy a link to this profile">${esc(_friendData.name)}<span class="ph-caret">▾</span></div>
         <div class="player-tag">${_friendData.tag}</div>
         <div class="trophies">🏆 <span style="color:var(--accent);font-weight:700">${fmtNum(_friendData.trophies)}</span></div>
         ${polHeaderLine(_friendData)}
@@ -1641,6 +1652,7 @@ async function friendClanTab() {
       return;
     }
     _fClan = data;
+    recordClan(data);
     if (_friendData !== d || _fTab !== 'clan') return;  // moved on meanwhile
   }
   pane.innerHTML = `
@@ -3198,6 +3210,64 @@ function takeStartScreen() {
   if (SHORTCUT_SCREENS.includes(screen)) goTo(screen);
 }
 
+// ── Links: ?player=TAG and ?clan=TAG open a profile or a clan. Tapping a name
+// (the profile header's Accounts menu, the profile modal's name, a clan header's
+// name) offers to copy or share one ──
+const appLink = (kind, tag) => `${location.origin}${location.pathname}?${kind}=${encodeURIComponent(String(tag).replace(/^#/, ''))}`;
+function takeLinkParams() {
+  const q = new URLSearchParams(location.search);
+  const player = q.get('player'), clan = q.get('clan');
+  if (!player && !clan) return;
+  history.replaceState(null, '', location.pathname);
+  const tag = normalizeTag(player || clan);
+  if (!tag) return;
+  if (clan) {
+    setClanView('clan');
+    document.getElementById('clan-tag').value = tag;
+    goTo('clan');
+    loadClan();
+  } else if (!localStorage.getItem('cr_player_tag')) {
+    loadPlayer(tag);  // a fresh device: it becomes the profile
+  } else if (window._currentProfile?.data?.tag === tag) {
+    goTo('lookup');
+  } else {
+    viewFriend(tag);  // keeps your own profile loaded
+  }
+}
+let _linkPop = null;
+function closeLinkMenu() { if (_linkPop) { _linkPop.remove(); _linkPop = null; } }
+document.addEventListener('click', e => { if (_linkPop && !_linkPop.contains(e.target)) closeLinkMenu(); });
+document.addEventListener('scroll', () => closeLinkMenu(), true);
+window.linkMenu = function(ev, kind, tag) {
+  ev.stopPropagation();
+  closeLinkMenu();
+  const el = document.createElement('div');
+  el.className = 'link-pop';
+  el.innerHTML = `<div style="font-size:11px;color:var(--muted);margin-bottom:6px">Link to this ${kind === 'player' ? 'profile' : 'clan'} · ${esc(tag)}</div>
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-secondary btn-sm" style="flex:1;justify-content:center" onclick="copyAppLink(event,'${kind}','${esc(tag)}')">🔗 Copy link</button>
+      ${navigator.share ? `<button class="btn btn-secondary btn-sm" style="flex:1;justify-content:center" onclick="shareAppLink(event,'${kind}','${esc(tag)}')">📤 Share</button>` : ''}
+    </div>`;
+  document.body.appendChild(el);
+  const r = ev.currentTarget.getBoundingClientRect();
+  el.style.top = Math.min(r.bottom + 4, innerHeight - el.offsetHeight - 8) + 'px';
+  el.style.left = Math.max(8, Math.min(r.left, innerWidth - el.offsetWidth - 8)) + 'px';
+  _linkPop = el;
+};
+window.copyAppLink = async function(ev, kind, tag) {
+  ev.stopPropagation();
+  const url = appLink(kind, tag), btn = ev.currentTarget;
+  try { await navigator.clipboard.writeText(url); }
+  catch(e) { window.prompt('Copy this link:', url); return; }
+  const old = btn.innerHTML;
+  btn.innerHTML = '✓ Copied';
+  setTimeout(() => { btn.innerHTML = old; }, 1500);
+};
+window.shareAppLink = async function(ev, kind, tag) {
+  ev.stopPropagation();
+  try { await navigator.share({ title: 'Max Royale', url: appLink(kind, tag) }); closeLinkMenu(); } catch(e) {}
+};
+
 // A deck shared to the installed app (manifest share_target) arrives as
 // ?title=&text=&url= — open it in Deck Upgrade once the profile is on screen.
 function takeSharedDeck() {
@@ -4156,7 +4226,7 @@ const _seasonState = {};
 function seasonRecapHTML(data, battles, scope) {
   const play = playEntry(data, battles);
   const keys = Object.keys(play.seasons).sort().reverse();
-  _seasonState[scope] = { data, play, key: keys.includes(_seasonState[scope]?.key) ? _seasonState[scope].key : (keys[0] || seasonKey(Date.now())) };
+  _seasonState[scope] = { data, battles: battles || [], play, key: keys.includes(_seasonState[scope]?.key) ? _seasonState[scope].key : (keys[0] || seasonKey(Date.now())) };
   return `<div class="card" id="${scope}-season">${seasonCardBody(scope)}</div>`;
 }
 function seasonCardBody(scope) {
@@ -4183,6 +4253,7 @@ function seasonCardBody(scope) {
   const lastRes = data.lastPathOfLegendSeasonResult, curRes = data.currentPathOfLegendSeasonResult;
   const finish = key === cur ? curRes : key === seasonKey(seasonStartOf(Date.now()) - 1) ? lastRes : null;
   if (finish?.leagueNumber) rows.push(ovRow(key === cur ? 'Now' : 'Finished', `${esc(polLeagueName(finish))}${finish.rank ? ` #${fmtNum(finish.rank)}` : ''}${finish.trophies ? ` · ⚔️ ${fmtNum(finish.trophies)}` : ''}`));
+  if (key === cur) { const pr = ratingProjection(data, _seasonState[scope].battles, s, end); if (pr) rows.push(pr); }
   if (s.three) rows.push(ovRow('3-crown wins', `👑 ${fmtNum(s.three)} <span class="text-muted">· ${Math.round(s.three / Math.max(s.g[0], 1) * 100)}% of wins</span>`));
   // Most played deck, and its record
   const art = buildCardArtMap([]);
@@ -4210,6 +4281,38 @@ function seasonCardBody(scope) {
     <div style="font-size:12px;color:var(--muted);margin-bottom:4px">${day(start)} – ${day(end)}${key === cur ? ` · ends in ${fmtDuration(end - Date.now())}` : ''}</div>
     ${rows.join('')}${deckPart}
     <div style="font-size:11px;color:var(--muted);margin-top:6px">${fmtNum(games)} battles seen on this device${partial ? ` since ${day(s.first)}` : ''} · friendlies and boat battles left out · the battle log only keeps ~30, so refresh often for a full recap</div>`;
+}
+// Where the rating ends the season at the current pace: the average rating change
+// of the ranked games in the log × ranked games a day this season (seen on this
+// device) × days left. Ultimate Champion only — the only league with a rating.
+// The global rank it would have comes from /top (loaded when needed).
+function ratingProjection(data, battles, s, end) {
+  const res = data.currentPathOfLegendSeasonResult;
+  if (res?.leagueNumber !== 7 || !res.trophies) return '';
+  const ranked = (battles || []).filter(b => b.type === 'pathOfLegend' && b.team?.[0]?.trophyChange != null);
+  const games = s.r[0] + s.r[1] + s.r[2];
+  if (ranked.length < 5 || games < 5) return '';
+  const D = 864e5, start = seasonStartOf(Date.now());
+  const perGame = ranked.reduce((a, b) => a + b.team[0].trophyChange, 0) / ranked.length;
+  const perDay = games / Math.max(1, (Date.now() - Math.max(start, s.first || start)) / D);
+  const left = Math.max(0, (end - Date.now()) / D);
+  const proj = Math.round(res.trophies + perGame * perDay * left);
+  if (!_metaTop) { try { _metaTop = JSON.parse(localStorage.getItem(META_TOP_CACHE_KEY) || 'null'); } catch(e) {} }
+  if (!_metaTop?.data || metaStale(_metaTop)) setTimeout(loadMetaTop, 0);
+  const ratings = (_metaTop?.data?.players || []).map(p => p[4]).filter(r => r != null);
+  let rank = '';
+  if (ratings.length >= 1000) {
+    const above = ratings.filter(r => r > proj).length;
+    rank = above < 1000 ? ` · #${fmtNum(above + 1)} on today's board` : ` · below today's #1000 (⚔️ ${fmtNum(Math.min(...ratings))})`;
+  }
+  return ovRow('Pace to season end', `⚔️ ~${fmtNum(proj)}${rank}
+    <div class="text-muted" style="font-size:11px;font-weight:400">${perGame >= 0 ? '+' : ''}${perGame.toFixed(1)} a ranked game (last ${ranked.length}) × ~${perDay.toFixed(1)} games a day × ${left.toFixed(1)} days left</div>`, '');
+}
+function refreshSeasonCards() {
+  for (const scope in _seasonState) {
+    const el = document.getElementById(`${scope}-season`);
+    if (el) el.innerHTML = seasonCardBody(scope);
+  }
 }
 window.setSeasonRecap = function(scope, k) {
   if (!_seasonState[scope]) return;
@@ -4582,6 +4685,69 @@ function lossStreak(battles) {
   let n = 0;
   for (const b of competitiveBattles(battles)) { if (battleResult(b) !== 'loss') break; n++; }
   return n;
+}
+// ── Next match prep: the opponent cards this profile loses to most (Opponent
+// Cards record), how top players with its current deck do against each, and the
+// cards top decks beat it with (/counters, fetched when it's folded out) ──
+const PREP_CARDS = 3, PREP_MIN_GAMES = 150;
+const _prepOpen = {};
+window.togglePrep = function(scope) {
+  _prepOpen[scope] = !_prepOpen[scope];
+  const el = document.getElementById(`${scope}-prep`);
+  if (el) el.outerHTML = prepNoteHTML(scope);
+};
+function refreshPrepNotes() {
+  for (const scope of ['p', 'f']) {
+    const el = document.getElementById(`${scope}-prep`);
+    if (el && _prepOpen[scope]) el.outerHTML = prepNoteHTML(scope);
+  }
+}
+function prepNoteHTML(scope) {
+  const data = _battleState[scope]?.data;
+  if (!data) return '';
+  const byName = Object.fromEntries(allCards.map(c => [c.name, c]));
+  const weak = Object.entries(loadMatchups(data.tag)?.cards || {}).map(([name, r]) => ({ name, r, n: r[0] + r[1] + r[2] }))
+    .filter(x => x.n >= MATCHUP_MIN_GAMES && wldRate(x.r) < 0.5 && byName[x.name])
+    .sort((a, b) => (b.r[1] - b.r[0]) - (a.r[1] - a.r[0]) || wldRate(a.r) - wldRate(b.r)).slice(0, PREP_CARDS);
+  if (!weak.length) return '';
+  const open = !!_prepOpen[scope], you = scope === 'p' ? 'you' : 'they';
+  const head = `<div onclick="togglePrep('${scope}')" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+      <span>🎯</span><span style="flex:1;min-width:0"><b>Next match prep</b> <span class="text-muted">· watch for ${weak.map(x => esc(x.name)).join(', ')}</span></span><span class="text-muted">${open ? '▴' : '▾'}</span></div>`;
+  let body = '';
+  if (open) {
+    const C = metaCountersMap();
+    const mine = (data.currentDeck || []).map(c => c.id);
+    const ids = [...mine].sort((a, b) => a - b).join();
+    body = !C ? (_metaCounters?.error ? `<div class="error-msg" style="margin-top:8px">${esc(_metaCounters.error)}</div>` : '<div class="spinner" style="margin:8px auto"></div>')
+      : weak.map(x => {
+        const i = C.cards.indexOf(byName[x.name].id);
+        // Top players with the same eight cards (any forms), against this card
+        let dn = 0, dw = 0;
+        const per = {};
+        if (i >= 0) for (const key in C.decks) {
+          const e = C.decks[key], n = e.n[i] || 0;
+          if (!n) continue;
+          const kids = key.split(',').map(k => parseInt(k, 10));
+          if (mine.length === 8 && [...kids].sort((a, b) => a - b).join() === ids) { dn += n; dw += e.w[i]; }
+          if (n < 10) continue;
+          // Every card of a deck that played against it gets that deck's record
+          new Set(kids).forEach(id => { const t = per[id] || (per[id] = [0, 0]); t[0] += n; t[1] += e.w[i]; });
+        }
+        const helpers = Object.entries(per).map(([id, [n, w]]) => ({ c: metaCardOf(id), n, rate: w / n }))
+          .filter(h => h.n >= PREP_MIN_GAMES && h.c.id !== byName[x.name].id && !mine.includes(h.c.id))
+          .sort((a, b) => b.rate - a.rate).slice(0, 2);
+        const img = byName[x.name].iconUrls?.medium;
+        return `<div style="display:flex;gap:10px;padding:8px 0;border-top:1px solid var(--border)">
+          ${img ? `<img src="${img}" alt="" loading="lazy" decoding="async" style="width:34px;height:41px;object-fit:contain;flex-shrink:0">` : ''}
+          <div style="flex:1;min-width:0;font-size:12px;line-height:1.5">
+            <div><b style="font-size:13px">${esc(x.name)}</b> · ${you} <span class="text-red">${x.r[0]}–${x.r[1]}${x.r[2] ? `–${x.r[2]}` : ''}</span></div>
+            ${dn >= 20 ? `<div>Top players with ${scope === 'p' ? 'your' : 'their'} deck: <b class="${winCls(dw / dn)}">${mPct(dw / dn, 0)}</b> <span class="text-muted">(${fmtNum(dn)} games)</span></div>` : ''}
+            ${helpers.length ? `<div>Top decks beat it best with ${helpers.map(h => `<b>${esc(h.c.name)}</b> <span class="${winCls(h.rate)}">${mPct(h.rate, 0)}</span>`).join(' · ')}</div>` : ''}
+          </div>
+        </div>`;
+      }).join('') + `<div style="font-size:11px;color:var(--muted);margin-top:4px">${scope === 'p' ? 'Your' : 'Their'} record from Battle Stats → Opponent Cards; the rest from top-1,000 ranked games this week.</div>`;
+  }
+  return `<div class="card" id="${scope}-prep" style="padding:10px 12px">${head}${body}</div>`;
 }
 function streakNoteHTML(battles, scope) {
   const n = lossStreak(battles);
@@ -5928,7 +6094,7 @@ function _renderBattleList(scope) {
 
   const filtered = battles.filter(b => (filter === 'all' || battleModeLabel(b) === filter) && (!result || battleResult(b) === result));
   if (!filtered.length) return `${bar}<div class="empty-msg">No battles for this filter.</div>`;
-  const streakNote = filter === 'all' && !result ? streakNoteHTML(battles, scope) : '';
+  const streakNote = filter === 'all' && !result ? streakNoteHTML(battles, scope) + prepNoteHTML(scope) : '';
   // Battles arrive newest-first, so each day's battles are consecutive
   const dayOf = b => b.battleTime ? battleDayLabel(b.battleTime) : '';
   const dayHead = (b, bi) => {
@@ -6295,6 +6461,12 @@ const META_SORTS = {
 const META_KINDS = { all: 'All', evo: 'Evolutions', hero: 'Heroes' };
 let _meta = null, _metaView = 'decks', _metaSort = { decks: 'played', cards: 'used', players: 'rank' }, _metaLoading = false;
 let _metaQuery = '', _metaKind = 'all', _metaShown = META_PAGE, _metaParsed = null;
+// Decks filters: average elixir band and a win condition
+const META_ELIXIR = { '': 'Any elixir', lo: '≤ 3.0 elixir', mid: '3.1 – 3.6', hi: '3.7 – 4.2', top: '4.3+ elixir' };
+const metaElixirOk = (band, e) => !band || (band === 'lo' ? e <= 3.05 : band === 'mid' ? e > 3.05 && e <= 3.65 : band === 'hi' ? e > 3.65 && e <= 4.25 : e > 4.25);
+let _metaElixir = '', _metaArch = '';
+window.setMetaElixir = function(v) { _metaElixir = v; _metaShown = META_PAGE; redrawMetaList(); };
+window.setMetaArch = function(v) { _metaArch = v; _metaShown = META_PAGE; redrawMetaList(); };
 let _metaTop = null, _metaTopLoading = false, _metaTopQuery = '';
 // Country leaderboards (Path of Legends, straight from the API): the chosen
 // country in cr_meta_country ('' = the global top 1,000), the country list in
@@ -6450,7 +6622,11 @@ function drawMeta() {
     </select>
     ${view === 'decks' ? `
       <input id="meta-search" type="search" value="${esc(_metaQuery)}" placeholder="🔍 Decks with cards… e.g. Hog Rider, Log" oninput="setMetaQuery(this.value)"
-        style="width:100%;margin-bottom:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:14px;font-family:'Inter',sans-serif">` : `
+        style="width:100%;margin-bottom:8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:14px;font-family:'Inter',sans-serif">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">
+        <select onchange="setMetaElixir(this.value)" style="${CLAN_SELECT_STYLE}">${Object.entries(META_ELIXIR).map(([v, l]) => `<option value="${v}"${_metaElixir === v ? ' selected' : ''}>💧 ${l}</option>`).join('')}</select>
+        <select onchange="setMetaArch(this.value)" style="${CLAN_SELECT_STYLE}"><option value="">🎯 Any archetype</option>${metaArchOptions(P).map(a => `<option value="${esc(a)}"${_metaArch === a ? ' selected' : ''}>🎯 ${esc(a)}</option>`).join('')}</select>
+      </div>` : `
       <div class="filter-bar" style="margin-bottom:10px">
         ${Object.entries(META_KINDS).map(([k, l]) => `<button class="filter-btn ${_metaKind === k ? 'active' : ''}" onclick="setMetaKind('${k}')">${l}</button>`).join('')}
       </div>`}`;
@@ -6619,6 +6795,7 @@ async function loadMetaCounters() {
     _metaCountersLoading = false;
   }
   if (currentScreen === 'meta') redrawMetaList();
+  refreshPrepNotes();
 }
 // { cards: [id], decks: { key: { n: [games per card], w: [wins] } } }, or null while loading
 function metaCountersMap() {
@@ -6652,14 +6829,18 @@ function metaDecksHTML(P, sort) {
   const q = terms.length > 0;
   const hit = (d, t) => allCards.some(c => c.name.toLowerCase() === t) ? d.names.some(n => n.toLowerCase() === t) : d.search.includes(t);
   if (q) decks = decks.filter(d => terms.every(t => hit(d, t)));
+  const filtered = !!(_metaElixir || _metaArch);
+  if (_metaElixir) decks = decks.filter(d => metaElixirOk(_metaElixir, d.cards.reduce((a, c) => a + c.elixir, 0) / 8));
+  if (_metaArch) decks = decks.filter(d => d.names.includes(_metaArch));
   if (sort === 'winrate') decks = decks.filter(d => d.n >= META_MIN_DECK_GAMES).sort((a, b) => b.rate - a.rate || b.n - a.n);
   if (sort === 'three') decks = decks.filter(d => d.n >= META_MIN_DECK_GAMES).sort((a, b) => b.three / b.n - a.three / a.n || b.n - a.n);
   // 100+ games: below that, a deck's edge over its ratings is mostly noise
   if (sort === 'edge') decks = decks.filter(d => metaEdge(d) != null && d.n >= 100).sort((a, b) => metaEdge(b) - metaEdge(a));
-  if (!decks.length) return `<div class="empty-msg">${q ? `No top deck with "${esc(_metaQuery.trim())}"${sort !== 'played' ? ` and ${META_MIN_DECK_GAMES}+ games` : ''}.` : `No deck has ${META_MIN_DECK_GAMES}+ games yet.`}</div>`;
+  if (!decks.length) return `<div class="empty-msg">${q || filtered ? `No top deck${q ? ` with "${esc(_metaQuery.trim())}"` : ''}${filtered ? ' for these filters' : ''}${sort !== 'played' ? ` with ${META_MIN_DECK_GAMES}+ games` : ''}.` : `No deck has ${META_MIN_DECK_GAMES}+ games yet.`}</div>`;
   const shown = decks.slice(0, _metaShown);
   const edgeTxt = d => { const e = metaEdge(d); return sort === 'edge' && e != null ? ` · <b class="${e >= 0 ? 'text-green' : 'text-red'}">${e > 0 ? '+' : ''}${(e * 100).toFixed(1)} pts</b> vs its ratings` : ''; };
-  return (!q && sort === 'played' ? metaWeekHTML(P) : '')
+  return (!q && !filtered && sort === 'played' ? metaWeekHTML(P) : '')
+    + (filtered ? `<div style="font-size:12px;color:var(--muted);margin:-2px 0 8px">${decks.length} of the top ${P.decks.length} decks · ${mPct(decks.reduce((a, d) => a + d.n, 0) / P.totalDecks)} of decks played</div>` : '')
     + shown.map((d, i) => metaDeckItemHTML(d, P, `#${i + 1} · in ${(d.n / P.totalDecks * 100).toFixed(1)}% of decks${edgeTxt(d)}`)).join('')
     + (decks.length > shown.length ? `<button class="btn btn-secondary" style="width:100%;margin-top:4px" onclick="metaShowMore()">Show more (${decks.length - shown.length} more)</button>` : '');
 }
@@ -6919,6 +7100,87 @@ function metaWeekHTML(P) {
     </div>`;
 }
 
+// Win conditions in the top decks, most decks first (the archetype filter)
+function metaArchOptions(P) {
+  const n = {};
+  P.decks.forEach(d => d.names.forEach(x => { if (META_WIN_CONS.includes(x)) n[x] = (n[x] || 0) + d.n; }));
+  return Object.keys(n).sort((a, b) => n[b] - n[a]);
+}
+
+// ── Deck vs deck: two top decks' estimated head-to-head, from each deck's record
+// against the other's cards (/counters) — top decks rarely meet each other often
+// enough for a direct record ──
+const META_VS_DECKS = 60;
+let _metaVs = [0, 1];
+window.setMetaVs = function(i, v) { _metaVs[i] = +v; redrawMetaList(); };
+const metaDeckLabel = (d, i) => {
+  const head = d.names.find(n => META_WIN_CONS.includes(n)) || d.names[0];
+  return `#${i + 1} ${head} · ${d.names.filter(n => n !== head && !META_WIN_CONS.includes(n)).slice(0, 3).join(', ')}`;
+};
+function metaVersusHTML(P) {
+  const decks = P.decks.slice(0, META_VS_DECKS);
+  if (decks.length < 2) return '';
+  const C = metaCountersMap();
+  const head = metaCardHead('Deck vs deck', 'Pick two top decks: how each does against the other\'s cards.');
+  if (!C) return `<div class="card">${head}${_metaCounters?.error ? `<div class="error-msg">${esc(_metaCounters.error)}</div>` : '<div class="spinner"></div>'}</div>`;
+  _metaVs = _metaVs.map(i => Math.min(i, decks.length - 1));
+  const [A, B] = _metaVs.map(i => decks[i]);
+  const pick = k => `<select onchange="setMetaVs(${k}, this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:6px;text-align:left">${decks.map((d, i) => `<option value="${i}"${_metaVs[k] === i ? ' selected' : ''}>${esc(metaDeckLabel(d, i))}</option>`).join('')}</select>`;
+  // A deck's games and wins against each card of the other deck (by card id, any form)
+  const against = (x, y) => {
+    const e = C.decks[x.key];
+    if (!e) return null;
+    const ids = [...new Set(y.cards.map(c => c.id))];
+    return y.cards.map(c => { const i = C.cards.indexOf(c.id); return { c, n: i >= 0 ? e.n[i] : 0, w: i >= 0 ? e.w[i] : 0 }; })
+      .filter((r, i, all) => all.findIndex(z => z.c.id === r.c.id) === i && ids.includes(r.c.id));
+  };
+  const ab = against(A, B), ba = against(B, A);
+  const body = (() => {
+    if (A === B) return `<div style="font-size:12px;color:var(--muted)">Pick two different decks.</div>`;
+    if (!ab || !ba) return `<div style="font-size:12px;color:var(--muted)">${!ab ? 'The first' : 'The second'} deck joined the top decks this update — its matchups are counted from the next one.</div>`;
+    const tot = rows => rows.reduce((a, r) => [a[0] + r.n, a[1] + r.w], [0, 0]);
+    const [na, wa] = tot(ab), [nb, wb] = tot(ba);
+    if (na < 30 || nb < 30) return `<div style="font-size:12px;color:var(--muted)">Too few games against each other's cards yet.</div>`;
+    const est = (wa / na + (1 - wb / nb)) / 2;
+    const tiles = rows => `<div style="display:grid;grid-template-columns:repeat(8,1fr);gap:3px">${rows.map(r => `<div style="text-align:center;min-width:0;${metaFew(r.n)}" title="${esc(r.c.name)} · ${fmtNum(r.n)} games">
+        ${metaCardImg(r.c) ? `<img src="${metaCardImg(r.c)}" alt="${esc(r.c.name)}" loading="lazy" decoding="async" style="width:100%;aspect-ratio:5/6;object-fit:contain">` : `<div style="font-size:8px">${esc(r.c.name)}</div>`}
+        <div class="${r.n ? winCls(r.w / r.n) : 'text-muted'}" style="font-size:10px;font-weight:700">${r.n ? mPct(r.w / r.n, 0) : '—'}</div></div>`).join('')}</div>`;
+    const worst = (rows, x) => rows.filter(r => r.n >= META_FEW).sort((p, q) => p.w / p.n - q.w / q.n)[0];
+    const kA = worst(ab), kB = worst(ba);
+    return `
+      <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin:8px 0">
+        <span class="${winCls(est)}" style="font-size:22px;font-weight:700">${mPct(est, 0)}</span>
+        <span class="text-muted" style="font-size:12px">first deck's estimated win rate</span>
+        <span class="${winCls(1 - est)}" style="font-size:22px;font-weight:700">${mPct(1 - est, 0)}</span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin:6px 0 3px">First deck's win rate against each card of the second</div>${tiles(ab)}
+      <div style="font-size:11px;color:var(--muted);margin:8px 0 3px">Second deck's win rate against each card of the first</div>${tiles(ba)}
+      ${kA || kB ? `<div style="font-size:12px;margin-top:8px">Deciding cards: ${[kA ? `<b>${esc(kA.c.name)}</b> (the first deck wins ${mPct(kA.w / kA.n, 0)} against it)` : '', kB ? `<b>${esc(kB.c.name)}</b> (the second wins ${mPct(kB.w / kB.n, 0)})` : ''].filter(Boolean).join(' · ')}</div>` : ''}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">An estimate: each deck's record against decks holding the other's cards, averaged both ways — not games between these exact decks. Faded: under ${META_FEW} games.</div>`;
+  })();
+  return `<div class="card">${head}${pick(0)}${pick(1)}${body}</div>`;
+}
+
+// ── Rivalries (Players view): the top-1,000 pairs who met most in ranked this week ──
+let _metaRivalsAll = false;
+window.metaRivalsAll = function() { _metaRivalsAll = true; redrawMetaList(); };
+function metaRivalsHTML(t) {
+  if (!t.rivals?.length) return '';
+  const by = Object.fromEntries(t.players.map(p => [p[0], p]));
+  const who = tag => { const p = by[tag]; return `<span style="cursor:pointer" onclick="viewFriend('${esc(tag)}')"><b>${esc(p?.[1] || tag)}</b> <span class="text-muted" style="font-size:11px">#${p?.[3] ?? '?'}</span></span>`; };
+  const list = t.rivals.slice(0, _metaRivalsAll ? 20 : 5);
+  return `<div class="card" style="padding:10px 12px">
+      <div class="mu-sub" style="margin-top:0">⚔️ Rivalries this week</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:4px">Top-1,000 players who met most in ranked over the last ${t.window_days} days.</div>
+      ${list.map(([a, b, n, w, d]) => `<div style="display:flex;align-items:center;gap:6px;font-size:13px;padding:5px 0;border-top:1px solid var(--border)">
+          <span style="flex:1;min-width:0;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${who(a)}</span>
+          <span style="font-weight:700;white-space:nowrap;padding:0 4px"><span class="${w > n - w - d ? 'text-green' : ''}">${w}</span>–<span class="${n - w - d > w ? 'text-green' : ''}">${n - w - d}</span>${d ? `<span class="text-muted" style="font-size:11px"> ${d}D</span>` : ''}</span>
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${who(b)}</span>
+        </div>`).join('')}
+      ${!_metaRivalsAll && t.rivals.length > 5 ? `<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:6px" onclick="metaRivalsAll()">Show more (${Math.min(20, t.rivals.length) - 5})</button>` : ''}
+    </div>`;
+}
+
 // ── Stats: charts over the same /meta, plus card trend lines from /history ──
 const META_HISTORY_URL = 'https://max-royale-meta.jellevandenwouwer.workers.dev/history';
 const META_HISTORY_CACHE_KEY = 'cr_meta_history_cache';
@@ -6947,7 +7209,7 @@ function metaCardTotals(P) {
 
 function metaStatsHTML(P) {
   const totals = metaCardTotals(P);
-  return [metaScatterHTML(P), metaArchetypesHTML(totals), metaArchMatchupsHTML(totals), metaFamiliesHTML(P), metaRisingHTML(P), metaCountersHTML(P, totals), metaPairsHTML(P, totals), metaRatingHTML(P, totals),
+  return [metaScatterHTML(P), metaArchetypesHTML(totals), metaArchMatchupsHTML(totals), metaVersusHTML(P), metaFamiliesHTML(P), metaRisingHTML(P), metaCountersHTML(P, totals), metaPairsHTML(P, totals), metaRatingHTML(P, totals),
           metaElixirHTML(P), metaTroopsHTML(P), metaActivityHTML(P), metaTrendsHTML(P, totals), metaBalanceHTML(totals), metaMonthHTML(P, totals), metaFormsHTML(totals)].join('');
 }
 
@@ -7886,6 +8148,7 @@ async function loadMetaTop() {
   } finally {
     _metaTopLoading = false;
     if (currentScreen === 'meta' && (_metaView === 'players' || _metaView === 'decks' || _metaDeckOpen.size)) redrawMetaList();
+    refreshSeasonCards();
   }
 }
 function metaPlayersHTML() {
@@ -7919,7 +8182,7 @@ function metaPlayersHTML() {
   const sinceNote = t.rating_days && sortP !== 'rank' ? ` ▲▼ since the ${new Date(t.rating_days[sortP === 'day' ? 0 : 1]).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} leaderboard (00:00 UTC).` : '';
   const art = buildCardArtMap([]);
   const shown = list.slice(0, _metaShown);
-  return (q ? '' : metaYourRankHTML(t.players)) + `<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Main deck: their most played ranked deck in the last ${t.window_days} days.${sinceNote} ${metaUpdatedText(t)}.</div>`
+  return (q ? '' : metaYourRankHTML(t.players)) + (q || sortP !== 'rank' ? '' : metaRivalsHTML(t)) + `<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">Main deck: their most played ranked deck in the last ${t.window_days} days.${sinceNote} ${metaUpdatedText(t)}.</div>`
     + shown.map(p => {
       const [tag, name, clan, rank, rating, deck, deckGames, games, wins] = p;
       const label = mine.has(tag) ? 'You' : friends.has(tag) ? 'Friend' : '';
@@ -8345,6 +8608,109 @@ async function refreshClanIfStale() {
 // ── Clan cache (matches the profile cache pattern) ──
 function saveClanCache(tag, data) {
   try { localStorage.setItem('cr_clan_cache', JSON.stringify({ tag, data, savedAt: Date.now() })); } catch(e) {}
+  recordClan(data);
+}
+
+// ── Clan changes and donation history (cr_clan_log_v1), built on this device from
+// every fresh clan lookup: who joined / left / was promoted, trophies since the
+// look before, and each week's donations (the API resets them weekly) ──
+const CLAN_LOG_KEY = 'cr_clan_log_v1', CLAN_LOG_CLANS = 6, CLAN_LOG_EVENTS = 150, CLAN_LOG_WEEKS = 9;
+const ROLE_RANK = { member: 0, elder: 1, coLeader: 2, leader: 3 };
+const ROLE_NAME = { member: 'Member', elder: 'Elder', coLeader: 'Co-Leader', leader: 'Leader' };
+function loadClanLog() {
+  try { return JSON.parse(localStorage.getItem(CLAN_LOG_KEY) || '{}'); } catch(e) { return {}; }
+}
+function recordClan(data, now = Date.now()) {
+  if (!data?.tag || !data.memberList) return;
+  const all = loadClanLog();
+  const e = all[data.tag] || { at: 0, m: null, pat: 0, pm: null, ev: [], wk: [] };
+  // members: tag → [name, role, trophies, donations]
+  const cur = Object.fromEntries(data.memberList.map(m => [m.tag, [m.name, m.role, m.trophies || 0, m.donations || 0]]));
+  if (e.m) {
+    for (const t in cur) if (!e.m[t]) e.ev.push([now, 'join', t, cur[t][0]]);
+    for (const t in e.m) if (!cur[t]) e.ev.push([now, 'leave', t, e.m[t][0]]);
+    for (const t in cur) if (e.m[t] && e.m[t][1] !== cur[t][1])
+      e.ev.push([now, (ROLE_RANK[cur[t][1]] ?? 0) > (ROLE_RANK[e.m[t][1]] ?? 0) ? 'up' : 'down', t, cur[t][0], cur[t][1]]);
+  }
+  // The look before stays as the trophy baseline; looks within an hour only update the latest
+  if (e.m && now - e.at >= 3600e3) { e.pm = e.m; e.pat = e.at; }
+  e.m = cur; e.at = now;
+  e.ev = e.ev.filter(x => x[0] > now - 60 * 864e5).slice(-CLAN_LOG_EVENTS);
+  // Donations: a new week once most members' counts went down (the weekly reset),
+  // or the last week is over 7 days old; within a week each member's highest count
+  const w = e.wk[e.wk.length - 1];
+  const both = w ? Object.keys(cur).filter(t => (w.d[t] || 0) > 0) : [];
+  const dropped = both.filter(t => cur[t][3] < w.d[t]).length;
+  if (!w || now - w.s > 7 * 864e5 || (both.length && dropped > both.length / 2)) {
+    e.wk.push({ s: now, d: Object.fromEntries(Object.entries(cur).map(([t, v]) => [t, v[3]])) });
+    e.wk = e.wk.slice(-CLAN_LOG_WEEKS);
+  } else {
+    for (const t in cur) w.d[t] = Math.max(w.d[t] || 0, cur[t][3]);
+  }
+  all[data.tag] = e;
+  // Keep the most recently looked-up clans only
+  const keep = Object.entries(all).sort((a, b) => b[1].at - a[1].at).slice(0, CLAN_LOG_CLANS);
+  try { localStorage.setItem(CLAN_LOG_KEY, JSON.stringify(Object.fromEntries(keep))); } catch(err) {}
+}
+let _clanLogAll = false, _clanDonAll = false;
+window.clanLogAll = function(which) {
+  if (which === 'don') _clanDonAll = true; else _clanLogAll = true;
+  const el = document.getElementById(which === 'don' ? 'clan-don' : 'clan-log');
+  if (el) el.innerHTML = clanLogHTML(_clanTag, which === 'don' ? 'don' : 'changes');
+};
+const clanWhen = t => {
+  const today = new Date().setHours(0, 0, 0, 0);
+  return t >= today ? 'today' : t >= today - 864e5 ? 'yesterday' : new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+};
+function clanLogHTML(tag, part) {
+  const e = loadClanLog()[tag];
+  if (!e?.m) return '';
+  const name = t => esc(e.m[t]?.[0] || e.pm?.[t]?.[0] || t);
+  const open = t => `<span style="cursor:pointer;font-weight:600" onclick="viewFriend('${esc(t)}')">`;
+  const evs = [...e.ev].reverse();
+  const evLine = ([t, type, tg, nm, role]) => {
+    const who = `${open(tg)}${esc(nm || tg)}</span>`;
+    const what = type === 'join' ? `${who} <span class="text-green">joined</span>` : type === 'leave' ? `${who} <span class="text-red">left</span>`
+      : `${who} ${type === 'up' ? '<span class="text-green">promoted</span>' : '<span class="text-red">demoted</span>'} to ${ROLE_NAME[role] || esc(role)}`;
+    return `<div style="display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:4px 0;border-top:1px solid var(--border)"><span style="min-width:0">${what}</span><span class="text-muted" style="font-size:11px;white-space:nowrap">${clanWhen(t)}</span></div>`;
+  };
+  // Trophies since the look before
+  let moves = [];
+  if (e.pm) moves = Object.keys(e.m).filter(t => e.pm[t]).map(t => ({ t, d: e.m[t][2] - e.pm[t][2] })).filter(x => x.d).sort((a, b) => b.d - a.d);
+  const up = moves.filter(x => x.d > 0).slice(0, 3), down = moves.filter(x => x.d < 0).slice(-3).reverse();
+  const mv = x => `${open(x.t)}${name(x.t)}</span> <span class="${x.d > 0 ? 'text-green' : 'text-red'}">${x.d > 0 ? '+' : ''}${fmtNum(x.d)}</span>`;
+  const changes = `
+    <div class="card" style="padding:10px 12px">
+      <div class="mu-sub" style="margin-top:0">What changed</div>
+      ${evs.length ? evs.slice(0, _clanLogAll ? evs.length : 6).map(evLine).join('')
+        : `<div style="font-size:12px;color:var(--muted)">${e.pm ? `Nobody joined, left or changed role since ${clanWhen(e.pat)} — it's checked each time you open the clan.` : 'Members saved on this device — joins, leaves, promotions and trophy changes show from the next time you open this clan.'}</div>`}
+      ${!_clanLogAll && evs.length > 6 ? `<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:6px" onclick="clanLogAll('ev')">Show all (${evs.length - 6} more)</button>` : ''}
+      ${up.length || down.length ? `<div style="font-size:12px;margin-top:8px;padding-top:6px;border-top:1px solid var(--border)">
+        <div class="text-muted" style="font-size:11px;margin-bottom:2px">🏆 Trophies since ${clanWhen(e.pat)} ${new Date(e.pat).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</div>
+        ${up.length ? `<div>▲ ${up.map(mv).join(' · ')}</div>` : ''}${down.length ? `<div>▼ ${down.map(mv).join(' · ')}</div>` : ''}
+      </div>` : ''}
+    </div>`;
+  // Donations: the last 4 weeks summed, and who stopped
+  const weeks = e.wk.slice(-4), thisW = weeks[weeks.length - 1];
+  let don = '';
+  if (weeks.length >= 2) {
+    const sum = {};
+    weeks.forEach(w => { for (const t in w.d) sum[t] = (sum[t] || 0) + w.d[t]; });
+    const top = Object.keys(e.m).map(t => ({ t, n: sum[t] || 0 })).filter(x => x.n).sort((a, b) => b.n - a.n);
+    const stopped = Object.keys(e.m).filter(t => !(thisW.d[t] || 0) && weeks.slice(0, -1).some(w => (w.d[t] || 0) > 0));
+    const shownTop = top.slice(0, _clanDonAll ? top.length : 5);
+    don = `
+    <div class="card" style="padding:10px 12px">
+      <div class="mu-sub" style="margin-top:0">📦 Donations · last ${weeks.length} weeks</div>
+      ${shownTop.map((x, i) => `<div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0;border-top:1px solid var(--border)"><span>${i + 1}. ${open(x.t)}${name(x.t)}</span></span><span style="font-weight:700">${fmtNum(x.n)}</span></div>`).join('')}
+      ${!_clanDonAll && top.length > 5 ? `<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:6px" onclick="clanLogAll('don')">Show all (${top.length - 5} more)</button>` : ''}
+      ${stopped.length && Date.now() - thisW.s > 2 * 864e5 ? `<div style="font-size:12px;margin-top:8px;padding-top:6px;border-top:1px solid var(--border)"><span class="text-red">Stopped donating</span> <span class="text-muted">(none this week, some before):</span> ${stopped.map(t => `${open(t)}${name(t)}</span>`).join(', ')}</div>` : ''}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Each week's highest count seen on this device — open the clan now and then for full weeks. This week since ${clanWhen(thisW.s)}.</div>
+    </div>`;
+  } else {
+    don = `<div class="card" style="padding:10px 12px"><div class="mu-sub" style="margin-top:0">📦 Donations</div><div style="font-size:12px;color:var(--muted)">Donations reset every week, so the history builds up on this device: from the next weekly reset you'll see top donors over the last weeks and who stopped donating.</div></div>`;
+  }
+  return part === 'changes' ? changes : don;
 }
 function loadClanCache(tag) {
   try {
@@ -8355,7 +8721,7 @@ function loadClanCache(tag) {
 
 function renderClan(data) {
   _clanMembers = data.memberList || [];
-  if (data.tag !== _clanTag) { _clanTag = data.tag; _clanTab = 'members'; _clanAway = 0; _partAll = false; }
+  if (data.tag !== _clanTag) { _clanTag = data.tag; _clanTab = 'members'; _clanAway = 0; _partAll = false; _clanLogAll = _clanDonAll = false; }
   document.getElementById('clan-result').innerHTML = `
     ${clanHeaderHTML(data)}
     <div id="clan-tools">${clanToolsHTML()}</div>
@@ -8379,7 +8745,7 @@ function clanHeaderHTML(data) {
       <div style="display:flex;align-items:center;gap:12px">
         ${badge ? `<img src="${badge}" alt="" style="width:52px;height:62px;object-fit:contain;flex-shrink:0">` : ''}
         <div>
-          <div class="clan-name">${esc(data.name)}</div>
+          <div class="clan-name name-link" onclick="linkMenu(event,'clan','${esc(data.tag)}')" title="Copy a link to this clan">${esc(data.name)}<span class="ph-caret">▾</span></div>
           <div class="player-tag">${data.tag}</div>
           ${loc ? `<div style="font-size:13px;color:var(--muted);margin-top:2px">${loc}</div>` : ''}
         </div>
@@ -8410,6 +8776,7 @@ window.clanTab = async function(name) {
   if (!pane) return;
   if (name === 'members') {
     pane.innerHTML = `
+      <div id="clan-log">${clanLogHTML(_clanTag, 'changes')}</div>
       ${clanTools().inactive ? '<div id="clan-away-bar"></div>' : ''}
       <div style="margin-bottom:10px">
         <select id="clan-sort-select" onchange="setClanSort(this.value)" style="${CLAN_SELECT_STYLE}">
@@ -8417,7 +8784,8 @@ window.clanTab = async function(name) {
             `<option value="${v}"${_clanSort===v?' selected':''}>Sort: ${l}</option>`).join('')}
         </select>
       </div>
-      <div id="clan-members-list"></div>`;
+      <div id="clan-members-list"></div>
+      <div id="clan-don" style="margin-top:12px">${clanLogHTML(_clanTag, 'don')}</div>`;
     renderMembers(_clanMembers);
     return;
   }
@@ -8937,7 +9305,7 @@ if (_savedTag) {
     _startup = loadPlayer(_savedTag);  // nothing cached to show — just load it
   }
 }
-_startup.then(() => { takeStartScreen(); takeSharedDeck(); });
+_startup.then(() => { takeStartScreen(); takeSharedDeck(); takeLinkParams(); });
 
 // Android keeps an installed app alive in the background, so reopening it usually
 // resumes this page rather than reloading it. Refresh on foreground too, otherwise
