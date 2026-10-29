@@ -3369,6 +3369,7 @@ function accountStatsHTML(data, battles, scope = 'p') {
     ${progressHTML(data, scope)}
     ${goalsHTML(data, scope)}
     ${seasonRecapHTML(data, battles, scope)}
+    ${recordsHTML(data, battles, scope)}
     ${trophyHistoryHTML(data, battles, scope)}
     <div class="card">
       <h3 style="margin-bottom:6px">👤 Account</h3>
@@ -4053,7 +4054,84 @@ function tallyPlay(entry, battles) {
   });
   entry.seen = [...seen].slice(-300);
   Object.keys(entry.seasons).sort().slice(0, -PLAY_SEASONS).forEach(k => delete entry.seasons[k]);
-  return changed;
+  const recChanged = tallyRecords(entry, battles || []);
+  return changed || recChanged;
+}
+// For Records: per local day [wins, losses, draws, 3-crown wins] and the longest
+// win streak. Its own seen list (so battles tallied before it existed count once);
+// new battles go oldest first so the streak runs in order. A battle log that
+// rolled over unseen can join two streaks — it's what this device saw.
+const RECORD_DAYS = 400;
+const localDay = t => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+function tallyRecords(entry, battles) {
+  const r = entry.rec || (entry.rec = { seen: [], daily: {}, cur: 0, best: 0, bestAt: 0 });
+  const seen = new Set(r.seen);
+  const fresh = battles.filter(b => b.battleTime && !seen.has(b.battleTime))
+    .sort((a, b) => a.battleTime.localeCompare(b.battleTime));
+  if (!fresh.length) return false;
+  fresh.forEach(b => {
+    seen.add(b.battleTime);
+    if (/friendly|clanMate|boat/i.test(b.type || '')) return;
+    const me = (b.team || [])[0];
+    if (!me) return;
+    const t = +parseApiTime(b.battleTime), res = battleResult(b), d = localDay(t);
+    const day = r.daily[d] || (r.daily[d] = [0, 0, 0, 0]);
+    day[wldIdx(res)]++;
+    if (res === 'win' && (me.crowns || 0) === 3) day[3]++;
+    if (res === 'win') { r.cur++; if (r.cur > r.best) { r.best = r.cur; r.bestAt = t; } }
+    else r.cur = 0;
+  });
+  r.seen = [...seen].slice(-300);
+  Object.keys(r.daily).sort().slice(0, -RECORD_DAYS).forEach(k => delete r.daily[k]);
+  return true;
+}
+
+// ── Records (Account tab): bests from this device's history and the API ──
+function recordsHTML(data, battles, scope) {
+  const play = playEntry(data, battles), r = play.rec || { daily: {}, best: 0 };
+  const dayText = k => new Date(k + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: k.slice(0, 4) === String(new Date().getFullYear()) ? undefined : 'numeric' });
+  const when = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  const rows = [];
+  // Win streak: the device's best, or the API's current one if that's longer
+  const apiStreak = Math.max(0, data.currentWinLoseStreak || 0);
+  const streak = Math.max(r.best || 0, apiStreak);
+  if (streak >= 2) rows.push(ovRow('Longest win streak', `🔥 ${streak} <span class="text-muted">· ${apiStreak >= (r.best || 0) ? 'going now' : when(r.bestAt)}</span>`));
+  const days = Object.entries(r.daily);
+  const bestBy = (f, min = 1) => days.filter(([, v]) => f(v) >= min).sort((a, b) => f(b[1]) - f(a[1]) || a[0].localeCompare(b[0]))[0];
+  const most = bestBy(v => v[0], 2);
+  if (most) rows.push(ovRow('Most wins in a day', `${most[1][0]} <span class="text-muted">· ${most[1][0]}W ${most[1][1]}L · ${dayText(most[0])}</span>`));
+  const three = bestBy(v => v[3], 2);
+  if (three) rows.push(ovRow('Most 3-crown wins in a day', `👑 ${three[1][3]} <span class="text-muted">· ${dayText(three[0])}</span>`));
+  const busy = bestBy(v => v[0] + v[1] + v[2], 3);
+  if (busy) rows.push(ovRow('Most battles in a day', `${busy[1][0] + busy[1][1] + busy[1][2]} <span class="text-muted">· ${dayText(busy[0])}</span>`));
+  // A "best" needs something to beat: two or more qualifying days / seasons
+  const fullDays = days.filter(([, v]) => v[0] + v[1] + v[2] >= 8);
+  const goodDay = fullDays.length > 1 ? fullDays.sort((a, b) => wldRate(b[1]) - wldRate(a[1]) || (b[1][0] - a[1][0]))[0] : null;
+  if (goodDay) rows.push(ovRow('Best day (8+ battles)', `<span class="text-green">${Math.round(wldRate(goodDay[1]) * 100)}%</span> <span class="text-muted">· ${goodDay[1][0]}W ${goodDay[1][1]}L · ${dayText(goodDay[0])}</span>`));
+  if (data.bestTrophies) rows.push(ovRow('Highest trophies', `🏆 ${fmtNum(data.bestTrophies)}`));
+  const bestPol = data.bestPathOfLegendSeasonResult;
+  if (bestPol?.leagueNumber) rows.push(ovRow('Best ranked season', `${esc(polLeagueName(bestPol))}${bestPol.rank ? ` #${fmtNum(bestPol.rank)}` : ''}${bestPol.trophies ? ` · ⚔️ ${fmtNum(bestPol.trophies)}` : ''}`));
+  const peak = Math.max(0, ...Object.values(play.seasons || {}).map(x => x.peak || 0));
+  if (peak) rows.push(ovRow('Peak rating seen', `⚔️ ${fmtNum(peak)}`));
+  const fullSeasons = Object.entries(play.seasons || {}).filter(([, x]) => x.g[0] + x.g[1] + x.g[2] >= 20);
+  const seasons = fullSeasons.length > 1 ? fullSeasons.sort((a, b) => wldRate(b[1].g) - wldRate(a[1].g))[0] : null;
+  if (seasons) rows.push(ovRow('Best season (20+ battles)', `<span class="text-green">${Math.round(wldRate(seasons[1].g) * 100)}%</span> <span class="text-muted">· ${new Date(seasons[0] + 'T12:00:00Z').toLocaleDateString('en-GB', { month: 'long' })}</span>`));
+  // Decks: from the deck history
+  const decks = Object.values(buildDeckMapFromBattles(battles || [], data.tag)).map(d => ({ d, n: d.wins + d.losses + d.draws }));
+  const art = buildCardArtMap(battles);
+  const tiles = d => `<div style="display:grid;grid-template-columns:repeat(8,1fr);gap:3px;margin:4px 0 2px">${deckSlotNames(d.cards, d.variants).map(n => deckTileHTML(n, d.variants[n], art[n], 'deck-list-tile')).join('')}</div>`;
+  const best = decks.filter(x => x.n >= 10).sort((a, b) => b.d.wins / b.n - a.d.wins / a.n || b.n - a.n)[0];
+  const mostPlayed = decks.sort((a, b) => b.n - a.n)[0];
+  let deckPart = '';
+  if (best) deckPart += `<div style="${OV_SECTION_STYLE}">Best deck <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· 10+ games · ${best.d.wins}W ${best.d.losses}L · ${Math.round(best.d.wins / best.n * 100)}%</span></div>${tiles(best.d)}`;
+  if (mostPlayed && mostPlayed.n >= 5 && mostPlayed !== best) deckPart += `<div style="${OV_SECTION_STYLE}">Most played deck <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· ${mostPlayed.n} games · ${Math.round(mostPlayed.d.wins / mostPlayed.n * 100)}%</span></div>${tiles(mostPlayed.d)}`;
+  const daysSeen = days.length;
+  return `<div class="card">
+      <h3 style="margin-bottom:6px">🏆 Records</h3>
+      ${rows.join('') || `<div style="font-size:12px;color:var(--muted)">Fills in as ${scope === 'p' ? 'you play' : 'they play'} and the profile is refreshed.</div>`}
+      ${deckPart}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">From the battles this device has seen${daysSeen ? ` on ${daysSeen} day${daysSeen === 1 ? '' : 's'}` : ''} (the log keeps ~30) — highest trophies and best season from the game · days in your local time</div>
+    </div>`;
 }
 function recordPlay(tag, battles, at = Date.now()) {
   if (!tag) return;
@@ -7234,6 +7312,7 @@ function metaYouHTML(P) {
     parts.push(`<div class="empty-msg" style="margin-bottom:12px">The API didn't return your full current deck — play a 1v1 battle with it and it'll show here.</div>`);
   }
   parts.push(bestDecksForYouHTML(P, data, mine));
+  parts.push(counterPickHTML(P, data));
   parts.push(deckFinisherHTML(P));
   // Most-used top-player cards (all forms together) you own but haven't maxed
   const share = {};
@@ -7400,6 +7479,46 @@ function metaYourCountersHTML(data, mine) {
 // your level (your current deck's average, floored), then win rate. Only decks
 // with META_FIT_MIN_GAMES+ games and a winning record; one per card set.
 const META_FIT_MIN_GAMES = 20, META_FIT_SHOWN = 5;
+
+// ── Counter-picks: the opponent cards you lose to most (your Opponent Cards
+// record, any deck) and the top decks that beat exactly those cards most often,
+// summed over those cards' games in /counters. Decks need COUNTER_MIN_GAMES
+// against them; one per card set ──
+const COUNTER_PICK_CARDS = 5, COUNTER_MIN_GAMES = 30;
+function counterPickHTML(P, data) {
+  const head = `<div class="mu-sub" style="margin:4px 0 4px">Decks against your toughest cards</div>`;
+  const mu = loadMatchups(data.tag)?.cards || {};
+  const byName = Object.fromEntries(allCards.map(c => [c.name, c]));
+  const weak = Object.entries(mu).map(([name, r]) => ({ name, r, n: r[0] + r[1] + r[2] }))
+    .filter(x => x.n >= MATCHUP_MIN_GAMES && wldRate(x.r) < 0.5 && byName[x.name])
+    .sort((a, b) => (b.r[1] - b.r[0]) - (a.r[1] - a.r[0]) || wldRate(a.r) - wldRate(b.r))
+    .slice(0, COUNTER_PICK_CARDS);
+  if (!weak.length) return head + `<div style="font-size:12px;color:var(--muted);margin:0 0 12px">No opponent card beats you often enough yet — it needs ${MATCHUP_MIN_GAMES}+ games against a card (Battles → Stats → Opponent Cards).</div>`;
+  const C = metaCountersMap();
+  if (!C) return head + '<div class="spinner" style="margin:8px auto"></div>';
+  const idx = weak.map(x => C.cards.indexOf(byName[x.name].id)).filter(i => i >= 0);
+  const owned = new Set((data.cards || []).map(c => c.id));
+  const byKey = Object.fromEntries(P.decks.map(d => [d.key, d]));
+  const picks = Object.entries(C.decks).map(([key, e]) => {
+    const n = idx.reduce((s, i) => s + (e.n[i] || 0), 0), w = idx.reduce((s, i) => s + (e.w[i] || 0), 0);
+    return { d: byKey[key], n, rate: n ? w / n : 0 };
+  }).filter(x => x.d && x.n >= COUNTER_MIN_GAMES)
+    .sort((a, b) => b.rate - a.rate || b.n - a.n)
+    .filter((x, i, all) => all.findIndex(y => y.d.names.slice().sort().join() === x.d.names.slice().sort().join()) === i)
+    .slice(0, META_FIT_SHOWN);
+  const art = buildCardArtMap([]);
+  const intro = `<div class="card" style="padding:10px 12px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">The cards you lose to most, from your Opponent Cards record:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${weak.map(x => `<span style="display:flex;align-items:center;gap:4px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:3px 8px 3px 4px">
+        ${art[x.name]?.medium ? `<img src="${art[x.name].medium}" alt="" style="width:18px;height:22px;object-fit:contain">` : ''}${esc(x.name)} <span class="text-red">${x.r[0]}–${x.r[1]}</span></span>`).join('')}</div>
+    </div>`;
+  if (!picks.length) return head + intro + `<div style="font-size:12px;color:var(--muted);margin:0 0 12px">No top deck has played these cards ${COUNTER_MIN_GAMES}+ times yet.</div>`;
+  return head + intro + picks.map(x => {
+    const locked = x.d.cards.filter(c => !owned.has(c.id)).length;
+    return metaDeckItemHTML(x.d, P, `vs those cards <b class="${x.rate >= 0.5 ? 'text-green' : 'text-red'}">${Math.round(x.rate * 100)}%</b> in ${fmtNum(x.n)} games · ${Math.round(x.d.rate * 100)}% overall`
+      + (locked ? ` · <span class="text-red">${locked} card${locked === 1 ? '' : 's'} not unlocked</span>` : ''));
+  }).join('');
+}
 
 // ── Deck finisher: pick up to 4 cards, get the top-player decks that hold them
 // all (any form), ranked by how well your collection fits — cards not unlocked,
