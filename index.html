@@ -366,7 +366,12 @@
 
     <!-- ═══════════════ CLAN LOOKUP ═══════════════ -->
     <div id="screen-clan" class="screen">
-      <h2 style="margin-bottom:16px">🛡 Clan Lookup</h2>
+      <h2 style="margin-bottom:12px" id="clan-title">🛡 Clan Lookup</h2>
+      <div class="seg" id="clan-seg">
+        <button class="active" onclick="setClanView('clan')">Clan</button>
+        <button onclick="setClanView('tourn')">Tournament</button>
+      </div>
+      <div id="clan-view">
       <div class="card">
         <div class="field" style="margin-bottom:0">
           <label>Clan Tag</label>
@@ -377,6 +382,19 @@
         </div>
       </div>
       <div id="clan-result"></div>
+      </div>
+      <div id="tourn-view" style="display:none">
+        <div class="card">
+          <div class="field" style="margin-bottom:0">
+            <label>Tournament Tag or Name</label>
+            <div class="flex-row">
+              <input type="text" id="tourn-input" placeholder="#ABC123 or a name" style="flex:1" onkeydown="if(event.key==='Enter')searchTournament()">
+              <button class="btn btn-primary" onclick="searchTournament()">Search</button>
+            </div>
+          </div>
+        </div>
+        <div id="tourn-result"></div>
+      </div>
     </div>
 
     <!-- ═══════════════ DECK UPGRADE ═══════════════ -->
@@ -1253,7 +1271,7 @@ function renderSavedAccounts() {
 // replaces them.
 const BACKUP_KEYS = ['cr_player_tag', 'cr_saved_accounts', 'cr_friends', 'cr_friends_sort',
                      'cr_deck_history_v1', 'cr_matchups_v1', 'cr_coplayers_v1', 'cr_trophy_history_v1',
-                     'cr_progress_v1', 'cr_clan_tools'];
+                     'cr_progress_v1', 'cr_clan_tools', 'cr_play_v1', 'cr_goals_v1', 'cr_saved_decks'];
 window.exportBackup = function() {
   const data = {};
   BACKUP_KEYS.forEach(k => { const v = localStorage.getItem(k); if (v != null) data[k] = v; });
@@ -2679,6 +2697,7 @@ function renderDeckUpgradeScreen() {
     <div class="filter-bar" style="margin-bottom:12px">
       <button class="filter-btn ${_deckUpMode==='recent'?'active':''}" onclick="setDeckUpMode('recent')">Recent Decks</button>
       <button class="filter-btn ${_deckUpMode==='custom'?'active':''}" onclick="setDeckUpMode('custom')">Custom Deck</button>
+      <button class="filter-btn ${_deckUpMode==='saved'?'active':''}" onclick="setDeckUpMode('saved')">⭐ Saved (${loadSavedDecks().length})</button>
     </div>`;
 
   let body = '';
@@ -2696,10 +2715,21 @@ function renderDeckUpgradeScreen() {
       const deckCards = data.cards.filter(c => names.has(c.name));
       body += renderDeckBreakdown(deckCards);
     }
+  } else if (_deckUpMode === 'saved') {
+    body = null;
   } else {
     body = renderCustomDeckBuilder(data);
   }
 
+  if (body === null) {
+    screen.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h2 style="margin:0">⚔ Deck Upgrade</h2>
+    </div>
+    ${modeBar}
+    ${savedDecksHTML()}`;
+    return;
+  }
   screen.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <h2 style="margin:0">⚔ Deck Upgrade</h2>
@@ -2976,6 +3006,8 @@ function accountStatsHTML(data, battles, scope = 'p') {
   const days = accountAgeDays(data);
   return `
     ${progressHTML(data, scope)}
+    ${goalsHTML(data, scope)}
+    ${seasonRecapHTML(data, battles, scope)}
     ${trophyHistoryHTML(data, battles, scope)}
     <div class="card">
       <h3 style="margin-bottom:6px">👤 Account</h3>
@@ -3442,6 +3474,7 @@ function recordHistory(data, battles, at = Date.now()) {
   buildDeckMapFromBattles(battles, data.tag);
   recordTrophies(data, battles, at);
   recordProgress(data, at);
+  recordPlay(data.tag, battles, at);
 }
 // Tags whose history stays: your accounts, saved friends and the loaded profile,
 // plus the HISTORY_OTHERS most recently seen other players (clan members etc.)
@@ -3599,6 +3632,338 @@ window.setProgressRange = function(scope, r) {
   _progressState[scope].range = r;
   const el = document.getElementById(`${scope}-progress`);
   if (el) el.innerHTML = progressCardBody(scope);
+};
+
+// ── Play tally: per season and per hour / weekday ──
+// The API has no season stats and only the last ~30 battles, so this device
+// tallies every competitive battle it sees (friendlies and boat battles left
+// out) per tag, deduped by battleTime with its own seen list: per Path of
+// Legends season (first Monday of the month, 09:00 UTC) the record, ranked
+// record, peak rating, 3-crown wins, 1v1 decks and opponent cards; and over all
+// time the record per local hour and weekday.
+const PLAY_KEY = 'cr_play_v1';
+const PLAY_SEASONS = 4;
+const SEASON_HOUR_UTC = 9;
+function seasonStartOf(t) {
+  const firstMonday = (y, m) => { const dow = new Date(Date.UTC(y, m, 1)).getUTCDay(); return Date.UTC(y, m, 1 + (8 - dow) % 7, SEASON_HOUR_UTC); };
+  const d = new Date(t);
+  let y = d.getUTCFullYear(), m = d.getUTCMonth(), start = firstMonday(y, m);
+  if (t < start) { if (--m < 0) { m = 11; y--; } start = firstMonday(y, m); }
+  return start;
+}
+function seasonEndOf(start) {
+  const d = new Date(start + 40 * 864e5);  // somewhere in the next month
+  return seasonStartOf(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 28));
+}
+const seasonKey = t => new Date(seasonStartOf(t)).toISOString().slice(0, 10);
+const wldIdx = r => r === 'win' ? 0 : r === 'loss' ? 1 : 2;
+function loadPlay() {
+  try { return JSON.parse(localStorage.getItem(PLAY_KEY) || '{}') || {}; } catch(e) { return {}; }
+}
+const newPlay = () => ({ seen: [], hours: Array.from({ length: 24 }, () => [0, 0, 0]), days: Array.from({ length: 7 }, () => [0, 0, 0]), seasons: {} });
+function tallyPlay(entry, battles) {
+  const seen = new Set(entry.seen);
+  let changed = false;
+  (battles || []).forEach(b => {
+    if (!b.battleTime || seen.has(b.battleTime)) return;
+    seen.add(b.battleTime);
+    changed = true;
+    if (/friendly|clanMate|boat/i.test(b.type || '')) return;
+    const me = (b.team || [])[0];
+    if (!me) return;
+    const t = parseApiTime(b.battleTime), i = wldIdx(battleResult(b));
+    entry.hours[t.getHours()][i]++;
+    entry.days[t.getDay()][i]++;
+    const k = seasonKey(+t);
+    const s = entry.seasons[k] || (entry.seasons[k] = { first: +t, g: [0, 0, 0], r: [0, 0, 0], peak: 0, three: 0, decks: {}, opp: {} });
+    s.first = Math.min(s.first, +t);
+    s.g[i]++;
+    if ((me.crowns || 0) === 3 && i === 0) s.three++;
+    if (b.type === 'pathOfLegend') {
+      s.r[i]++;
+      if (me.startingTrophies) s.peak = Math.max(s.peak, me.startingTrophies + Math.max(0, me.trophyChange || 0));
+    }
+    if ((b.team || []).length === 1 && (me.cards || []).length === 8) {
+      const dk = deckKeyOf(me.cards);
+      (s.decks[dk] || (s.decks[dk] = [0, 0, 0]))[i]++;
+    }
+    new Set((b.opponent || []).flatMap(p => (p.cards || []).map(c => c.name)))
+      .forEach(n => (s.opp[n] || (s.opp[n] = [0, 0, 0]))[i]++);
+  });
+  entry.seen = [...seen].slice(-300);
+  Object.keys(entry.seasons).sort().slice(0, -PLAY_SEASONS).forEach(k => delete entry.seasons[k]);
+  return changed;
+}
+function recordPlay(tag, battles, at = Date.now()) {
+  if (!tag) return;
+  try {
+    const all = loadPlay(), entry = all[tag] || newPlay();
+    if (!tallyPlay(entry, battles)) return;
+    entry.at = at;
+    all[tag] = entry;
+    pruneHistoryTags(all, e => e.at || 0);
+    localStorage.setItem(PLAY_KEY, JSON.stringify(all));
+  } catch(e) {}
+}
+// The saved tally, else one from the current log only
+function playEntry(data, battles) {
+  const saved = loadPlay()[data.tag];
+  if (saved) return saved;
+  const e = newPlay(); tallyPlay(e, battles); return e;
+}
+
+// ── Season recap (Account tab) ──
+const _seasonState = {};
+function seasonRecapHTML(data, battles, scope) {
+  const play = playEntry(data, battles);
+  const keys = Object.keys(play.seasons).sort().reverse();
+  _seasonState[scope] = { data, play, key: keys.includes(_seasonState[scope]?.key) ? _seasonState[scope].key : (keys[0] || seasonKey(Date.now())) };
+  return `<div class="card" id="${scope}-season">${seasonCardBody(scope)}</div>`;
+}
+function seasonCardBody(scope) {
+  const { data, play, key } = _seasonState[scope];
+  const keys = Object.keys(play.seasons).sort().reverse();
+  const cur = seasonKey(Date.now());
+  const monthOf = k => new Date(k + 'T12:00:00Z').toLocaleDateString('en-GB', { month: 'long' });
+  const label = k => k === cur ? 'This season' : `${monthOf(k)}`;
+  const chips = keys.length > 1 ? `<div class="filter-bar" style="margin:0 0 8px">
+    ${keys.map(k => `<button class="filter-btn ${k === key ? 'active' : ''}" onclick="setSeasonRecap('${scope}','${k}')">${label(k)}</button>`).join('')}
+  </div>` : '';
+  const head = `<h3 style="margin-bottom:10px">🏁 Season ${key === cur ? 'so far' : 'recap'}</h3>${chips}`;
+  const s = play.seasons[key];
+  const who = scope === 'p' ? 'you play' : 'they play';
+  if (!s || !(s.g[0] + s.g[1] + s.g[2])) return `${head}<div class="empty-msg" style="padding:10px 0;font-size:12px">No battles this season on this device yet — it fills in as ${who} and the profile is refreshed.</div>`;
+  const start = seasonStartOf(Date.parse(key + 'T12:00:00Z')), end = seasonEndOf(start);
+  const day = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  const rec = r => `${wldText(r)} · <span class="${rateCls(wldRate(r))}">${Math.round(wldRate(r) * 100)}%</span>`;
+  const games = s.g[0] + s.g[1] + s.g[2], ranked = s.r[0] + s.r[1] + s.r[2];
+  const rows = [ovRow('Battles', rec(s.g))];
+  if (ranked) rows.push(ovRow('Path of Legends', rec(s.r)));
+  if (s.peak) rows.push(ovRow('Peak rating', `⚔️ ${fmtNum(s.peak)}`, 'text-accent'));
+  // The finish: the API's last season result once this one has ended
+  const lastRes = data.lastPathOfLegendSeasonResult, curRes = data.currentPathOfLegendSeasonResult;
+  const finish = key === cur ? curRes : key === seasonKey(seasonStartOf(Date.now()) - 1) ? lastRes : null;
+  if (finish?.leagueNumber) rows.push(ovRow(key === cur ? 'Now' : 'Finished', `${esc(polLeagueName(finish))}${finish.rank ? ` #${fmtNum(finish.rank)}` : ''}${finish.trophies ? ` · ⚔️ ${fmtNum(finish.trophies)}` : ''}`));
+  if (s.three) rows.push(ovRow('3-crown wins', `👑 ${fmtNum(s.three)} <span class="text-muted">· ${Math.round(s.three / Math.max(s.g[0], 1) * 100)}% of wins</span>`));
+  // Most played deck, and its record
+  const art = buildCardArtMap([]);
+  const decks = Object.entries(s.decks).map(([k, r]) => ({ k, r, n: r[0] + r[1] + r[2] })).sort((a, b) => b.n - a.n);
+  const deckTiles = k => {
+    const parts = k.split('|').map(x => { const m = x.match(/^(.*)\[(evo|hero)\]$/); return m ? { name: m[1], form: m[2] } : { name: x, form: '' }; });
+    const variants = Object.fromEntries(parts.filter(x => x.form).map(x => [x.name, x.form]));
+    return `<div style="display:grid;grid-template-columns:repeat(8,1fr);gap:3px;margin:4px 0 2px">${deckSlotNames(parts.map(x => x.name), variants).map(n => deckTileHTML(n, variants[n], art[n], 'deck-list-tile')).join('')}</div>`;
+  };
+  let deckPart = '';
+  if (decks[0]?.n >= 3) {
+    deckPart += `<div style="${OV_SECTION_STYLE}">Most played deck <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· ${decks[0].n} games · ${rec(decks[0].r)}</span></div>${deckTiles(decks[0].k)}`;
+    const best = decks.filter(d => d.n >= 5 && d !== decks[0]).sort((a, b) => wldRate(b.r) - wldRate(a.r))[0];
+    if (best && wldRate(best.r) > wldRate(decks[0].r)) deckPart += `<div style="${OV_SECTION_STYLE}">Best deck <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· ${best.n} games · ${rec(best.r)}</span></div>${deckTiles(best.k)}`;
+  }
+  const opp = Object.entries(s.opp).map(([n, r]) => ({ n, r, g: r[0] + r[1] + r[2] })).filter(x => x.g >= MATCHUP_MIN_GAMES);
+  const hardest = [...opp].sort((a, b) => wldRate(a.r) - wldRate(b.r) || b.g - a.g)[0];
+  const easiest = [...opp].sort((a, b) => wldRate(b.r) - wldRate(a.r) || b.g - a.g)[0];
+  if (hardest && easiest && hardest !== easiest) {
+    rows.push(ovRow('Toughest card', `${esc(hardest.n)} <span class="text-muted">· ${rec(hardest.r)}</span>`));
+    rows.push(ovRow('Easiest card', `${esc(easiest.n)} <span class="text-muted">· ${rec(easiest.r)}</span>`));
+  }
+  const partial = s.first > start + 864e5;
+  return `${head}
+    <div style="font-size:12px;color:var(--muted);margin-bottom:4px">${day(start)} – ${day(end)}${key === cur ? ` · ends in ${fmtDuration(end - Date.now())}` : ''}</div>
+    ${rows.join('')}${deckPart}
+    <div style="font-size:11px;color:var(--muted);margin-top:6px">${fmtNum(games)} battles seen on this device${partial ? ` since ${day(s.first)}` : ''} · friendlies and boat battles left out · the battle log only keeps ~30, so refresh often for a full recap</div>`;
+}
+window.setSeasonRecap = function(scope, k) {
+  if (!_seasonState[scope]) return;
+  _seasonState[scope].key = k;
+  const el = document.getElementById(`${scope}-season`);
+  if (el) el.innerHTML = seasonCardBody(scope);
+};
+function fmtDuration(ms) {
+  const m = Math.max(0, Math.round(ms / 60000));
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h} h${m % 60 && h < 10 ? ` ${m % 60} min` : ''}`;
+  return `${Math.round(h / 24)} days`;
+}
+
+// ── When you play best (Battle Stats): record per 4-hour block and weekday, local time ──
+const PLAY_BLOCK_MIN = 5;
+function playTimesHTML(data, battles, scope) {
+  const play = playEntry(data, battles);
+  const sum = list => list.reduce((a, r) => [a[0] + r[0], a[1] + r[1], a[2] + r[2]], [0, 0, 0]);
+  const n = r => r[0] + r[1] + r[2];
+  const blocks = Array.from({ length: 6 }, (_, i) => ({ label: `${String(i * 4).padStart(2, '0')}–${String(i * 4 + 4).padStart(2, '0')}`, r: sum(play.hours.slice(i * 4, i * 4 + 4)) }));
+  const names = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const days = [1, 2, 3, 4, 5, 6, 0].map(d => ({ label: names[d], r: play.days[d] }));
+  const total = n(sum(play.hours));
+  const head = `<div style="${OV_SECTION_STYLE}">When ${scope === 'p' ? 'You' : 'They'} Play Best <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· ${total} battle${total === 1 ? '' : 's'}</span></div>`;
+  if (total < 10) return head + `<div style="font-size:12px;color:var(--muted)">Needs a few more battles — it fills in as ${scope === 'p' ? 'you play' : 'they play'} and the profile is refreshed.</div>`;
+  const bars = list => {
+    const ok = list.filter(x => n(x.r) >= PLAY_BLOCK_MIN);
+    const best = ok.length > 1 ? ok.reduce((a, b) => wldRate(b.r) > wldRate(a.r) ? b : a) : null;
+    const worst = ok.length > 1 ? ok.reduce((a, b) => wldRate(b.r) < wldRate(a.r) ? b : a) : null;
+    const max = Math.max(...list.map(x => n(x.r)), 1);
+    return `<div style="display:grid;grid-template-columns:repeat(${list.length},1fr);gap:4px;align-items:end;margin-bottom:4px">
+      ${list.map(x => {
+        const g = n(x.r), rate = g ? wldRate(x.r) : 0;
+        const tip = `${x.label}: ${x.r[0]}W ${x.r[1]}L${x.r[2] ? ` ${x.r[2]}D` : ''}${g ? ` · ${Math.round(rate * 100)}%` : ''}`;
+        return `<div title="${tip}" style="text-align:center;min-width:0">
+          <div style="font-size:11px;font-weight:700;min-height:14px" class="${g >= PLAY_BLOCK_MIN ? rateCls(rate) : 'text-muted'}">${g ? Math.round(rate * 100) + '%' : ''}</div>
+          <div style="height:48px;display:flex;align-items:flex-end;justify-content:center"><div style="width:70%;max-width:26px;height:${Math.max(2, Math.round(g / max * 48))}px;border-radius:4px 4px 0 0;background:${x === best ? 'var(--green)' : x === worst ? 'var(--red)' : 'var(--surface2)'};border:1px solid var(--border)"></div></div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px;white-space:nowrap">${x.label}</div>
+          <div style="font-size:10px;color:var(--muted)">${g}</div>
+        </div>`;
+      }).join('')}
+    </div>`;
+  };
+  return head + bars(blocks) + bars(days)
+    + `<div style="font-size:11px;color:var(--muted);margin-top:4px">Win rate above, games below · bar height = games · green best / red worst with ${PLAY_BLOCK_MIN}+ games · your local time · friendlies and boat battles left out</div>`;
+}
+
+// ── Goals (Account tab): a target with a progress bar, what's still needed and,
+// from the Progress snapshots, the pace over the last week. Per tag in cr_goals_v1 ──
+const GOALS_KEY = 'cr_goals_v1';
+const GOALS_MAX = 12;
+const polRating = d => d.currentPathOfLegendSeasonResult?.leagueNumber === 7 ? d.currentPathOfLegendSeasonResult.trophies || 0 : null;
+const goalCard = (d, id) => (d.cards || []).find(c => c.id === +id);
+const cardDisplayLevel = c => toDisplayLevel((c.rarity || 'common').toLowerCase(), c.level);
+const GOAL_TYPES = {
+  trophies: { label: 'Trophies', icon: '🏆', get: d => d.trophies, snap: s => s.trophies },
+  pol:      { label: 'Ranked rating', icon: '⚔️', get: polRating, snap: s => s.league === 7 ? s.pol : null },
+  king:     { label: 'King Tower level', icon: '👑', get: d => d.kingTowerLevel ?? profileLevels(d).king, snap: s => s.king, max: MAX_LEVEL },
+  cl:       { label: 'Collection level', icon: '📚', get: d => d.collectionLevel ?? profileLevels(d).cl, snap: s => s.cl },
+  xp:       { label: 'Experience level', icon: '⭐', get: d => d.expLevel, snap: s => s.xp },
+  card:     { label: 'Card level', icon: '🃏', get: (d, g) => { const c = goalCard(d, g.card); return c ? cardDisplayLevel(c) : null; },
+              snap: (s, g) => s.cards?.[g.card] != null ? s.cards[g.card] >> 2 : null, max: MAX_LEVEL },
+};
+function loadGoals(tag) {
+  try { return JSON.parse(localStorage.getItem(GOALS_KEY) || '{}')[tag] || []; } catch(e) { return []; }
+}
+function saveGoals(tag, list) {
+  try {
+    const all = JSON.parse(localStorage.getItem(GOALS_KEY) || '{}');
+    if (list.length) all[tag] = list; else delete all[tag];
+    localStorage.setItem(GOALS_KEY, JSON.stringify(all));
+  } catch(e) {}
+}
+const _goalsState = {};
+function goalsHTML(data, scope) {
+  _goalsState[scope] = { data, adding: _goalsState[scope]?.data?.tag === data.tag && _goalsState[scope].adding, type: _goalsState[scope]?.type || 'pol' };
+  return `<div class="card" id="${scope}-goals">${goalsCardBody(scope)}</div>`;
+}
+function goalPace(data, g) {
+  const T = GOAL_TYPES[g.type], list = progressList(data.tag);
+  const weekAgo = Date.now() - 7 * 864e5;
+  const base = list.filter(s => s.at <= weekAgo).pop() || list[0];
+  if (!base || Date.now() - base.at < 864e5) return null;
+  const was = T.snap(base, g), now = T.get(data, g);
+  if (was == null || now == null) return null;
+  return (now - was) / ((Date.now() - base.at) / 864e5);
+}
+function goalsCardBody(scope) {
+  const { data, adding, type } = _goalsState[scope];
+  const goals = loadGoals(data.tag);
+  const rows = goals.map((g, i) => {
+    const T = GOAL_TYPES[g.type];
+    if (!T) return '';
+    const c = g.type === 'card' ? goalCard(data, g.card) : null;
+    const now = T.get(data, g);
+    const name = c ? `${esc(c.name)} to level ${g.target}` : `${T.label} ${fmtNum(g.target)}`;
+    const done = now != null && now >= g.target;
+    const from = Math.min(g.from ?? now ?? 0, g.target - 1);
+    const pct = now == null ? 0 : Math.max(0, Math.min(100, Math.round((now - from) / Math.max(g.target - from, 1) * 100)));
+    let note = '';
+    if (done) note = '<span class="text-green">✅ Reached</span>';
+    else if (now == null) note = g.type === 'pol' ? 'Counts once you reach Ultimate Champion' : g.type === 'card' ? 'Card not unlocked yet' : '';
+    else {
+      const parts = [`${fmtNum(g.target - now)} to go`];
+      if (c) {
+        const u = computeUpgrade((c.rarity || 'common').toLowerCase(), now, c.count || 0, g.target);
+        parts.push(u.totalCards ? `${fmtNum(u.totalCards)} more cards` : '<span class="text-green">enough cards</span>', `${fmtNum(u.totalGold)} 💰`);
+      } else {
+        const pace = goalPace(data, g);
+        if (pace > 0) {
+          const days = Math.ceil((g.target - now) / pace);
+          parts.push(`at this week's pace ~${days > 365 ? 'over a year' : `${days} day${days === 1 ? '' : 's'} (${new Date(Date.now() + days * 864e5).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })})`}`);
+        } else if (pace != null) parts.push('no progress this week');
+      }
+      note = parts.join(' · ');
+    }
+    return `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <span style="font-size:13px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${T.icon} ${name}</span>
+        <span style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+          <span style="font-size:12px;color:var(--muted)">${now == null ? '—' : fmtNum(now)} / ${fmtNum(g.target)}</span>
+          <button class="btn btn-secondary btn-sm" title="Remove this goal" style="font-size:11px;padding:2px 7px;line-height:1.4" onclick="removeGoal('${scope}',${i})">✕</button>
+        </span>
+      </div>
+      <div class="progress-wrap" style="margin:5px 0 3px"><div class="progress-bar" style="width:${pct}%;background:${done ? 'var(--green)' : 'var(--accent)'}"></div></div>
+      <div style="font-size:11px;color:var(--muted)">${note}</div>
+    </div>`;
+  }).join('');
+  const cards = [...(data.cards || [])].sort((a, b) => a.name.localeCompare(b.name));
+  const form = adding ? `
+    <div style="margin-top:10px;display:grid;gap:8px">
+      <select id="${scope}-goal-type" onchange="setGoalType('${scope}', this.value)" style="${CLAN_SELECT_STYLE}">
+        ${Object.entries(GOAL_TYPES).filter(([k, T]) => k === type || !T.max || k === 'card' || (T.get(data, {}) ?? 0) < T.max).map(([k, T]) => `<option value="${k}"${k === type ? ' selected' : ''}>${T.icon} ${T.label}</option>`).join('')}
+      </select>
+      ${type === 'card' ? `<select id="${scope}-goal-card" onchange="setGoalCard('${scope}')" style="${CLAN_SELECT_STYLE}">
+        ${cards.filter(c => cardDisplayLevel(c) < MAX_LEVEL).map(c => `<option value="${c.id}">${esc(c.name)} · Lv ${cardDisplayLevel(c)}</option>`).join('')}
+      </select>` : ''}
+      <div class="flex-row">
+        <input type="number" id="${scope}-goal-target" inputmode="numeric" placeholder="Target" value="${goalSuggestion(data, type, scope)}" style="flex:1" onkeydown="if(event.key==='Enter')addGoal('${scope}')">
+        <button class="btn btn-primary" onclick="addGoal('${scope}')">Add</button>
+      </div>
+      <div id="${scope}-goal-msg" style="font-size:12px;color:var(--red)"></div>
+    </div>` : (goals.length < GOALS_MAX ? `<button class="btn btn-secondary btn-sm" style="margin-top:10px" onclick="toggleGoalForm('${scope}')">＋ Add a goal</button>` : '');
+  return `<div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">🎯 Goals</h3>${adding ? `<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 9px" onclick="toggleGoalForm('${scope}')">Cancel</button>` : ''}</div>
+    ${rows || (adding ? '' : `<div style="font-size:12px;color:var(--muted);margin-top:6px">Set a target — a rating, King Tower or collection level, a card's level — and track what's left${scope === 'p' ? '' : ' for this player'}.</div>`)}
+    ${form}`;
+}
+// A round next step above the current value
+function goalSuggestion(data, type, scope) {
+  if (type === 'card') {
+    const id = document.getElementById(`${scope}-goal-card`)?.value;
+    const c = id ? goalCard(data, id) : [...(data.cards || [])].sort((a, b) => a.name.localeCompare(b.name)).find(c => cardDisplayLevel(c) < MAX_LEVEL);
+    return c ? Math.min(MAX_LEVEL, cardDisplayLevel(c) + 1) : '';
+  }
+  const now = GOAL_TYPES[type].get(data, {});
+  if (now == null) return type === 'pol' ? 2000 : '';
+  const step = type === 'trophies' || type === 'pol' ? 100 : type === 'cl' ? 50 : 1;
+  return Math.min(GOAL_TYPES[type].max || Infinity, (Math.floor(now / step) + 1) * step);
+}
+const redrawGoals = scope => { const el = document.getElementById(`${scope}-goals`); if (el) el.innerHTML = goalsCardBody(scope); };
+window.toggleGoalForm = function(scope) { const st = _goalsState[scope]; if (!st) return; st.adding = !st.adding; redrawGoals(scope); };
+window.setGoalType = function(scope, v) { const st = _goalsState[scope]; if (!st) return; st.type = v; redrawGoals(scope); };
+window.setGoalCard = function(scope) {
+  const st = _goalsState[scope], input = document.getElementById(`${scope}-goal-target`);
+  if (st && input) input.value = goalSuggestion(st.data, 'card', scope);
+};
+window.addGoal = function(scope) {
+  const st = _goalsState[scope]; if (!st) return;
+  const T = GOAL_TYPES[st.type], msg = document.getElementById(`${scope}-goal-msg`);
+  const target = parseInt(document.getElementById(`${scope}-goal-target`)?.value, 10);
+  const g = { type: st.type, target, at: Date.now() };
+  if (st.type === 'card') g.card = +document.getElementById(`${scope}-goal-card`)?.value;
+  const now = T.get(st.data, g);
+  const say = t => { if (msg) msg.textContent = t; };
+  if (!target || target < 1) return say('Enter a target.');
+  if (T.max && target > T.max) return say(`The highest is ${T.max}.`);
+  if (now != null && target <= now) return say(`Already at ${fmtNum(now)} — pick something higher.`);
+  g.from = now ?? 0;
+  const list = loadGoals(st.data.tag);
+  if (list.some(x => x.type === g.type && x.card === g.card && x.target === g.target)) return say('That goal is already there.');
+  list.push(g);
+  saveGoals(st.data.tag, list.slice(-GOALS_MAX));
+  st.adding = false;
+  redrawGoals(scope);
+};
+window.removeGoal = function(scope, i) {
+  const st = _goalsState[scope]; if (!st) return;
+  const list = loadGoals(st.data.tag);
+  list.splice(i, 1);
+  saveGoals(st.data.tag, list);
+  redrawGoals(scope);
 };
 
 // W/L per game mode over the battle log (~30 most recent games).
@@ -3883,6 +4248,8 @@ function battleStatsHTML(data, battles, scope = 'p') {
       ${levelAdvantageHTML(data, battles, scope)}
 
       ${momentumHTML(battles, scope)}
+
+      ${playTimesHTML(data, battles, scope)}
 
       ${pol.length ? `<div style="${OV_SECTION_STYLE}">Path of Legends</div>
       ${pol.map(([label, r]) => { const detail = polLeagueDetail(r);
@@ -4986,8 +5353,9 @@ function battleDetailsHTML(b, team, opp, scope = 'p') {
       <span class="${b.boatBattleWon ? 'text-green' : 'text-red'}">${b.boatBattleWon ? 'won' : 'lost'}</span> ·
       ${fmtNum(b.newTowersDestroyed)} tower${b.newTowersDestroyed === 1 ? '' : 's'} destroyed${b.prevTowersDestroyed ? ` (${fmtNum(b.prevTowersDestroyed)} already down)` : ''} ·
       ${fmtNum(b.remainingTowers)} left</div>` : '';
-  if (!rows.length && !boat) return '';
-  return `${boat}
+  const tourn = b.tournamentTag ? `<div style="font-size:12px;margin-bottom:8px;text-align:center"><span onclick="openTournament('${esc(b.tournamentTag)}')" style="cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px">🏆 Open this tournament</span></div>` : '';
+  if (!rows.length && !boat && !tourn) return '';
+  return `${boat}${tourn}
     <div style="display:grid;grid-template-columns:auto minmax(0,1fr) minmax(0,1fr);gap:6px 10px;font-size:12px;align-items:start">
       <div></div>
       <div style="color:#5b9bff;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${multi ? (scope === 'p' ? 'Your team' : 'Team') : (scope === 'p' ? 'You' : esc(team[0]?.name || 'Player'))}</div>
@@ -5270,9 +5638,10 @@ function _renderDeckList(scope) {
             <div class="progress-wrap" style="margin-top:2px"><div class="progress-bar" style="width:${wr}%;background:var(--green)"></div></div>`}
           </div>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-top:10px">
           <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
           <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="upgradeDeck('${esc(names)}')">💰 Upgrade Cost</button>
+          ${starBtnHTML(slots.map(n => ({ name: n, form: d.variants[n] || '' })), `${st.data.name || 'Player'}'s decks`)}
         </div>
       </div>`;
   }).join('');
@@ -5298,6 +5667,74 @@ window.setDeckSort = function(scope, v) {
 };
 // A deck's cost to upgrade with YOUR cards — from your own decks or a friend's —
 // opened as a custom deck in Deck Upgrade
+// ── Saved decks: ☆ on any deck (Decks tab, Meta) keeps it in cr_saved_decks,
+// listed under Deck Upgrade → Saved, so a good deck stays after it leaves the
+// battle log or the meta's top 300. Cards in slot order with their forms ──
+const SAVED_DECKS_KEY = 'cr_saved_decks';
+const SAVED_DECKS_MAX = 40;
+const _starDecks = new Map();  // key → { cards, from }, filled while rendering
+const savedDeckKey = cards => cards.map(c => c.form ? `${c.name}[${c.form}]` : c.name).sort().join('|');
+function loadSavedDecks() {
+  try { return JSON.parse(localStorage.getItem(SAVED_DECKS_KEY) || '[]') || []; } catch(e) { return []; }
+}
+function storeSavedDecks(list) {
+  try { localStorage.setItem(SAVED_DECKS_KEY, JSON.stringify(list.slice(0, SAVED_DECKS_MAX))); } catch(e) {}
+}
+function starBtnHTML(cards, from) {
+  const key = savedDeckKey(cards);
+  _starDecks.set(key, { cards, from });
+  const on = loadSavedDecks().some(d => d.key === key);
+  return `<button class="btn btn-secondary btn-sm" data-star="${esc(key)}" title="${on ? 'Saved — tap to remove' : 'Save this deck'}" style="font-size:13px;padding:4px 10px;justify-content:center${on ? ';color:var(--accent);border-color:var(--accent)' : ''}" onclick="toggleSavedDeck(this.dataset.star)">${on ? '★' : '☆'}</button>`;
+}
+window.toggleSavedDeck = function(key) {
+  let list = loadSavedDecks();
+  const on = list.some(d => d.key === key);
+  if (on) list = list.filter(d => d.key !== key);
+  else {
+    const e = _starDecks.get(key);
+    if (!e) return;
+    if (list.length >= SAVED_DECKS_MAX) { alert(`You can save up to ${SAVED_DECKS_MAX} decks — remove one under Deck Upgrade → Saved first.`); return; }
+    list.unshift({ key, cards: e.cards, from: e.from, at: Date.now() });
+  }
+  storeSavedDecks(list);
+  document.querySelectorAll('[data-star]').forEach(b => {
+    if (b.dataset.star !== key) return;
+    b.textContent = on ? '☆' : '★';
+    b.title = on ? 'Save this deck' : 'Saved — tap to remove';
+    b.style.color = on ? '' : 'var(--accent)';
+    b.style.borderColor = on ? '' : 'var(--accent)';
+  });
+  if (currentScreen === 'deckup' && _deckUpMode === 'saved') renderDeckUpgradeScreen();
+};
+function savedDecksHTML() {
+  const list = loadSavedDecks();
+  if (!list.length) return '<div class="empty-msg">No saved decks yet. Tap ☆ on a deck in the Decks tab or on the Meta screen to keep it here.</div>';
+  const art = buildCardArtMap([]);
+  const owned = new Set((window._currentProfile?.data?.cards || []).map(c => c.name));
+  return list.map(d => {
+    const names = d.cards.map(c => c.name);
+    const costs = names.map(n => allCards.find(c => c.name === n)?.elixirCost).filter(x => x != null);
+    const missing = owned.size ? names.filter(n => !owned.has(n)) : [];
+    return `<div class="deck-item">
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--muted);margin-bottom:6px">
+        <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.from || '')}</span>
+        <span style="white-space:nowrap">${costs.length === 8 ? `<span class="text-blue" style="font-weight:700">💧 ${(costs.reduce((a, b) => a + b, 0) / 8).toFixed(1)}</span> · ` : ''}saved ${new Date(d.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:3px">${d.cards.map(c => deckTileHTML(c.name, c.form, art[c.name], 'deck-list-tile')).join('')}</div>
+      ${missing.length ? `<div style="font-size:11px;color:var(--red);margin-top:6px">Not unlocked: ${missing.map(esc).join(', ')}</div>` : ''}
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-top:10px">
+        <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="copyDeckLink('${esc(names.join(', '))}', this)">📋 Copy Deck</button>
+        <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="upgradeDeck('${esc(names.join(', '))}')">💰 Upgrade Cost</button>
+        <button class="btn btn-secondary btn-sm" title="Remove from saved decks" style="font-size:12px;padding:4px 10px" onclick="removeSavedDeck('${esc(d.key)}')">🗑️</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+window.removeSavedDeck = function(key) {
+  storeSavedDecks(loadSavedDecks().filter(d => d.key !== key));
+  renderDeckUpgradeScreen();
+};
+
 window.upgradeDeck = function(names) {
   const ids = (names || '').split(',').map(n => allCards.find(c => c.name === n.trim())?.id).filter(Boolean);
   if (document.getElementById('friend-modal').style.display === 'block') closeFriendModal();
@@ -5458,8 +5895,11 @@ function drawMeta() {
   const controls = view === 'you' || view === 'stats' ? '' : view === 'players' ? `
     <select onchange="setMetaCountry(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
       <option value="">🌍 Global top 1,000</option>
+      ${(loadLeaderboards() || []).length ? `<optgroup label="Other game modes">${loadLeaderboards().map(l => `<option value="lb:${l.id}"${`lb:${l.id}` === country ? ' selected' : ''}>🎮 ${esc(l.name)}</option>`).join('')}</optgroup>` : ''}
+      <optgroup label="Countries · Path of Legends">
       ${(loadLocations() || []).map(l => `<option value="${l.id}"${String(l.id) === country ? ' selected' : ''}>${countryFlag(l.countryCode)} ${esc(l.name)}</option>`).join('')}
-      ${country && !loadLocations() ? `<option value="${esc(country)}" selected>Country ${esc(country)}</option>` : ''}
+      </optgroup>
+      ${country && !(country.startsWith('lb:') ? loadLeaderboards() : loadLocations()) ? `<option value="${esc(country)}" selected>${country.startsWith('lb:') ? 'Leaderboard' : 'Country'} ${esc(country.replace('lb:', ''))}</option>` : ''}
     </select>
     ${country ? '' : `<select onchange="setMetaSort(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
       ${Object.entries(META_SORTS.players).map(([v, l]) => `<option value="${v}"${sort === v ? ' selected' : ''}>Sort: ${l}</option>`).join('')}
@@ -5529,9 +5969,10 @@ function metaDeckItemHTML(d, P, head) {
       ${metaTowersLineHTML(d)}
       <button class="meta-more-btn" onclick="toggleMetaDeck('${d.key}')">${_metaDeckOpen.has(d.key) ? 'Hide details ▴' : 'Matchups, tower troops & players ▾'}</button>
       ${_metaDeckOpen.has(d.key) ? metaDeckMoreHTML(d, P) : ''}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-top:10px">
         <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
         <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="upgradeDeck('${esc(names)}')">💰 Upgrade Cost</button>
+        ${starBtnHTML(d.cards.map(c => ({ name: c.name, form: c.form })), `Top players · ${wr}% win rate`)}
       </div>
     </div>`;
 }
@@ -6611,6 +7052,44 @@ function metaPlayersHTML() {
     }).join('')
     + (list.length > shown.length ? `<button class="btn btn-secondary" style="width:100%;margin-top:4px" onclick="metaShowMore()">Show more (${list.length - shown.length} more)</button>` : '');
 }
+// ── Game-mode leaderboards (/leaderboards): many are past seasons of the same
+// mode, so per name the highest id — the newest — is kept; unnamed ones are left
+// out. Cached a day in cr_leaderboards_cache ──
+const LEADERBOARDS_CACHE_KEY = 'cr_leaderboards_cache';
+let _leaderboards = null, _leaderboardsLoading = false;
+function loadLeaderboards() {
+  if (_leaderboards) return _leaderboards;
+  try {
+    const c = JSON.parse(localStorage.getItem(LEADERBOARDS_CACHE_KEY) || 'null');
+    if (c?.items) {
+      _leaderboards = c.items;
+      if (Date.now() - c.savedAt > 864e5) fetchLeaderboards();
+      return _leaderboards;
+    }
+  } catch(e) {}
+  fetchLeaderboards();
+  return null;
+}
+async function fetchLeaderboards() {
+  if (_leaderboardsLoading) return;
+  _leaderboardsLoading = true;
+  try {
+    const res = await apiGet('/leaderboards');
+    const newest = {};
+    (res.items || []).filter(l => l.name).forEach(l => { if (!newest[l.name] || l.id > newest[l.name].id) newest[l.name] = { id: l.id, name: l.name }; });
+    _leaderboards = Object.values(newest).sort((a, b) => a.name.localeCompare(b.name));
+    try { localStorage.setItem(LEADERBOARDS_CACHE_KEY, JSON.stringify({ items: _leaderboards, savedAt: Date.now() })); } catch(e) {}
+    if (currentScreen === 'meta' && _metaView === 'players') drawMeta();
+  } catch(e) {} finally { _leaderboardsLoading = false; }
+}
+// Where your accounts and friends are on a game-mode board
+function metaModeRankHTML(players, mode) {
+  const mine = new Set(getSavedAccounts().map(a => a.tag)), friends = new Set(getFriends().map(f => f.tag));
+  const hits = players.filter(p => mine.has(p[0]) || friends.has(p[0]));
+  if (!hits.length) return '';
+  return `<div class="card" style="padding:10px 12px;font-size:13px">🏅 ${hits.slice(0, 5).map(p => `<b>${esc(p[1])}</b> is <b class="text-accent">#${fmtNum(p[3])}</b>${mine.has(p[0]) ? '' : ' <span class="text-muted">(friend)</span>'}`).join(' · ')} in ${esc(mode.name)}.</div>`;
+}
+
 // ── Country leaderboard ──
 function loadLocations() {
   if (_locations) return _locations;
@@ -6664,9 +7143,11 @@ async function loadCountryBoard(id) {
   if (b.loading) return;
   b.loading = true;
   try {
-    const res = await apiGet(`/locations/${encodeURIComponent(id)}/pathoflegend/players?limit=1000`);
-    // Same layout as /top's players: [tag, name, clan, rank, rating]
-    Object.assign(b, { players: (res.items || []).map(p => [p.tag, p.name, p.clan?.name || '', p.rank, p.eloRating]), savedAt: Date.now(), error: null });
+    // A game-mode leaderboard ('lb:<id>') or a country's Path of Legends board
+    const res = await apiGet(id.startsWith('lb:') ? `/leaderboard/${encodeURIComponent(id.slice(3))}?limit=1000`
+      : `/locations/${encodeURIComponent(id)}/pathoflegend/players?limit=1000`);
+    // Same layout as /top's players: [tag, name, clan, rank, rating or score]
+    Object.assign(b, { players: (res.items || []).map(p => [p.tag, p.name, p.clan?.name || '', p.rank, p.eloRating ?? p.score]), savedAt: Date.now(), error: null });
   } catch(e) {
     b.error = e.status === 404 ? 'notfound' : e.message;
   } finally {
@@ -6676,15 +7157,16 @@ async function loadCountryBoard(id) {
 }
 function metaCountryHTML(id) {
   const b = _countryBoards[id];
-  const loc = (loadLocations() || []).find(l => String(l.id) === id);
-  const where = loc ? `${countryFlag(loc.countryCode)} ${esc(loc.name)}` : 'this country';
+  const mode = id.startsWith('lb:') ? (loadLeaderboards() || []).find(l => `lb:${l.id}` === id) || { name: 'This game mode' } : null;
+  const loc = mode ? null : (loadLocations() || []).find(l => String(l.id) === id);
+  const where = mode ? `🎮 ${esc(mode.name)}` : loc ? `${countryFlag(loc.countryCode)} ${esc(loc.name)}` : 'this country';
   if (!b?.players) {
-    if (b?.error) return `<div class="error-msg">${b.error === 'notfound' ? `No Path of Legends leaderboard for ${where} right now.` : esc(b.error)}</div>`;
+    if (b?.error) return `<div class="error-msg">${b.error === 'notfound' ? (mode ? `The ${esc(mode.name)} leaderboard isn't available right now.` : `No Path of Legends leaderboard for ${where} right now.`) : esc(b.error)}</div>`;
     loadCountryBoard(id);
     return '<div class="spinner"></div>';
   }
   if (Date.now() - b.savedAt > COUNTRY_BOARD_MAX_AGE) loadCountryBoard(id);
-  if (!b.players.length) return `<div class="empty-msg">Nobody from ${where} is on the Path of Legends leaderboard yet.</div>`;
+  if (!b.players.length) return `<div class="empty-msg">${mode ? `Nobody is on the ${esc(mode.name)} leaderboard yet.` : `Nobody from ${where} is on the Path of Legends leaderboard yet.`}</div>`;
   if (!_metaTop) loadMetaTop();  // for global ranks and main decks
   const top = Object.fromEntries((_metaTop?.data?.players || []).map(p => [p[0], p]));
   const mine = new Set(getSavedAccounts().map(a => a.tag));
@@ -6694,11 +7176,13 @@ function metaCountryHTML(id) {
   if (!list.length) return `<div class="empty-msg">No player from ${where} matches "${esc(_metaTopQuery.trim())}".</div>`;
   const art = buildCardArtMap([]);
   const shown = list.slice(0, _metaShown);
-  return (q ? '' : metaYourRankHTML(b.players, `in ${where}`, `${where}'s top ${fmtNum(b.players.length)}`))
-    + `<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">${where}'s Path of Legends leaderboard (Ultimate Champion), ${fmtNum(b.players.length)} players · live from the game. 🌍 = global rank, with the main deck for players in the global top 1,000.</div>`
+  return (q || mode ? '' : metaYourRankHTML(b.players, `in ${where}`, `${where}'s top ${fmtNum(b.players.length)}`))
+    + (mode ? metaModeRankHTML(b.players, mode) : '')
+    + `<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px">${mode ? `The ${esc(mode.name)} leaderboard` : `${where}'s Path of Legends leaderboard (Ultimate Champion)`}, ${fmtNum(b.players.length)} players · live from the game. 🌍 = global Path of Legends rank${mode ? '' : ', with the main deck for players in its top 1,000'}.</div>`
     + shown.map(([tag, name, clan, rank, rating]) => {
       const label = mine.has(tag) ? 'You' : friends.has(tag) ? 'Friend' : '';
-      const g = top[tag], cards = g?.[5] ? metaDeckCards(g[5]) : [];
+      // A game-mode board shows no deck: the main deck is the Path of Legends one
+      const g = top[tag], cards = g?.[5] && !mode ? metaDeckCards(g[5]) : [];
       return `
       <div class="deck-item" style="cursor:pointer" onclick="viewFriend('${esc(tag)}')">
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
@@ -6706,7 +7190,7 @@ function metaCountryHTML(id) {
             <span class="text-muted" style="font-size:12px">#${rank}</span> <b>${esc(name || tag)}</b>
             ${label ? `<span class="badge badge-gold" style="font-size:10px;margin-left:4px">${label}</span>` : ''}
           </span>
-          <span style="white-space:nowrap;font-weight:700;color:var(--accent)">⚔️ ${fmtNum(rating)}</span>
+          <span style="white-space:nowrap;font-weight:700;color:var(--accent)">${mode ? '🏅' : '⚔️'} ${fmtNum(rating)}</span>
         </div>
         <div style="font-size:11px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
           ${clan ? `🛡 ${esc(clan)}` : 'No clan'}${g ? ` · <span class="text-accent">🌍 #${fmtNum(g[3])}</span>${g[7] ? ` · ${g[7]} ranked games · ${Math.round(g[8] / g[7] * 100)}% wins` : ''}` : ''}
@@ -6840,6 +7324,113 @@ async function loadClan() {
     if (seq !== _loadClanSeq) return;
     el.innerHTML = `<div class="error-msg">${esc(lookupErrorText(e, 'clan', tag))}</div>`;
   }
+}
+
+// ── Tournaments: a Clan / Tournament switch on the Clan screen. A tag opens the
+// tournament (/tournaments/{tag}); anything else searches open tournaments by
+// name (/tournaments?name=). Tournament battles in the battle log link here ──
+let _clanView = 'clan', _tournSeq = 0, _tournTag = '';
+window.setClanView = function(v) {
+  _clanView = v;
+  document.querySelectorAll('#clan-seg button').forEach((b, i) => b.classList.toggle('active', (i === 1) === (v === 'tourn')));
+  document.getElementById('clan-view').style.display = v === 'clan' ? '' : 'none';
+  document.getElementById('tourn-view').style.display = v === 'tourn' ? '' : 'none';
+  document.getElementById('clan-title').textContent = v === 'tourn' ? '🏆 Tournament Lookup' : '🛡 Clan Lookup';
+};
+const TOURN_TAG_RE = /^#?[0289PYLQGRJCUV]{5,12}$/i;
+window.searchTournament = async function() {
+  const input = document.getElementById('tourn-input');
+  const q = (input.value || '').trim();
+  if (!q) return;
+  if (q.startsWith('#') || (TOURN_TAG_RE.test(q) && !/\s/.test(q) && q === q.toUpperCase())) return openTournament(q);
+  const seq = ++_tournSeq, el = document.getElementById('tourn-result');
+  el.innerHTML = '<div class="spinner"></div>';
+  try {
+    const res = await apiGet(`/tournaments?name=${encodeURIComponent(q)}&limit=30`);
+    if (seq !== _tournSeq) return;
+    const items = res.items || [];
+    el.innerHTML = items.length ? `<div style="font-size:12px;color:var(--muted);margin:0 0 8px">${items.length} open tournament${items.length === 1 ? '' : 's'} named like "${esc(q)}" — private ones only by tag.</div>`
+      + items.map(t => `<div class="deck-item" style="cursor:pointer" onclick="openTournament('${esc(t.tag)}')">
+          <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline">
+            <b style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.name || t.tag)}</b>
+            ${tournStatusBadge(t)}
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:3px">👥 ${fmtNum(t.capacity)} / ${fmtNum(t.maxCapacity)} · ${tournTimeText(t)}${t.levelCap ? ` · Lv ${t.levelCap} cap` : ''}</div>
+        </div>`).join('')
+      : `<div class="empty-msg">No open tournament named like "${esc(q)}". Private tournaments can only be found by tag.</div>`;
+  } catch(e) {
+    if (seq !== _tournSeq) return;
+    el.innerHTML = `<div class="error-msg">${esc(e.message)}</div>`;
+  }
+};
+function tournStatusBadge(t) {
+  const s = { inPreparation: ['Starting soon', 'badge-gold'], inProgress: ['Live', 'badge-green'], ended: ['Ended', ''] }[t.status] || [t.status || '?', ''];
+  return `<span class="badge ${s[1]}" style="font-size:10px;white-space:nowrap">${esc(s[0])}</span>`;
+}
+// Starts / ends in, or ended … ago
+function tournTimeText(t) {
+  const at = ts => ts ? +parseApiTime(ts) : null;
+  const created = at(t.createdTime), started = at(t.startedTime), ended = at(t.endedTime);
+  if (t.status === 'ended') return ended ? `ended ${fmtAgo(Date.now() - ended)}` : 'ended';
+  if (t.status === 'inProgress') return started && t.duration ? `ends in ${fmtDuration(started + t.duration * 1000 - Date.now())}` : 'under way';
+  if (created && t.preparationDuration) return `starts in ${fmtDuration(created + t.preparationDuration * 1000 - Date.now())}`;
+  return '';
+}
+window.openTournament = async function(raw) {
+  const tag = normalizeTag(raw);
+  if (!tag) return;
+  if (document.getElementById('friend-modal').style.display === 'block') closeFriendModal();
+  if (currentScreen !== 'clan') goTo('clan');
+  setClanView('tourn');
+  const input = document.getElementById('tourn-input');
+  input.value = tag;
+  const seq = ++_tournSeq, el = document.getElementById('tourn-result');
+  if (_tournTag !== tag) el.innerHTML = '<div class="spinner"></div>';
+  try {
+    const t = await apiGet('/tournaments/' + encodeURIComponent(tag));
+    if (seq !== _tournSeq) return;
+    _tournTag = tag;
+    el.innerHTML = tournamentHTML(t);
+  } catch(e) {
+    if (seq !== _tournSeq) return;
+    el.innerHTML = `<div class="error-msg">${esc(lookupErrorText(e, 'tournament', tag))}</div>`;
+  }
+};
+function tournamentHTML(t) {
+  const mine = new Set(getSavedAccounts().map(a => a.tag)), friends = new Set(getFriends().map(f => f.tag));
+  const members = [...(t.membersList || [])].sort((a, b) => (a.rank || 1e9) - (b.rank || 1e9));
+  const hrs = sec => sec >= 3600 ? `${+(sec / 3600).toFixed(1)} h` : `${Math.round(sec / 60)} min`;
+  const typeText = { open: 'Open', passwordProtected: 'Private (password)' }[t.type] || t.type || '';
+  return `<div class="card">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+        <h3 style="margin:0;min-width:0;overflow-wrap:anywhere">🏆 ${esc(t.name || t.tag)}</h3>
+        ${tournStatusBadge(t)}
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin:4px 0 8px">${esc(t.tag)} · ${tournTimeText(t)}</div>
+      ${t.description ? `<div style="font-size:13px;margin-bottom:8px;overflow-wrap:anywhere">${esc(t.description)}</div>` : ''}
+      ${ovRow('Players', `${fmtNum(t.capacity)} / ${fmtNum(t.maxCapacity)}`)}
+      ${typeText ? ovRow('Type', esc(typeText)) : ''}
+      ${t.levelCap ? ovRow('Level cap', `Lv ${t.levelCap}`) : ''}
+      ${t.duration ? ovRow('Length', `${hrs(t.duration)}${t.preparationDuration ? ` <span class="text-muted">· ${hrs(t.preparationDuration)} to join first</span>` : ''}`) : ''}
+      ${t.firstPlaceCardPrize ? ovRow('1st place prize', `${fmtNum(t.firstPlaceCardPrize)} cards`) : ''}
+      ${t.creatorTag ? `<div class="stat-row" style="cursor:pointer" onclick="viewFriend('${esc(t.creatorTag)}')"><span class="stat-label">Created by</span><span class="stat-value" style="text-decoration:underline dotted;text-underline-offset:3px">${esc((members.find(m => m.tag === t.creatorTag) || {}).name || t.creatorTag)}</span></div>` : ''}
+      <div style="text-align:right;margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="openTournament('${esc(t.tag)}')">🔄 Refresh</button></div>
+    </div>
+    <div class="card">
+      <h3 style="margin-bottom:8px">Standings <span style="font-weight:400;font-size:12px;color:var(--muted)">· ${members.length}</span></h3>
+      ${members.length ? members.map(m => {
+        const label = mine.has(m.tag) ? 'You' : friends.has(m.tag) ? 'Friend' : '';
+        return `<div class="stat-row" style="cursor:pointer${label ? ';background:rgba(232,184,75,0.08);border-radius:8px;padding-left:6px;padding-right:6px' : ''}" onclick="viewFriend('${esc(m.tag)}')">
+          <span class="stat-label" style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            <span class="text-muted" style="font-size:12px">#${m.rank ?? '–'}</span> <span style="color:var(--text);font-weight:600">${esc(m.name || m.tag)}</span>
+            ${label ? `<span class="badge badge-gold" style="font-size:10px;margin-left:4px">${label}</span>` : ''}
+            ${m.clan?.name ? `<span style="font-size:11px"> · 🛡 ${esc(m.clan.name)}</span>` : ''}
+          </span>
+          <span class="stat-value" style="flex-shrink:0;margin-left:8px">🏅 ${fmtNum(m.score || 0)}</span>
+        </div>`;
+      }).join('') : '<div class="empty-msg">Nobody has joined yet.</div>'}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Score = wins · tap a player to open their profile</div>
+    </div>`;
 }
 
 // Opening the Clan screen refetches a clan older than CLAN_MAX_AGE_MS in place:
