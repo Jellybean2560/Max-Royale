@@ -6635,6 +6635,7 @@ function drawMeta() {
       Ranked matches of the <b>global top 1,000</b> Path of Legends players, last ${m.window_days} days.
       <div style="margin-top:4px"><b>${fmtNum(m.matches)}</b> matches · stats from ${metaStatsTime(m.updated)}${young ? ` · collecting since ${dateOf(m.started)} (full week from ${dateOf(m.started + m.window_days * 864e5)})` : ''}</div>
       <div style="font-size:11px;color:var(--muted);margin-top:4px">${metaNextText(m)}</div>
+      ${m.board?.held ? `<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--surface2);font-size:12px">🔄 <b>New season.</b> The leaderboard reset on ${dateOf(seasonStartOf(Date.now()))} and only ${fmtNum(m.board.size)} players are back in Ultimate Champion. Until it fills up, last season's top 1,000 are still followed — some now play in lower leagues — so these stats lean on games from before the reset.</div>` : ''}
     </div>
     <div class="seg" style="margin-bottom:10px">
       ${[['decks', 'Decks'], ['cards', 'Cards'], ['stats', 'Stats'], ['players', 'Players'], ['you', 'You']].map(([v, l]) => `<button class="${view === v ? 'active' : ''}" style="padding:6px 4px" onclick="setMetaView('${v}')">${l}</button>`).join('')}

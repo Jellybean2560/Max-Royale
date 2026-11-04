@@ -58,6 +58,13 @@ const READ_BUDGET = 2e6, POLL_RESERVE = 250e3;
 // index's range, so picking who to poll no longer walks over them (700 stale
 // overdue rows were read on every poll — ~1M rows a day — before this)
 const PARKED = 9e15;
+// A new season empties the leaderboard: only players already back in Ultimate
+// Champion are listed (44 the day after the Nov 2026 reset). While it holds fewer
+// than MIN_BOARD, last season's top 1,000 — everyone on the last board that was
+// full (full_board_at) — stay polled, so the stats don't run dry.
+const MIN_BOARD = 500;
+// Players are polled when seen on the current board, or on the last full one while it's short
+const pollFrom = st => Math.min(+st.board_at || 0, +st.full_board_at || +st.board_at || 0) - HOUR;
 // Full tower HP in ranked, for damage = full − left. Princess HP depends on the
 // tower troop, so each troop's full pair is learnt from the data (the most seen
 // left standing in recent matches) and kept as the highest ever seen. These are
@@ -79,7 +86,7 @@ export default {
     }
     if (url.pathname === '/status') {
       const st = await getState(env);
-      const board = await env.DB.prepare(`SELECT COUNT(*) AS n, SUM(polls > 0) AS polled FROM players WHERE seen_at >= ?1`).bind((+st.board_at || 0) - HOUR).first();
+      const board = await env.DB.prepare(`SELECT COUNT(*) AS n, SUM(polls > 0) AS polled FROM players WHERE seen_at >= ?1`).bind(pollFrom(st)).first();
       const day = await env.DB.prepare(`SELECT COUNT(*) AS n FROM matches WHERE time >= ?1`).bind(Math.floor((Date.now() - DAY) / 1000)).first();
       return new Response(JSON.stringify({ ...st, players: board?.n || 0, players_polled: board?.polled || 0, matches_last_24h: day?.n || 0 }, null, 2), { headers });
     }
@@ -97,7 +104,7 @@ async function tick(env) {
   const due = (job, every) => now - (+st[`${job}_at`] || 0) > every && now - (+st[`${job}_try_at`] || 0) > RETRY_AFTER;
   const run = async (job, fn) => {
     await setState(env, { [`${job}_try_at`]: now });
-    return fn(env, now);
+    return fn(env, now, st);
   };
   if (!st.started_at) await setState(env, { started_at: now });
   // A heavy job runs only if what it read last time still fits in today's budget
@@ -128,7 +135,7 @@ async function api(env, path) {
   }
 }
 
-async function refreshBoard(env, now) {
+async function refreshBoard(env, now, st) {
   const board = await api(env, '/locations/global/pathoflegend/players?limit=1000');
   const items = (board.items || []).map(p => ({ tag: p.tag, name: p.name, rank: p.rank, rating: p.eloRating, clan: p.clan?.name || null }));
   if (!items.length) throw new Error('empty leaderboard');
@@ -141,13 +148,19 @@ async function refreshBoard(env, now) {
     ON CONFLICT (tag) DO UPDATE SET name = excluded.name, rank = excluded.rank,
       rating = excluded.rating, clan = excluded.clan, seen_at = excluded.seen_at,
       next_poll = CASE WHEN players.next_poll >= ${PARKED} THEN excluded.next_poll ELSE players.next_poll END`).bind(JSON.stringify(items), now).run();
-  // Players no longer on it are parked until they come back
-  await env.DB.prepare(`UPDATE players SET next_poll = ${PARKED} WHERE seen_at < ?1 AND next_poll < ${PARKED}`).bind(now).run();
+  const full = items.length >= MIN_BOARD;
+  if (full) {
+    // Players no longer on it are parked until they come back
+    await env.DB.prepare(`UPDATE players SET next_poll = ${PARKED} WHERE seen_at < ?1 AND next_poll < ${PARKED}`).bind(now).run();
+  } else if (st.full_board_at) {
+    // Season start: last season's top 1,000 are woken (once) and kept polled
+    await env.DB.prepare(`UPDATE players SET next_poll = ?2 WHERE next_poll >= ${PARKED} AND seen_at >= ?1`).bind(+st.full_board_at - HOUR, now).run();
+  }
   // Each UTC day's first refresh keeps everyone's rating, for the climb over a day / week
   await env.DB.prepare(`
     INSERT OR IGNORE INTO ratings (day, tag, rating)
     SELECT ?2, json_extract(value, '$.tag'), json_extract(value, '$.rating') FROM json_each(?1)`).bind(JSON.stringify(items), dayKey(now)).run();
-  await setState(env, { board_at: now, board_size: items.length });
+  await setState(env, { board_at: now, board_size: items.length, ...(full ? { full_board_at: now } : {}) });
 }
 
 // API timestamps look like 20261012T105805.000Z → unix seconds
@@ -170,7 +183,7 @@ const side = (k, p) => ({
 async function pollPlayers(env, now, st) {
   const dueRes = await env.DB.prepare(`
     SELECT tag, last_time FROM players WHERE seen_at >= ?1 AND next_poll <= ?2
-    ORDER BY next_poll LIMIT ?3`).bind((+st.board_at || 0) - HOUR, now, PLAYERS_PER_RUN).all();
+    ORDER BY next_poll LIMIT ?3`).bind(pollFrom(st), now, PLAYERS_PER_RUN).all();
   const due = dueRes.results;
   if (!due.length) return;
   const logs = await Promise.all(due.map(p => api(env, `/players/${p.tag}/battlelog`).catch(e => ({ error: e.message }))));
@@ -286,8 +299,9 @@ async function computeStats(env, now) {
   // Rating bands: a side's rating at the match against today's #100 and #1000
   // (read off /top inside SQLite: parsing its 140 KB here would eat the CPU limit)
   const bandRow = await env.DB.prepare(`
-    SELECT json_extract(v, '$.players[99][4]') AS hi,
-           COALESCE(json_extract(v, '$.players[999][4]'), json_extract(v, '$.players[#-1][4]')) AS lo
+    SELECT COALESCE(json_extract(v, '$.players[99][4]'), (SELECT json_extract(v, '$.bands.hi') FROM state WHERE k = 'meta')) AS hi,
+           COALESCE(json_extract(v, '$.players[999][4]'), (SELECT json_extract(v, '$.bands.lo') FROM state WHERE k = 'meta'),
+                    json_extract(v, '$.players[#-1][4]')) AS lo
     FROM state WHERE k = 'top'`).first();
   const bands = { hi: Math.round(+bandRow?.hi) || 3000, lo: Math.round(+bandRow?.lo) || 2500 };
   // Counters: each top deck's record against every opponent card. The decks are
@@ -431,6 +445,9 @@ async function computeStats(env, now) {
     next: now + refreshEvery(reads, STATS_SHARE),  // when these stats are recomputed
     window_days: WINDOW_DAYS,
     started: +st.started_at || null,  // when collection began; older matches came from the first logs
+    // Players on the leaderboard; while a new season's board is short, `held` is when
+    // the last full one was read — last season's top 1,000 are still followed
+    board: { size: +st.board_size || 0, held: +st.board_size < MIN_BOARD && +st.full_board_at || null },
     matches: count(cards),
     first: t.first ? t.first * 1000 : null,
     last: t.last ? t.last * 1000 : null,
@@ -517,12 +534,13 @@ async function computeTop(env, now) {
   await countReads(env, 'top', now, reads, { top_at: now, top: JSON.stringify(top) });
 }
 
-async function prune(env, now) {
+async function prune(env, now, st) {
   const cutoff = Math.floor((now - KEEP_DAYS * DAY) / 1000);
   await env.DB.batch([
     env.DB.prepare(`DELETE FROM matches WHERE time < ?1`).bind(cutoff),
     // Off the leaderboard for a week: stop tracking
-    env.DB.prepare(`DELETE FROM players WHERE seen_at < ?1`).bind(now - 7 * DAY),
+    // (last season's top 1,000 are kept while the new board is short)
+    env.DB.prepare(`DELETE FROM players WHERE seen_at < ?1`).bind(Math.min(now - 7 * DAY, pollFrom(st))),
     env.DB.prepare(`DELETE FROM ratings WHERE day < ?1`).bind(dayKey(now - RATING_DAYS * DAY)),
   ]);
   await setState(env, { prune_at: now });
