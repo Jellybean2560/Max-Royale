@@ -70,12 +70,21 @@ const pollFrom = st => Math.min(+st.board_at || 0, +st.full_board_at || +st.boar
 // left standing in recent matches) and kept as the highest ever seen. These are
 // the starting values, from ranked battles Oct 2026 (king 7,728; Tower Princess 4,858 each).
 const KING_HP = 7728, PRINCESS_HP = { 159000000: 2 * 4858 };
+// D1 refuses queries ("D1 DB is overloaded") once about 10 s of work falls in
+// any 10-second window, and a week's grouping takes ~7 s on its own (610k rows,
+// Nov 2026) — so a stats run waits this long after each grouping before the next query
+const D1_PAUSE = 12e3;
+const pause = () => new Promise(r => setTimeout(r, D1_PAUSE));
 const TOWER_SAMPLE = 3000;          // recent matches read to learn full tower HP
 
 export default {
   async scheduled(event, env, ctx) {
     if (env.PAUSED === '1') return;  // wrangler.toml [vars]: collection paused, no D1 access at all
-    ctx.waitUntil(tick(env).catch(e => setState(env, { last_error: `${new Date().toISOString()} ${e.message}` })));
+    // An overloaded D1 also refuses the error's own write, so that waits for the window to clear
+    ctx.waitUntil(tick(env).catch(async e => {
+      const error = { last_error: `${new Date().toISOString()} ${stage ? `[${stage}] ` : ''}${e.message}` };
+      await setState(env, error).catch(() => new Promise(r => setTimeout(r, 15e3)).then(() => setState(env, error)));
+    }));
   },
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -104,7 +113,18 @@ async function tick(env) {
   const due = (job, every) => now - (+st[`${job}_at`] || 0) > every && now - (+st[`${job}_try_at`] || 0) > RETRY_AFTER;
   const run = async (job, fn) => {
     await setState(env, { [`${job}_try_at`]: now });
-    return fn(env, now, st);
+    try {
+      return await fn(env, now, st);
+    } catch (e) {
+      // A heavy job that fails late has still read its rows (D1 counts them), so
+      // they go on today's count — six uncounted failed stats runs took a day past
+      // D1's free 5M reads (4 Nov 2026). Its last run's reads are the estimate.
+      if (st[`${job}_reads`]) {
+        const add = async () => { const cur = await getState(env); await setState(env, { reads_day: dayKey(now), reads_count: readsToday(cur, now) + +st[`${job}_reads`] }); };
+        await add().catch(() => pause().then(add)).catch(() => {});
+      }
+      throw e;
+    }
   };
   if (!st.started_at) await setState(env, { started_at: now });
   // A heavy job runs only if what it read last time still fits in today's budget
@@ -269,7 +289,11 @@ async function pollPlayers(env, now, st) {
 // Deck and card stats over the last WINDOW_DAYS, both sides of every match, plus
 // the week before for trends once collection has run that long (skipped until
 // then: it would only read rows to describe a half-collected week)
+// The step a stats run is at, for its error message
+let stage = '';
+const step = name => { stage = name; console.log(`stats: ${name} at ${Date.now()}`); };
 async function computeStats(env, now) {
+  step('state');
   const st = await getState(env);
   const since = Math.floor((now - WINDOW_DAYS * DAY) / 1000), until = Math.floor(now / 1000) + 60;
   const prevSince = since - WINDOW_DAYS * 86400;
@@ -282,6 +306,7 @@ async function computeStats(env, now) {
   // Full tower HP: the highest left standing in a recent sample (a match where a
   // side's towers went untouched), never below what earlier runs saw
   const oldMeta = JSON.parse((await env.DB.prepare(`SELECT v FROM state WHERE k = 'meta'`).first())?.v || 'null');
+  step('tower sample');
   const sample = await env.DB.prepare(`
     SELECT ta, tb, ka, kb, sa, sb FROM matches WHERE time >= ?1 ORDER BY time DESC LIMIT ?2`).bind(since, TOWER_SAMPLE).all();
   const towers = { king: Math.max(KING_HP, oldMeta?.towers?.king || 0), princess: { ...PRINCESS_HP } };
@@ -371,7 +396,9 @@ async function computeStats(env, now) {
   const troopsOfDeck = troopIds.length ? `json_array(${troopIds.map(id => [0, 1, 2].map(i => unpack(`q${id}`, i)).join(', ')).join(', ')})` : 'NULL';
   // MIN / MAX read one row each off the primary key; match counts come from the
   // card tally (every match is 2 decks × 8 cards) instead of another scan
-  const results = await env.DB.batch([
+  // One at a time with a pause (D1_PAUSE), not as a batch: D1 runs a batch as one job
+  const results = [];
+  for (const q of [
     env.DB.prepare(`SELECT (SELECT MIN(time) FROM matches WHERE time >= ?1) AS first,
                            (SELECT MAX(time) FROM matches) AS last`).bind(since),
     // top decks and every card in one statement, off one grouping
@@ -381,11 +408,17 @@ async function computeStats(env, now) {
                      FROM g ORDER BY n DESC LIMIT ?3)
       UNION ALL SELECT * FROM (${cardsOfG}) ${troopsOfG} ${gapsOfG}`).bind(since, until, TOP_DECKS),
     ...(havePrev ? [env.DB.prepare(`${grouped(false)} ${cardsOfG}`).bind(prevSince, since)] : []),
-  ]);
+  ]) {
+    if (results.length === 2) await pause();
+    step(['range', 'grouping', 'last week'][results.length]);
+    results.push(await q.all());
+  }
   const [range, both, prev] = results;
   // Trend lines: each run's card tally (a 7-day window) is that day's point — the
   // day's last run replaces earlier ones. Nothing extra is scanned for it. With
   // no history yet, the previous run's stats seed a first point.
+  await pause();
+  step('stored state');
   const stored = await env.DB.batch([
     env.DB.prepare(`SELECT v FROM state WHERE k = 'history'`),
     env.DB.prepare(`SELECT v FROM state WHERE k = 'meta'`),
@@ -487,8 +520,10 @@ async function computeStats(env, now) {
   // ~200 KB, and the CPU limit is 10 ms.
   const counterJSON = counters ? `{"updated":${now},"cards":${JSON.stringify(cardIds)},"decks":[${
     decks.filter(r => r.cn).map(r => `[${JSON.stringify(r.k)},${r.cn},${r.cw}]`).join(',')}]}` : null;
+  step('save');
   await countReads(env, 'stats', now, reads, { stats_at: now, meta: JSON.stringify(meta), history: JSON.stringify(hist), deck_days: JSON.stringify(deckDays),
     ...(counterJSON ? { counters: counterJSON } : {}), ...(seed ? { activity: JSON.stringify(act) } : {}) });
+  step('');
 }
 
 // The current top 1,000 with each player's most played ranked deck over the
