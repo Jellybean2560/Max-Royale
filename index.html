@@ -7044,7 +7044,7 @@ function metaBalanceHTML(totals) {
   return `
     <div class="card">
       ${head}
-      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">The ${metaDay(U)} update: the 7 days before it against the 7 days to ${metaDay(B[0])}${partial ? ` (still ${Math.round((U + 7 * D - B[0]) / D)} days before the update in it)` : ''}. Cards whose share moved most.</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">The ${metaDay(U)} update: the 7 days before it against the 7 days to ${metaDay(B[0])}${partial ? ` (still ${((n) => `${n} day${n === 1 ? '' : 's'}`)(Math.round((U + 7 * D - B[0]) / D))} before the update in it)` : ''}. Cards whose share moved most.</div>
       <div style="display:flex;font-size:10px;color:var(--muted);padding-bottom:3px;border-bottom:1px solid var(--border)"><span style="flex:1">Card</span><span style="width:84px;text-align:right">In decks</span><span style="width:74px;text-align:right">Win rate</span></div>
       ${rows.map(r => `<div class="mu-row" style="cursor:pointer" onclick="metaDecksWith('${esc(r.t.name)}')">
           ${r.t.card?.iconUrls?.medium ? `<img src="${r.t.card.iconUrls.medium}" alt="" loading="lazy" decoding="async">` : ''}

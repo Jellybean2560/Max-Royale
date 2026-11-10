@@ -296,8 +296,6 @@ async function computeStats(env, now) {
   step('state');
   const st = await getState(env);
   const since = Math.floor((now - WINDOW_DAYS * DAY) / 1000), until = Math.floor(now / 1000) + 60;
-  const prevSince = since - WINDOW_DAYS * 86400;
-  const havePrev = +st.started_at && +st.started_at <= prevSince * 1000;
   // One row per deck played (w = won, d = draw, t = won with three crowns),
   // grouped by deck first: a week's ~50k decks played are only a few thousand
   // distinct decks, and the cards are unpacked from those. Unpacking every deck
@@ -407,13 +405,11 @@ async function computeStats(env, now) {
                             ${counters ? `${cardArray('o')} AS cn, ${cardArray('v')} AS cw` : 'NULL AS cn, NULL AS cw'}, ${extraOf} AS ex
                      FROM g ORDER BY n DESC LIMIT ?3)
       UNION ALL SELECT * FROM (${cardsOfG}) ${troopsOfG} ${gapsOfG}`).bind(since, until, TOP_DECKS),
-    ...(havePrev ? [env.DB.prepare(`${grouped(false)} ${cardsOfG}`).bind(prevSince, since)] : []),
   ]) {
-    if (results.length === 2) await pause();
-    step(['range', 'grouping', 'last week'][results.length]);
+    step(['range', 'grouping'][results.length]);
     results.push(await q.all());
   }
-  const [range, both, prev] = results;
+  const [range, both] = results;
   // Trend lines: each run's card tally (a 7-day window) is that day's point — the
   // day's last run replaces earlier ones. Nothing extra is scanned for it. With
   // no history yet, the previous run's stats seed a first point.
@@ -429,6 +425,11 @@ async function computeStats(env, now) {
     const old = JSON.parse(stored[1].results[0]?.v || 'null');
     if (old?.cards && dayKey(old.updated) !== dayKey(now)) hist.days.push([old.updated, old.matches, Object.fromEntries(old.cards.map(c => [c[0], c[1]]))]);
   }
+  // The week before, for trends: the /history point taken about a week ago is
+  // that week's 7-day card tally, so it costs no scan (a grouping over it read
+  // ~700k rows — half a stats run — until Nov 2026). Points before 28 Oct 2026 have no wins.
+  const weekBefore = hist.days.filter(d => d[3] && Math.abs(d[0] - (now - WINDOW_DAYS * DAY)) < 1.5 * DAY)
+    .sort((a, b) => Math.abs(a[0] - (now - WINDOW_DAYS * DAY)) - Math.abs(b[0] - (now - WINDOW_DAYS * DAY)))[0];
   const decks = both.results.filter(r => r.kind === 'd');
   const cards = both.results.filter(r => r.kind === 'c').sort((a, b) => b.n - a.n);
   const t = range.results[0] || {};
@@ -508,7 +509,8 @@ async function computeStats(env, now) {
     // Matches per UTC hour: [[YYYY-MM-DD, [24 counts]]], the last 4 weeks
     activity: Object.entries(act.days).filter(([k]) => Date.parse(k) >= now - 29 * DAY).sort(),
     // The week before, for trends: { matches, cards: [card, decks, wins] }; null until collected
-    prev: prev ? { matches: count(prev.results), cards: prev.results.sort((a, b) => b.n - a.n).map(r => [r.k, r.n, r.w]) } : null,
+    prev: weekBefore ? { at: weekBefore[0], matches: weekBefore[1],
+      cards: Object.entries(weekBefore[2]).sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, n, weekBefore[3][k] || 0]) } : null,
   };
   // [time, matches, { card id + form: decks it was in }, { card id + form: wins }]
   // (days before 28 Oct 2026 have no wins)
