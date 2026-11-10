@@ -43,17 +43,17 @@ const DECK_DAYS = 8;                // deck_days keeps each day's top decks this
 const GAP_STEP = 40, GAPS = 8;      // rating gap buckets for the skill adjustment: < -120, -120…-80, …, ≥ +120
 const HISTORY_DAYS = 63;            // /history keeps a card tally per day this long: two 4-week blocks for month vs month
 const ACTIVITY_DAYS = 35;
-const RATING_DAYS = 9;              // daily leaderboard ratings kept, for a week's climb           // matches per UTC hour, tallied as they're saved
+const RATING_DAYS = 9;              // /top reads the ratings a day and a week back (the table itself is kept forever)
 // D1 allows 100 columns in a result (a CTE too) and 127 arguments to a function,
 // so per-deck counts are packed 4 to an integer column, 15 bits each (a deck
 // plays far fewer than 32,767 games a week), and unpacked in the final select
 const BITS = 15, MASK = (1 << BITS) - 1, CHUNK = 100;
 const MIN_REFRESH = HOUR, MAX_REFRESH = 24 * HOUR;
 const refreshEvery = (reads, share) => Math.min(MAX_REFRESH, Math.max(MIN_REFRESH, DAY * (reads || 0) / share));
-// 2M of D1's free 5M rows read a day (Cloudflare mails warnings from 80%), all
+// 2.3M of D1's free 5M rows read a day (Cloudflare mails warnings from 80%), all
 // queries counted; heavy jobs leave POLL_RESERVE for polling (~150k a day),
 // the leaderboard, pruning and /status
-const READ_BUDGET = 2e6, POLL_RESERVE = 250e3;
+const READ_BUDGET = 2.3e6, POLL_RESERVE = 250e3;   // raised from 2M by the user, 10 Nov 2026
 // next_poll of players who fell off the leaderboard: past the end of the poll
 // index's range, so picking who to poll no longer walks over them (700 stale
 // overdue rows were read on every poll — ~1M rows a day — before this)
@@ -76,6 +76,25 @@ const KING_HP = 7728, PRINCESS_HP = { 159000000: 2 * 4858 };
 const D1_PAUSE = 12e3;
 const pause = () => new Promise(r => setTimeout(r, D1_PAUSE));
 const TOWER_SAMPLE = 3000;          // recent matches read to learn full tower HP
+// The archive (kept forever): a period is tallied once it's this old — a
+// player's log is read at most every 12 h, so their matches can arrive that late
+const ARCHIVE_LAG = 13 * HOUR;
+const SEASON_DECKS = 300;           // decks served per season
+const RIVALS_EVERY = 40 * HOUR;     // /top recounts the rivalries every other day
+// While the archive is more than a day behind, /top runs at most every 48 h, so
+// the backlog gets the budget it frees (stats ~1.1M + /top ~0.8M + polling left
+// ~90k a day — one period — in Nov 2026)
+const TOP_EVERY_BACKLOG = 48 * HOUR;
+// Path of Legends seasons start the first Monday of the month at 09:00 UTC
+const firstMonday = (y, m) => { const dow = new Date(Date.UTC(y, m, 1)).getUTCDay(); return Date.UTC(y, m, 1 + (8 - dow) % 7, 9); };
+function seasonStartOf(t) {
+  const d = new Date(t);
+  const y = d.getUTCFullYear(), m = d.getUTCMonth(), start = firstMonday(y, m);
+  return t < start ? firstMonday(y, m - 1) : start;
+}
+const nextSeasonStart = t => { const d = new Date(seasonStartOf(t)); return firstMonday(d.getUTCFullYear(), d.getUTCMonth() + 1); };
+// The period starting at `start` (ms) ends at the next UTC midnight or season start, whichever is first
+const periodEnd = start => Math.min(Math.floor(start / DAY + 1) * DAY, nextSeasonStart(start));
 
 export default {
   async scheduled(event, env, ctx) {
@@ -92,6 +111,25 @@ export default {
     if (['/meta', '/top', '/history', '/counters'].includes(url.pathname)) {
       const row = await env.DB.prepare(`SELECT v FROM state WHERE k = ?1`).bind(url.pathname.slice(1)).first();
       return new Response(row?.v || JSON.stringify({ empty: true }), { headers: { ...headers, 'Cache-Control': 'public, max-age=600' } });
+    }
+    // The archive: the seasons kept, one season's stats, one card's daily tally since collection began
+    if (url.pathname === '/seasons') {
+      const row = await env.DB.prepare(`SELECT v FROM state WHERE k = 'season_list'`).first();
+      return new Response(row?.v || '{"seasons":[]}', { headers: { ...headers, 'Cache-Control': 'public, max-age=600' } });
+    }
+    if (url.pathname === '/season') {
+      const row = await env.DB.prepare(`SELECT v FROM seasons WHERE start = ?1`).bind(Math.floor(+url.searchParams.get('start') / 1000) || 0).first();
+      return new Response(row?.v || JSON.stringify({ empty: true }), { status: row ? 200 : 404, headers: { ...headers, 'Cache-Control': 'public, max-age=600' } });
+    }
+    if (url.pathname === '/card') {
+      const id = parseInt(url.searchParams.get('id'), 10);
+      if (!Number.isInteger(id)) return new Response('{"error":"id"}', { status: 400, headers });
+      // card '_' is each period's match count; the card's forms are added up
+      const { results } = await env.DB.prepare(`
+        SELECT start, SUM(CASE WHEN card = '_' THEN n END) AS m, SUM(CASE WHEN card != '_' THEN n END) AS n, SUM(CASE WHEN card != '_' THEN w END) AS w
+        FROM card_days WHERE card IN ('_', ?1, ?1 || 'e', ?1 || 'h') GROUP BY start ORDER BY start`).bind(String(id)).all();
+      return new Response(JSON.stringify({ id, days: results.map(r => [r.start * 1000, r.m || 0, r.n || 0, r.w || 0]) }),
+        { headers: { ...headers, 'Cache-Control': 'public, max-age=3600' } });
     }
     if (url.pathname === '/status') {
       const st = await getState(env);
@@ -131,7 +169,10 @@ async function tick(env) {
   const fits = job => readsToday(st, now) + (+st[`${job}_reads`] || 0) <= READ_BUDGET - POLL_RESERVE;
   if (due('board', BOARD_EVERY)) return run('board', refreshBoard);
   if (+st.matches_total > 0 && due('stats', refreshEvery(+st.stats_reads, STATS_SHARE)) && fits('stats')) return run('stats', computeStats);
-  if (+st.matches_total > 0 && due('top', refreshEvery(+st.top_reads, TOP_SHARE)) && fits('top')) return run('top', computeTop);
+  const backlog = +st.archive_to && periodEnd(+st.archive_to) <= now - ARCHIVE_LAG - DAY;
+  if (+st.matches_total > 0 && due('top', Math.max(refreshEvery(+st.top_reads, TOP_SHARE), backlog ? TOP_EVERY_BACKLOG : 0)) && fits('top')) return run('top', computeTop);
+  // The archive takes one finished period a run, oldest first (a backlog drains as the budget allows)
+  if (+st.archive_to && periodEnd(+st.archive_to) <= now - ARCHIVE_LAG && now - (+st.archive_try_at || 0) > 10 * MINUTE && fits('archive')) return run('archive', archivePeriod);
   if (due('prune', PRUNE_EVERY)) return run('prune', prune);
   return pollPlayers(env, now, st);
 }
@@ -534,7 +575,10 @@ async function computeStats(env, now) {
 async function computeTop(env, now) {
   const st = await getState(env);
   const since = Math.floor((now - WINDOW_DAYS * DAY) / 1000), onBoard = (+st.board_at || 0) - HOUR;
-  const [res, pairs] = await env.DB.batch([env.DB.prepare(`
+  // Rivalries are recounted every other day (RIVALS_EVERY) — their pass is ~230k
+  // rows (Nov 2026) — and kept in their own small state row in between
+  const fresh = now - (+st.rivals_at || 0) > RIVALS_EVERY;
+  const [res, pairs, kept] = await env.DB.batch([env.DB.prepare(`
     WITH s AS (
       SELECT pa AS tag, da AS deck, ca > cb AS w FROM matches WHERE time >= ?1
       UNION ALL
@@ -552,13 +596,18 @@ async function computeTop(env, now) {
     // Rivalries: the pairs who met most (tags are stored sorted, so a pair is one
     // group). One more pass over the window, ~140k rows a run (Oct 2026); only
     // pairs where both are on the board are kept, checked against the list above
-    env.DB.prepare(`SELECT pa, pb, COUNT(*) AS n, SUM(ca > cb) AS w, SUM(ca = cb) AS d FROM matches WHERE time >= ?1
-      GROUP BY pa, pb HAVING n >= 3 ORDER BY n DESC LIMIT 400`).bind(since)]);
-  const reads = rowsRead([res, pairs]);
+    fresh ? env.DB.prepare(`SELECT pa, pb, COUNT(*) AS n, SUM(ca > cb) AS w, SUM(ca = cb) AS d FROM matches WHERE time >= ?1
+      GROUP BY pa, pb HAVING n >= 3 ORDER BY n DESC LIMIT 400`).bind(since) : env.DB.prepare(`SELECT 1 WHERE 0`),
+    env.DB.prepare(`SELECT v FROM state WHERE k = 'rivals'`)]);
+  const reads = rowsRead([res, pairs, kept]);
   const board = new Set(res.results.map(r => r.tag));
+  const rivals = fresh ? pairs.results.filter(r => board.has(r.pa) && board.has(r.pb)).slice(0, 50).map(r => [r.pa, r.pb, r.n, r.w, r.d])
+    : JSON.parse(kept.results[0]?.v || '[]').filter(r => board.has(r[0]) && board.has(r[1]));
+  // A run's estimate (top_reads) always includes the rivalries pass, so the budget guard plans for the heavier run
+  const estimate = rowsRead([res]) + (fresh ? rowsRead([pairs]) : +st.rivals_reads || 0);
   const top = {
     updated: now,
-    next: now + refreshEvery(reads, TOP_SHARE),
+    next: now + refreshEvery(estimate, TOP_SHARE),
     window_days: WINDOW_DAYS,
     // Ratings in the leaderboard snapshots of these days (first refresh after 00:00 UTC)
     rating_days: [dayKey(now - DAY), dayKey(now - 7 * DAY)],
@@ -566,9 +615,92 @@ async function computeTop(env, now) {
     //  rating a day ago, a week ago (null: not on the board then)]
     players: res.results.map(r => [r.tag, r.name, r.clan, r.rank, r.rating, r.deck, r.n || 0, r.games || 0, r.wins || 0, r.w || 0, r.r1 ?? null, r.r7 ?? null]),
     // [tag a, tag b, ranked games against each other, a's wins, draws], both on the board, most games first
-    rivals: pairs.results.filter(r => board.has(r.pa) && board.has(r.pb)).slice(0, 50).map(r => [r.pa, r.pb, r.n, r.w, r.d]),
+    rivals,
+    rivals_at: fresh ? now : +st.rivals_at,
   };
-  await countReads(env, 'top', now, reads, { top_at: now, top: JSON.stringify(top) });
+  await countReads(env, 'top', now, reads, { top_at: now, top: JSON.stringify(top),
+    ...(fresh ? { rivals: JSON.stringify(rivals), rivals_at: now, rivals_reads: rowsRead([pairs]) } : {}) });
+  await setState(env, { top_reads: estimate });
+}
+
+// ── Archive: one finished period (a UTC day, split at a season start) tallied
+// for good — every deck played, every card, the season totals — so past seasons
+// and card trends since collection began stay viewable after the 90-day match
+// pruning. ~115k rows read and ~7k written a period (Nov 2026: ~3,100 distinct
+// decks a day). Everything after the deck tally is one batch (a transaction),
+// with archive_to moved in it, so a failure never adds a period to a season twice.
+async function archivePeriod(env, now, st) {
+  const startMs = +st.archive_to, endMs = periodEnd(startMs);
+  const a = startMs / 1000, b = endMs / 1000, season = seasonStartOf(startMs) / 1000;
+  step('archive decks');
+  const dayRes = await env.DB.prepare(`
+    INSERT OR REPLACE INTO day_decks (start, deck, n, w, d, t, tr)
+    SELECT ?1, deck, SUM(n), SUM(w), SUM(d), SUM(t), json_group_array(json_array(tr, n, w, t)) FROM (
+      SELECT deck, tr, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d, SUM(t) AS t FROM (
+        SELECT da AS deck, ta AS tr, ca > cb AS w, ca = cb AS d, ca > cb AND ca = 3 AS t FROM matches WHERE time >= ?1 AND time < ?2
+        UNION ALL SELECT db, tb, cb > ca, ca = cb, cb > ca AND cb = 3 FROM matches WHERE time >= ?1 AND time < ?2)
+      GROUP BY deck, tr)
+    GROUP BY deck`).bind(a, b).run();
+  step('archive totals');
+  const batch = await env.DB.batch([
+    env.DB.prepare(`
+      INSERT OR REPLACE INTO card_days (start, card, n, w, d, t)
+      SELECT ?1, j.value, SUM(n), SUM(w), SUM(d), SUM(t) FROM day_decks, json_each('["' || replace(deck, ',', '","') || '"]') AS j
+      WHERE start = ?1 GROUP BY j.value
+      UNION ALL SELECT ?1, '_', COALESCE(SUM(n), 0) / 2, 0, 0, 0 FROM day_decks WHERE start = ?1`).bind(a),
+    env.DB.prepare(`
+      INSERT INTO season_decks (season, deck, n, w, d, t) SELECT ?2, deck, n, w, d, t FROM day_decks WHERE start = ?1
+      ON CONFLICT (season, deck) DO UPDATE SET n = n + excluded.n, w = w + excluded.w, d = d + excluded.d, t = t + excluded.t`).bind(a, season),
+    env.DB.prepare(`
+      INSERT INTO season_cards (season, card, n, w, d, t) SELECT ?2, card, n, w, d, t FROM card_days WHERE start = ?1 AND card != '_'
+      ON CONFLICT (season, card) DO UPDATE SET n = n + excluded.n, w = w + excluded.w, d = d + excluded.d, t = t + excluded.t`).bind(a, season),
+    env.DB.prepare(`
+      INSERT INTO season_troops (season, troop, n, w, t)
+      SELECT ?2, j.value ->> 0 AS troop, SUM(j.value ->> 1), SUM(j.value ->> 2), SUM(j.value ->> 3)
+      FROM day_decks, json_each(day_decks.tr) AS j WHERE start = ?1 AND j.value ->> 0 IS NOT NULL GROUP BY troop
+      ON CONFLICT (season, troop) DO UPDATE SET n = n + excluded.n, w = w + excluded.w, t = t + excluded.t`).bind(a, season),
+    env.DB.prepare(`INSERT OR REPLACE INTO periods (start, end, season, matches) SELECT ?1, ?2, ?3, COALESCE(SUM(n), 0) / 2 FROM day_decks WHERE start = ?1`).bind(a, b, season),
+    env.DB.prepare(`INSERT INTO state (k, v) VALUES ('archive_to', ?1) ON CONFLICT (k) DO UPDATE SET v = excluded.v`).bind(String(endMs)),
+  ]);
+  let reads = rowsRead([dayRes]) + rowsRead(batch);
+  // The season's stats are rebuilt when the archive is caught up, or at a season's last period during a backlog
+  // (and at least every 6 h, so a long backlog still shows its progress)
+  const caughtUp = periodEnd(endMs) > now - ARCHIVE_LAG, seasonDone = endMs >= nextSeasonStart(startMs);
+  const build = caughtUp || seasonDone || now - (+st.season_built_at || 0) > 6 * HOUR;
+  if (build) { step('archive season'); reads += await buildSeason(env, now, season); }
+  await countReads(env, 'archive', now, reads, { archive_at: now, ...(build ? { season_built_at: now } : {}) });
+  step('');
+}
+
+// One season's stats for /season, and the list of seasons for /seasons
+async function buildSeason(env, now, season) {
+  const prevSeason = seasonStartOf(season * 1000 - DAY) / 1000;
+  const [decks, cards, troops, span, prevCards, list] = await env.DB.batch([
+    env.DB.prepare(`SELECT deck, n, w, d, t FROM season_decks WHERE season = ?1 ORDER BY n DESC LIMIT ?2`).bind(season, SEASON_DECKS),
+    env.DB.prepare(`SELECT card, n, w, d, t FROM season_cards WHERE season = ?1 ORDER BY n DESC`).bind(season),
+    env.DB.prepare(`SELECT troop, n, w, t FROM season_troops WHERE season = ?1 ORDER BY n DESC`).bind(season),
+    env.DB.prepare(`SELECT MIN(start) AS a, MAX(end) AS b, SUM(matches) AS m FROM periods WHERE season = ?1`).bind(season),
+    env.DB.prepare(`SELECT card, n, w FROM season_cards WHERE season = ?1 ORDER BY n DESC`).bind(prevSeason),
+    env.DB.prepare(`SELECT season, MIN(start) AS a, MAX(end) AS b, SUM(matches) AS m FROM periods GROUP BY season ORDER BY season`),
+  ]);
+  const st = await getState(env), names = JSON.parse(st.troop_names || '{}');
+  const sp = span.results[0] || {};
+  const seasons = list.results.map(r => ({ start: r.season * 1000, end: nextSeasonStart(r.season * 1000), from: r.a * 1000, to: r.b * 1000, matches: r.m }));
+  const prev = seasons.find(x => x.start === prevSeason * 1000);
+  const out = {
+    start: season * 1000, end: nextSeasonStart(season * 1000), from: sp.a * 1000, to: sp.b * 1000, matches: sp.m || 0, updated: now,
+    // the same rows as /meta's: [key, games, wins, draws, players (not kept per season), three-crown wins]
+    decks: decks.results.map(r => [r.deck, r.n, r.w, r.d, null, r.t]),
+    cards: cards.results.map(r => [r.card, r.n, r.w, r.d, r.t]),
+    troops: troops.results.map(r => [r.troop, ...(names[r.troop] || ['', '']), r.n, r.w, r.t]),
+    // The season before, for each card's change in use
+    prev: prev && prevCards.results.length ? { start: prev.start, matches: prev.matches, cards: prevCards.results.map(r => [r.card, r.n, r.w]) } : null,
+  };
+  await env.DB.batch([
+    env.DB.prepare(`INSERT OR REPLACE INTO seasons (start, v) VALUES (?1, ?2)`).bind(season, JSON.stringify(out)),
+    env.DB.prepare(`INSERT INTO state (k, v) VALUES ('season_list', ?1) ON CONFLICT (k) DO UPDATE SET v = excluded.v`).bind(JSON.stringify({ updated: now, seasons })),
+  ]);
+  return rowsRead([decks, cards, troops, span, prevCards, list]);
 }
 
 async function prune(env, now, st) {
@@ -578,13 +710,12 @@ async function prune(env, now, st) {
     // Off the leaderboard for a week: stop tracking
     // (last season's top 1,000 are kept while the new board is short)
     env.DB.prepare(`DELETE FROM players WHERE seen_at < ?1`).bind(Math.min(now - 7 * DAY, pollFrom(st))),
-    env.DB.prepare(`DELETE FROM ratings WHERE day < ?1`).bind(dayKey(now - RATING_DAYS * DAY)),
   ]);
   await setState(env, { prune_at: now });
 }
 
 async function getState(env) {
-  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top', 'history', 'counters', 'deck_days')`).all();
+  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top', 'history', 'counters', 'deck_days', 'season_list', 'rivals')`).all();
   return Object.fromEntries(results.map(r => [r.k, r.v]));
 }
 async function setState(env, values) {

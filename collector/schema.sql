@@ -57,3 +57,55 @@ CREATE TABLE IF NOT EXISTS state (
   k TEXT PRIMARY KEY,
   v TEXT
 );
+
+-- ── Archive (10 Nov 2026): kept forever, so the Meta screen can show any past
+-- season and card trends since collection began. The archive job tallies each
+-- finished period once — a UTC day, split where a season starts (first Monday
+-- of the month, 09:00 UTC). Times in unix seconds.
+
+-- One row per archived period
+CREATE TABLE IF NOT EXISTS periods (
+  start   INTEGER PRIMARY KEY,
+  end     INTEGER,
+  season  INTEGER,             -- the season it belongs to (its start)
+  matches INTEGER
+);
+-- Every deck played in a period: games, wins, draws, three-crown wins, and per
+-- tower troop [[troop id, games, wins, three-crown wins]] as JSON
+CREATE TABLE IF NOT EXISTS day_decks (
+  start INTEGER NOT NULL,
+  deck  TEXT NOT NULL,
+  n INTEGER, w INTEGER, d INTEGER, t INTEGER,
+  tr    TEXT,
+  PRIMARY KEY (start, deck)
+) WITHOUT ROWID;
+-- Every card (id + e / h form) per period; card '_' holds the period's matches in n
+CREATE TABLE IF NOT EXISTS card_days (
+  start INTEGER NOT NULL,
+  card  TEXT NOT NULL,
+  n INTEGER, w INTEGER, d INTEGER, t INTEGER,
+  PRIMARY KEY (start, card)
+) WITHOUT ROWID;
+-- One card's days, for its all-time trend line
+CREATE INDEX IF NOT EXISTS card_days_card ON card_days (card, start);
+-- Running season totals, added to as each period is archived
+CREATE TABLE IF NOT EXISTS season_decks (
+  season INTEGER NOT NULL, deck TEXT NOT NULL,
+  n INTEGER, w INTEGER, d INTEGER, t INTEGER,
+  PRIMARY KEY (season, deck)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS season_cards (
+  season INTEGER NOT NULL, card TEXT NOT NULL,
+  n INTEGER, w INTEGER, d INTEGER, t INTEGER,
+  PRIMARY KEY (season, card)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS season_troops (
+  season INTEGER NOT NULL, troop INTEGER NOT NULL,
+  n INTEGER, w INTEGER, t INTEGER,
+  PRIMARY KEY (season, troop)
+) WITHOUT ROWID;
+-- Each season's stats as served by /season (JSON), rebuilt as periods are added
+CREATE TABLE IF NOT EXISTS seasons (
+  start INTEGER PRIMARY KEY,
+  v     TEXT
+);

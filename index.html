@@ -6468,6 +6468,63 @@ let _metaElixir = '', _metaArch = '';
 window.setMetaElixir = function(v) { _metaElixir = v; _metaShown = META_PAGE; redrawMetaList(); };
 window.setMetaArch = function(v) { _metaArch = v; _metaShown = META_PAGE; redrawMetaList(); };
 let _metaTop = null, _metaTopLoading = false, _metaTopQuery = '';
+// ── Past seasons, from the collector's archive (kept forever): /seasons lists
+// them, /season?start= holds one (the same deck and card rows as /meta), and
+// /card?id= one card's daily tally since collection began. _metaPeriod: '' = the
+// last 7 days, else a season's start (ms) — for the Decks and Cards views.
+const META_BASE = 'https://max-royale-meta.jellevandenwouwer.workers.dev';
+const META_SEASONS_CACHE_KEY = 'cr_meta_seasons_cache';
+let _metaPeriod = '', _metaSeasons = null, _metaSeasonsLoading = false, _metaSeasonData = {}, _metaCardDays = {};
+// Archive periods are UTC days, so their dates are shown in UTC
+const metaUtcDay = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+const metaSeasonName = start => new Date(start).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+async function loadMetaSeasons() {
+  if (_metaSeasonsLoading) return;
+  _metaSeasonsLoading = true;
+  try { _metaSeasons = await fetchMetaJSON(META_BASE + '/seasons', META_SEASONS_CACHE_KEY); }
+  catch(e) { if (!_metaSeasons) _metaSeasons = { error: e.message }; }
+  finally { _metaSeasonsLoading = false; }
+  if (currentScreen === 'meta') drawMeta();
+}
+// The seasons archived so far, newest first (fetched again after 30 min)
+function metaSeasonList() {
+  if (!_metaSeasons) { try { _metaSeasons = JSON.parse(localStorage.getItem(META_SEASONS_CACHE_KEY) || 'null'); } catch(e) {} }
+  if (!_metaSeasons?.data || Date.now() - (_metaSeasons.savedAt || 0) > META_MAX_AGE_MS) setTimeout(loadMetaSeasons, 0);
+  return [...(_metaSeasons?.data?.seasons || [])].filter(x => x.matches > 0).sort((a, b) => b.start - a.start);
+}
+// One season's stats, kept in memory (30 min)
+function metaSeason(start) {
+  const s = _metaSeasonData[start];
+  if (s?.data || s?.loading || s?.error) {
+    if (s.data && Date.now() - s.savedAt > META_MAX_AGE_MS && !s.loading) { s.loading = true; fetchSeason(start); }
+    return s;
+  }
+  _metaSeasonData[start] = { loading: true };
+  fetchSeason(start);
+  return _metaSeasonData[start];
+}
+async function fetchSeason(start) {
+  try {
+    const res = await fetch(`${META_BASE}/season?start=${start}`, { cache: 'no-cache' });
+    if (!res.ok) throw new Error(res.status === 404 ? 'This season isn\'t archived yet.' : `The meta service isn't responding right now (error ${res.status}).`);
+    _metaSeasonData[start] = { data: await res.json(), savedAt: Date.now() };
+  } catch(e) {
+    _metaSeasonData[start] = { error: /fetch/i.test(e.message) ? 'Connection failed — check your internet connection and try again.' : e.message };
+  }
+  if (currentScreen === 'meta') drawMeta();
+}
+// The chosen season, decoded like /meta, for the Decks and Cards views; null for
+// the last 7 days, 'loading' while it's fetched
+function metaSeasonP() {
+  if (!_metaPeriod || (_metaView !== 'decks' && _metaView !== 'cards')) return null;
+  const s = metaSeason(+_metaPeriod);
+  if (!s.data) return s.error ? { error: s.error } : 'loading';
+  const d = s.data;
+  const P = metaParsed({ updated: `season:${d.start}:${d.updated}`, matches: d.matches, decks: d.decks, cards: d.cards, troops: d.troops, prev: d.prev });
+  P.season = { start: d.start, end: d.end, from: d.from, to: d.to, matches: d.matches, prev: d.prev?.start || null };
+  return P;
+}
+window.setMetaPeriod = function(v) { _metaPeriod = v; _metaShown = META_PAGE; drawMeta(); };
 // Country leaderboards (Path of Legends, straight from the API): the chosen
 // country in cr_meta_country ('' = the global top 1,000), the country list in
 // cr_locations_cache (30 days), each board kept 30 min in memory
@@ -6590,7 +6647,8 @@ function drawMeta() {
     el.innerHTML = `<div class="empty-msg">No matches collected yet — check back in a few hours.</div>`;
     return;
   }
-  const P = metaParsed(m);
+  const SP = metaSeasonP();
+  const P = SP && SP !== 'loading' && !SP.error ? SP : metaParsed(m);
   const hasExp = P.decks.some(d => d.exp);
   if (_metaSort.cards === 'trend' && !P.hasPrev) _metaSort.cards = 'used';
   if (_metaSort.decks === 'edge' && !hasExp) _metaSort.decks = 'played';
@@ -6603,6 +6661,12 @@ function drawMeta() {
   const hide = [...(P.hasPrev ? [] : ['trend']), ...(hasExp ? [] : ['edge'])];
   const sorts = Object.fromEntries(Object.entries(META_SORTS[view] || {}).filter(([v]) => !hide.includes(v)));
   const country = view === 'players' ? metaCountry() : '';
+  const seasons = view === 'decks' || view === 'cards' ? metaSeasonList() : [];
+  const periodPick = seasons.length ? `
+    <select onchange="setMetaPeriod(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:8px">
+      <option value="">📅 Last 7 days</option>
+      ${seasons.map(x => `<option value="${x.start}"${String(x.start) === String(_metaPeriod) ? ' selected' : ''}>📅 ${metaSeasonName(x.start)} season${x.end > Date.now() ? ' · so far' : ''}</option>`).join('')}
+    </select>` : '';
   const controls = view === 'you' || view === 'stats' ? '' : view === 'players' ? `
     <select onchange="setMetaCountry(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
       <option value="">🌍 Global top 1,000</option>
@@ -6617,8 +6681,9 @@ function drawMeta() {
     </select>`}
     <input type="search" value="${esc(_metaTopQuery)}" placeholder="🔍 Player or clan name…" oninput="setMetaTopQuery(this.value)"
       style="width:100%;margin-bottom:10px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:9px 12px;font-size:14px;font-family:'Inter',sans-serif">` : `
+    ${periodPick}
     <select onchange="setMetaSort(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:10px">
-      ${Object.entries(sorts).map(([v, l]) => `<option value="${v}"${sort === v ? ' selected' : ''}>Sort: ${l}</option>`).join('')}
+      ${Object.entries(sorts).map(([v, l]) => `<option value="${v}"${sort === v ? ' selected' : ''}>Sort: ${l}${v === 'trend' && P.season ? ' (vs the season before)' : ''}</option>`).join('')}
     </select>
     ${view === 'decks' ? `
       <input id="meta-search" type="search" value="${esc(_metaQuery)}" placeholder="🔍 Decks with cards… e.g. Hog Rider, Log" oninput="setMetaQuery(this.value)"
@@ -6635,6 +6700,7 @@ function drawMeta() {
       Ranked matches of the <b>global top 1,000</b> Path of Legends players, last ${m.window_days} days.
       <div style="margin-top:4px"><b>${fmtNum(m.matches)}</b> matches · stats from ${metaStatsTime(m.updated)}${young ? ` · collecting since ${dateOf(m.started)} (full week from ${dateOf(m.started + m.window_days * 864e5)})` : ''}</div>
       <div style="font-size:11px;color:var(--muted);margin-top:4px">${metaNextText(m)}</div>
+      ${P.season ? `<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--surface2);font-size:12px">📅 <b>${metaSeasonName(P.season.start)} season${P.season.end > Date.now() ? ' so far' : ''}</b> on ${view === 'decks' ? 'Decks' : 'Cards'}: ${fmtNum(P.season.matches)} matches, ${[...new Set([metaUtcDay(P.season.from), metaUtcDay(Math.min(P.season.to, P.season.end) - 1)])].join(' – ')}${P.season.from > P.season.start + 864e5 ? ` (collected from ${metaUtcDay(P.season.from)})` : ''}. Stats, Players and You stay on the last 7 days.</div>` : ''}
       ${m.board?.held ? `<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--surface2);font-size:12px">🔄 <b>New season.</b> The leaderboard reset on ${dateOf(seasonStartOf(Date.now()))} and only ${fmtNum(m.board.size)} players are back in Ultimate Champion. Until it fills up, last season's top 1,000 are still followed — some now play in lower leagues — so these stats lean on games from before the reset.</div>` : ''}
     </div>
     <div class="seg" style="margin-bottom:10px">
@@ -6646,8 +6712,11 @@ function drawMeta() {
 function metaListHTML() {
   const m = _meta?.data, P = m && metaParsed(m);
   if (!P) return '';
-  if (_metaView === 'decks') return metaDecksHTML(P, _metaSort.decks);
-  if (_metaView === 'cards') return metaCardsHTML(P, _metaSort.cards);
+  const SP = metaSeasonP();
+  if (SP === 'loading') return '<div class="spinner"></div>';
+  if (SP?.error) return `<div class="error-msg">${esc(SP.error)}</div>`;
+  if (_metaView === 'decks') return metaDecksHTML(SP || P, _metaSort.decks);
+  if (_metaView === 'cards') return metaCardsHTML(SP || P, _metaSort.cards);
   if (_metaView === 'players') return metaCountry() ? metaCountryHTML(metaCountry()) : metaPlayersHTML();
   if (_metaView === 'stats') return metaStatsHTML(P);
   return metaYouHTML(P);
@@ -6676,15 +6745,15 @@ function metaDeckItemHTML(d, P, head) {
             ${metaStat('Games', fmtNum(d.n), '')}
             ${metaStat('Avg Elixir', elixir, 'text-blue')}
             ${metaStat('3-Crown wins', Math.round(d.three / Math.max(d.n, 1) * 100) + '%', 'text-accent')}
-            ${metaStat(d.players === 1 ? 'Player' : 'Players', fmtNum(d.players || 0), 'text-muted')}
+            ${d.players == null ? metaStat('Wins', fmtNum(d.w), 'text-muted') : metaStat(d.players === 1 ? 'Player' : 'Players', fmtNum(d.players || 0), 'text-muted')}
           </div>
           <div style="${metaFew(d.n)}" title="${metaPmTitle(d.rate, d.n)}">${metaStat(d.n < META_FEW ? 'Win Rate · few games' : 'Win Rate', `${wr}%<span style="font-size:10px;font-weight:600;color:var(--muted)"> ${metaPm(d.rate, d.n)}</span>`, wr >= 50 ? 'text-green' : 'text-red')}</div>
           <div class="progress-wrap" style="margin-top:2px"><div class="progress-bar" style="width:${wr}%;background:var(--green)"></div></div>
         </div>
       </div>
       ${metaTowersLineHTML(d)}
-      <button class="meta-more-btn" onclick="toggleMetaDeck('${d.key}')">${_metaDeckOpen.has(d.key) ? 'Hide details ▴' : 'Matchups, close games, ratings & players ▾'}</button>
-      ${_metaDeckOpen.has(d.key) ? metaDeckMoreHTML(d, P) : ''}
+      ${P.season ? '' : `<button class="meta-more-btn" onclick="toggleMetaDeck('${d.key}')">${_metaDeckOpen.has(d.key) ? 'Hide details ▴' : 'Matchups, close games, ratings & players ▾'}</button>
+      ${_metaDeckOpen.has(d.key) ? metaDeckMoreHTML(d, P) : ''}`}
       <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-top:10px">
         <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
         <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="upgradeDeck('${esc(names)}')">💰 Upgrade Cost</button>
@@ -6840,7 +6909,7 @@ function metaDecksHTML(P, sort) {
   if (!decks.length) return `<div class="empty-msg">${q || filtered ? `No top deck${q ? ` with "${esc(_metaQuery.trim())}"` : ''}${filtered ? ' for these filters' : ''}${sort !== 'played' ? ` with ${META_MIN_DECK_GAMES}+ games` : ''}.` : `No deck has ${META_MIN_DECK_GAMES}+ games yet.`}</div>`;
   const shown = decks.slice(0, _metaShown);
   const edgeTxt = d => { const e = metaEdge(d); return sort === 'edge' && e != null ? ` · <b class="${e >= 0 ? 'text-green' : 'text-red'}">${e > 0 ? '+' : ''}${(e * 100).toFixed(1)} pts</b> vs its ratings` : ''; };
-  return (!q && !filtered && sort === 'played' ? metaWeekHTML(P) : '')
+  return (!q && !filtered && sort === 'played' && !P.season ? metaWeekHTML(P) : '')
     + (filtered ? `<div style="font-size:12px;color:var(--muted);margin:-2px 0 8px">${decks.length} of the top ${P.decks.length} decks · ${mPct(decks.reduce((a, d) => a + d.n, 0) / P.totalDecks)} of decks played</div>` : '')
     + shown.map((d, i) => metaDeckItemHTML(d, P, `#${i + 1} · in ${(d.n / P.totalDecks * 100).toFixed(1)}% of decks${edgeTxt(d)}`)).join('')
     + (decks.length > shown.length ? `<button class="btn btn-secondary" style="width:100%;margin-top:4px" onclick="metaShowMore()">Show more (${decks.length - shown.length} more)</button>` : '');
@@ -6862,7 +6931,7 @@ function metaCardsHTML(P, sort) {
   if (sort === 'trend') cards = [...cards].sort((a, b) => b.trend - a.trend);
   if (!cards.length) return `<div class="empty-msg">No cards for this filter yet.</div>`;
   // The last column follows the sort: win rate, 3-crown rate or change in use
-  const last = sort === 'three' ? '3-crown' : sort === 'trend' ? 'vs last week' : 'Win rate';
+  const last = sort === 'three' ? '3-crown' : sort === 'trend' ? (P.season ? 'vs season before' : 'vs last week') : 'Win rate';
   const lastCell = c => {
     if (sort === 'trend') {
       if (c.isNew) return `<span class="text-green">new</span>`;
@@ -6884,7 +6953,7 @@ function metaCardsHTML(P, sort) {
           <span style="font-size:12px;white-space:nowrap;color:var(--muted)">${(c.share * 100).toFixed(1)}%</span>
           <span style="font-weight:700;min-width:46px;text-align:right;white-space:nowrap">${lastCell(c)}</span>
         </div>`).join('')}
-      ${sort === 'trend' ? `<div style="font-size:11px;color:var(--muted);margin-top:8px">Change in the share of decks a card is in, in percentage points, against the week before.</div>` : sort === 'three' ? '' : `<div style="font-size:11px;color:var(--muted);margin-top:8px">± is the range the true win rate likely sits in (95%) — it shrinks with more games. Faded: under ${META_FEW} games.</div>`}
+      ${sort === 'trend' ? `<div style="font-size:11px;color:var(--muted);margin-top:8px">Change in the share of decks a card is in, in percentage points, against ${P.season ? `the ${metaSeasonName(P.season.prev)} season` : 'the week before'}.</div>` : sort === 'three' ? '' : `<div style="font-size:11px;color:var(--muted);margin-top:8px">± is the range the true win rate likely sits in (95%) — it shrinks with more games. Faded: under ${META_FEW} games.</div>`}
     </div>`;
 }
 
@@ -7211,7 +7280,7 @@ function metaCardTotals(P) {
 function metaStatsHTML(P) {
   const totals = metaCardTotals(P);
   return [metaScatterHTML(P), metaArchetypesHTML(totals), metaArchMatchupsHTML(totals), metaVersusHTML(P), metaFamiliesHTML(P), metaRisingHTML(P), metaCountersHTML(P, totals), metaPairsHTML(P, totals), metaRatingHTML(P, totals),
-          metaElixirHTML(P), metaTroopsHTML(P), metaActivityHTML(P), metaTrendsHTML(P, totals), metaBalanceHTML(totals), metaMonthHTML(P, totals), metaFormsHTML(totals)].join('');
+          metaElixirHTML(P), metaTroopsHTML(P), metaActivityHTML(P), metaTrendsHTML(P, totals), metaBalanceHTML(totals), metaMonthHTML(P, totals), metaSeasonVsHTML(), metaFormsHTML(totals)].join('');
 }
 
 // 1 · Popularity against win rate, one dot per card form
@@ -7619,6 +7688,56 @@ function metaMonthHTML(P, totals) {
     </div>`;
 }
 
+// Season vs season: a season's cards against the season before it, from the
+// archive — the biggest changes in share of decks or win rate (forms added up)
+let _metaSvSeason = null, _metaSvMode = 'use';
+window.setMetaSvSeason = function(v) { _metaSvSeason = +v; redrawMetaList(); };
+window.setMetaSvMode = function(v) { _metaSvMode = v; redrawMetaList(); };
+function metaSeasonVsHTML() {
+  const list = metaSeasonList();
+  const head = metaCardHead('Season vs season', '');
+  if (!list.length) return _metaSeasons?.error ? '' : `<div class="card">${head}<div style="font-size:12px;color:var(--muted)">Seasons are archived from the collector's first full day (23 Oct 2026) — the first one shows up here soon.</div></div>`;
+  const withPrev = list.filter(x => list.some(y => y.end === x.start));
+  if (!withPrev.length) return `<div class="card">${head}<div style="font-size:12px;color:var(--muted)">Compares a season with the one before. The ${metaSeasonName(list[list.length - 1].start)} season is the first archived, so the first comparison is ${metaSeasonName(list[list.length - 1].end)} against it.</div></div>`;
+  if (!withPrev.some(x => x.start === _metaSvSeason)) _metaSvSeason = withPrev[0].start;
+  const s = metaSeason(_metaSvSeason);
+  const pick = `<select onchange="setMetaSvSeason(this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:8px">
+      ${withPrev.map(x => `<option value="${x.start}"${x.start === _metaSvSeason ? ' selected' : ''}>${metaSeasonName(x.start)}${x.end > Date.now() ? ' (so far)' : ''} vs ${metaSeasonName(list.find(y => y.end === x.start).start)}</option>`).join('')}
+    </select>`;
+  if (!s.data) return `<div class="card">${head}${pick}${s.error ? `<div class="error-msg">${esc(s.error)}</div>` : '<div class="spinner"></div>'}</div>`;
+  const d = s.data;
+  if (!d.prev) return `<div class="card">${head}${pick}<div style="font-size:12px;color:var(--muted)">The season before isn't in this season's figures yet — check back after the next archive run.</div></div>`;
+  const byId = (rows, matches) => {
+    const by = {};
+    rows.forEach(([k, n, w]) => { const id = parseInt(k, 10), x = by[id] || (by[id] = { n: 0, w: 0 }); x.n += n; x.w += w; });
+    for (const id in by) by[id].share = by[id].n / Math.max(matches * 2, 1);
+    return by;
+  };
+  const a = byId(d.cards, d.matches), b = byId(d.prev.cards, d.prev.matches), mode = _metaSvMode;
+  const rows = [...new Set([...Object.keys(a), ...Object.keys(b)])].map(Number).map(id => {
+    const x = a[id] || { n: 0, w: 0, share: 0 }, y = b[id] || { n: 0, w: 0, share: 0 };
+    if (Math.max(x.share, y.share) < META_ROW_MIN) return null;
+    const ra = x.n >= 200 ? x.w / x.n : null, rb = y.n >= 200 ? y.w / y.n : null;
+    return { c: allCards.find(c => c.id === id), sa: x.share, sb: y.share, ra, rb, diff: mode === 'use' ? x.share - y.share : ra != null && rb != null ? ra - rb : null };
+  }).filter(r => r && r.c && r.diff != null).sort((p, q) => Math.abs(q.diff) - Math.abs(p.diff)).slice(0, 12);
+  return `
+    <div class="card">
+      ${head}
+      ${pick}
+      <div class="seg" style="margin-bottom:8px">
+        ${[['use', 'Share of decks'], ['win', 'Win rate']].map(([v, l]) => `<button class="${mode === v ? 'active' : ''}" onclick="setMetaSvMode('${v}')">${l}</button>`).join('')}
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Biggest changes: ${metaSeasonName(d.start)} (${fmtNum(d.matches)} matches) against ${metaSeasonName(d.prev.start)} (${fmtNum(d.prev.matches)}).</div>
+      ${rows.length ? rows.map(r => `<div class="mu-row" style="cursor:pointer" onclick="metaDecksWith('${esc(r.c.name)}')">
+          ${r.c.iconUrls?.medium ? `<img src="${r.c.iconUrls.medium}" alt="" loading="lazy" decoding="async">` : ''}
+          <span class="mu-name">${esc(r.c.name)}</span>
+          <span style="font-size:12px;color:var(--muted);white-space:nowrap">${mode === 'use' ? `${mPct(r.sb)} → ${mPct(r.sa)}` : `${mPct(r.rb)} → ${mPct(r.ra)}`}</span>
+          <span class="${r.diff > 0 ? 'text-green' : 'text-red'}" style="font-weight:700;width:44px;text-align:right">${r.diff > 0 ? '+' : ''}${(r.diff * 100).toFixed(1)}</span>
+        </div>`).join('') : `<div style="font-size:12px;color:var(--muted)">Nothing to compare yet.</div>`}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">Change in percentage points, all forms of a card together. Tap a card for its decks.</div>
+    </div>`;
+}
+
 // 4 · Cards played in more than one form: how often and how well each form does.
 // A form needs META_FORM_MIN_GAMES and 2% of the card's games — a handful of
 // games gives a meaningless win rate.
@@ -7691,19 +7810,42 @@ function metaTrendsHTML(P, totals) {
     choices.forEach(t => { const s = series(t.id), d = Math.abs(s[s.length - 1][1] - s[0][1]); if (d > best) { best = d; _metaTrendId = t.id; } });
     if (!_metaTrendId && choices[0]) _metaTrendId = choices[0].id;
   }
-  const pts = series(_metaTrendId, mode);
+  const all = _metaTrendRange === 'all';
+  const range = `<div class="seg" style="margin-bottom:8px">
+        ${[['recent', 'Last 2 months'], ['all', 'All time']].map(([v, l]) => `<button class="${_metaTrendRange === v ? 'active' : ''}" onclick="setMetaTrendRange('${v}')">${l}</button>`).join('')}
+      </div>`;
+  const picker = `<select onchange="setMetaTrend(+this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:8px">
+        ${choices.map(t => `<option value="${t.id}"${t.id === _metaTrendId ? ' selected' : ''}>${esc(t.name)} · ${mPct(t.share)}</option>`).join('')}
+      </select>`;
+  const modeSeg = `<div class="seg" style="margin-bottom:8px">
+        ${[['share', 'Share of decks'], ['win', 'Win rate']].map(([v, l]) => `<button class="${mode === v ? 'active' : ''}" onclick="setMetaTrendMode('${v}')">${l}</button>`).join('')}
+      </div>`;
+  // All time: one point a week (Monday–Sunday, UTC) from the archive's daily
+  // tally since collection began, with each season's start marked
+  let pts = all ? null : series(_metaTrendId, mode), marks = [];
+  if (all) {
+    const cd = metaCardDaysFor(_metaTrendId);
+    if (!cd?.days) return `<div class="card">${head}${range}${modeSeg}${picker}${cd?.error ? `<div class="error-msg">${esc(cd.error)}</div>` : '<div class="spinner"></div>'}</div>`;
+    const weeks = new Map();
+    cd.days.forEach(([t, m, n, w]) => {
+      const day = Math.floor(t / 864e5) * 864e5, wk = day - ((new Date(day).getUTCDay() + 6) % 7) * 864e5;
+      const x = weeks.get(wk) || { m: 0, n: 0, w: 0, end: 0 };
+      x.m += m; x.n += n; x.w += w; x.end = Math.max(x.end, day + 864e5);
+      weeks.set(wk, x);
+    });
+    pts = [...weeks.values()].filter(x => x.m >= 1000 && (mode === 'share' || x.n)).map(x => [x.end, mode === 'share' ? x.n / (x.m * 2) : x.w / x.n]);
+    if (pts.length < 2) return `<div class="card">${head}${range}${modeSeg}${picker}<div style="font-size:12px;color:var(--muted)">All time shows one point a week from the archive — it needs two weeks archived. Check back soon.</div></div>`;
+    for (let t = seasonStartOf(pts[0][0]); t <= pts[pts.length - 1][0]; t = seasonEndOf(t)) if (t > pts[0][0] - 7 * 864e5) marks.push(t);
+  }
   const first = pts[0][1], last = pts[pts.length - 1][1], diff = (last - first) * 100;
   return `
     <div class="card">
       ${head}
-      <div class="seg" style="margin-bottom:8px">
-        ${[['share', 'Share of decks'], ['win', 'Win rate']].map(([v, l]) => `<button class="${mode === v ? 'active' : ''}" onclick="setMetaTrendMode('${v}')">${l}</button>`).join('')}
-      </div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${mode === 'share' ? 'Share of decks a card is in' : 'Win rate of decks with the card'}, one point a day (each the 7 days before it).${mode === 'share' && winDays < 2 ? ' Win rate fills in from 28 Oct.' : ''}</div>
-      <select onchange="setMetaTrend(+this.value)" style="${CLAN_SELECT_STYLE};margin-bottom:8px">
-        ${choices.map(t => `<option value="${t.id}"${t.id === _metaTrendId ? ' selected' : ''}>${esc(t.name)} · ${mPct(t.share)}</option>`).join('')}
-      </select>
-      ${metaTrendSVG(pts, mode)}
+      ${range}
+      ${modeSeg}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${mode === 'share' ? 'Share of decks a card is in' : 'Win rate of decks with the card'}, ${all ? 'one point a week since collection began; dashed lines are season starts' : 'one point a day (each the 7 days before it)'}.${!all && mode === 'share' && winDays < 2 ? ' Win rate fills in from 28 Oct.' : ''}</div>
+      ${picker}
+      ${metaTrendSVG(pts, mode, marks)}
       <div id="meta-trend-readout" data-idle="" style="font-size:12px;color:var(--muted);margin-top:4px">
         ${mPct(first)} → <b style="color:var(--text)">${mPct(last)}</b>
         <span class="${diff >= 0.5 ? 'text-green' : diff <= -0.5 ? 'text-red' : ''}">(${diff > 0 ? '+' : ''}${diff.toFixed(1)} pts)</span>
@@ -7711,7 +7853,21 @@ function metaTrendsHTML(P, totals) {
       </div>
     </div>`;
 }
-function metaTrendSVG(pts, mode = 'share') {
+// One card's daily tally since collection began (/card), kept in memory for 1 h
+function metaCardDaysFor(id) {
+  const c = _metaCardDays[id];
+  if (c && (c.loading || c.error || Date.now() - c.savedAt < 3600e3)) return c;
+  _metaCardDays[id] = { ...(c || {}), loading: true };
+  fetch(`${META_BASE}/card?id=${id}`, { cache: 'no-cache' })
+    .then(r => { if (!r.ok) throw new Error(`The meta service isn't responding right now (error ${r.status}).`); return r.json(); })
+    .then(d => { _metaCardDays[id] = { days: d.days, savedAt: Date.now() }; })
+    .catch(e => { _metaCardDays[id] = { error: /fetch/i.test(e.message) ? 'Connection failed — check your internet connection and try again.' : e.message }; })
+    .finally(() => { if (currentScreen === 'meta' && _metaView === 'stats') redrawMetaList(); });
+  return _metaCardDays[id];
+}
+let _metaTrendRange = 'recent';
+window.setMetaTrendRange = function(v) { _metaTrendRange = v; redrawMetaList(); };
+function metaTrendSVG(pts, mode = 'share', marks = []) {
   _metaTrendShown = mode;
   const W = 320, H = 120, L = 34, R = 8, T = 8, B = 18;
   const t0 = pts[0][0], t1 = pts[pts.length - 1][0];
@@ -7728,8 +7884,10 @@ function metaTrendSVG(pts, mode = 'share') {
       ${[hi - pad, (hi + lo) / 2, lo + (lo > 0 ? pad : 0)].map(v => `
         <line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--border)" stroke-width="1"/>
         <text x="${L - 4}" y="${(y(v) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--muted)">${mPct(v)}</text>`).join('')}
+      ${marks.map(t => `<line x1="${x(t).toFixed(1)}" x2="${x(t).toFixed(1)}" y1="${T}" y2="${H - B}" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="${(x(t) + 3).toFixed(1)}" y="${T + 8}" font-size="8" fill="var(--muted)">${new Date(t).toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' })}</text>`).join('')}
       <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-      ${_metaTrend.map(([px, py]) => `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="3" fill="var(--accent)" stroke="var(--surface)" stroke-width="1.5"/>`).join('')}
+      ${_metaTrend.length <= 70 ? _metaTrend.map(([px, py]) => `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="3" fill="var(--accent)" stroke="var(--surface)" stroke-width="1.5"/>`).join('') : ''}
       <text x="${L}" y="${H - 4}" font-size="9" fill="var(--muted)">${day(t0)}</text>
       <text x="${W - R}" y="${H - 4}" font-size="9" fill="var(--muted)" text-anchor="end">${day(t1)}</text>
       <circle id="meta-trend-sel" r="5" fill="none" stroke="var(--text)" stroke-width="2" style="display:none"/>
@@ -7817,6 +7975,7 @@ function metaYouHTML(P) {
   } else {
     parts.push(`<div class="empty-msg" style="margin-bottom:12px">The API didn't return your full current deck — play a 1v1 battle with it and it'll show here.</div>`);
   }
+  parts.push(metaUnlockHTML(P, data));
   parts.push(bestDecksForYouHTML(P, data, mine));
   parts.push(counterPickHTML(P, data));
   parts.push(deckFinisherHTML(P));
@@ -8102,6 +8261,41 @@ function deckFinisherBox(P) {
       target ? (gold ? `<span class="text-accent">${fmtNum(gold)} 💰</span> to get the rest to ${target}` : `<span class="text-green">all at ${target}+ ✓</span>`) : ''
     ].filter(Boolean).join(' · '))).join('');
 }
+// Best next unlock: the card, evolution or hero that completes the most winning
+// top decks (META_FIT_MIN_GAMES+ games, 50%+) you're exactly one unlock short of.
+// A locked card played as its evolution or hero needs two unlocks, so it doesn't count.
+const META_UNLOCK_SHOWN = 5;
+function metaUnlockHTML(P, data) {
+  const owned = Object.fromEntries((data.cards || []).map(c => [c.id, c]));
+  const items = new Map();
+  P.decks.filter(d => d.n >= META_FIT_MIN_GAMES && d.rate >= 0.5).forEach(d => {
+    const need = [];
+    d.cards.forEach(c => {
+      const pc = owned[c.id];
+      if (!pc) need.push({ key: `${c.id}`, kind: 'card', c }, ...(c.form ? [{ key: `${c.id}${c.form}`, kind: c.form, c }] : []));
+      else if ((c.form === 'evo' && !ownsEvo(pc)) || (c.form === 'hero' && !ownsHero(pc))) need.push({ key: `${c.id}${c.form}`, kind: c.form, c });
+    });
+    if (need.length !== 1) return;
+    const x = items.get(need[0].key) || { ...need[0], decks: [], games: 0, best: 0 };
+    x.decks.push(d); x.games += d.n; x.best = Math.max(x.best, d.rate);
+    items.set(need[0].key, x);
+  });
+  const list = [...items.values()].sort((a, b) => b.decks.length - a.decks.length || b.games - a.games).slice(0, META_UNLOCK_SHOWN);
+  const head = `<div class="mu-sub" style="margin:4px 0 4px">Best next unlock</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">The card, evolution or hero that would complete the most winning top decks (${META_FIT_MIN_GAMES}+ games) you're one unlock away from. Tap for its decks.</div>`;
+  if (!list.length) return head + `<div style="font-size:12px;color:var(--muted);margin:0 0 12px">No winning top deck is a single unlock away for you.</div>`;
+  const kindName = { card: '', evo: 'Evo ', hero: 'Hero ' };
+  return head + `<div class="card" style="margin-bottom:12px">${list.map(x => {
+    const img = x.kind === 'card' ? x.c.card?.iconUrls?.medium || '' : metaCardImg(x.c);
+    const rarity = x.kind === 'card' ? (x.c.card?.rarity || '').toLowerCase() : '';
+    return `<div class="mu-row" style="cursor:pointer" onclick="metaDecksWith('${esc(x.c.name)}')">
+        ${img ? `<img src="${img}" alt="" loading="lazy" decoding="async">` : ''}
+        <span class="mu-name">${kindName[x.kind]}${esc(x.c.name)}${rarity ? ` <span style="font-size:10px;color:var(--muted)">${esc(rarity[0].toUpperCase() + rarity.slice(1))}</span>` : ''}
+          <span style="display:block;font-size:11px;color:var(--muted);font-weight:400;white-space:normal">${mPct(x.games / P.totalDecks)} of top games · best ${mPct(x.best, 0)} win</span></span>
+        <span style="font-weight:700;white-space:nowrap" class="text-green">+${x.decks.length} deck${x.decks.length === 1 ? '' : 's'}</span>
+      </div>`; }).join('')}</div>`;
+}
+
 function bestDecksForYouHTML(P, data, mine) {
   const owned = Object.fromEntries((data.cards || []).map(c => [c.id, c]));
   const lvl = pc => toDisplayLevel((pc.rarity || 'common').toLowerCase(), pc.level);
