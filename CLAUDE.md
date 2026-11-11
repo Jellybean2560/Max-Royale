@@ -32,6 +32,7 @@ tower-troop-icon.webp
 .github/workflows/deploy.yml      ← GitHub Pages auto-deploy workflow
 README.md                         ← setup instructions
 collector/                        ← meta collector Worker (not part of the app; see *Meta collector*)
+sync/                             ← sync Worker for phone-to-phone sync (see *Sync*)
 ```
 
 ---
@@ -89,6 +90,8 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compa
 **Header age:** the profile header's info line ends in "updated 12 min ago" (`updateProfileAge()`, ticks every 30 s, gold after an hour, "↻ updating…" during a quiet refresh). It reads `window._currentProfile.savedAt`.
 
 **Backup:** the Accounts menu (and the start card, for a fresh device) saves / restores one JSON file of `BACKUP_KEYS` — accounts, friends, deck history, matchups, co-players, trophy history, progress snapshots, clan tool switches, play tally, goals, saved decks. Caches are left out. With the ⚙️ on, the menu also exports the loaded profile as CSV (`exportCSV()`: battle log, deck history, opponent cards) — semicolons and decimal commas when the device's locale writes `1,5`, else commas and points (`CSV_SEP`), with a BOM. Restoring replaces those keys and reloads the profile.
+
+**Sync (Nov 2026):** the Accounts menu's ☁️ Sync between phones (and "Use a sync code" on the start card) keeps the `BACKUP_KEYS` in step across phones through the **`max-royale-sync`** Worker (`sync/`, `https://max-royale-sync.jellevandenwouwer.workers.dev`, a SQLite Durable Object per code, values stored in 400k-character rows; deploy with `cd sync && ../collector/node_modules/.bin/wrangler deploy`, nothing deploys on push). Turn on makes a 16-character code (`newSyncCode()`, shown and copied by 🔑 Code); "I have a code" joins one. The user asked for no constant syncing: `maybeSync()` runs after startup once the last sync is 7+ days old (`SYNC_EVERY`; a failed try waits a day), plus 🔄 Now. `syncNow()`: GET the copy, merge, PUT with `base` = the copy's `at` (409 if another phone wrote in between → merge again). Per key, three-way against `cr_sync.h` (hashes of what was synced last): unchanged here → take the synced copy (removals carry over), unchanged there → keep this phone's, changed on both → `mergeSynced()`: Trophy History points and Progress snapshots unioned by time, saved decks / friends / goals unioned by tag / key, tallies (number arrays — [w, l, d] etc.) take the **bigger** one, not the sum (the two logs overlap, so a sum double-counts), seen lists unioned, `since` / `first` / `from` the earliest, other numbers the highest; `cr_player_tag`, `cr_friends_sort` and `cr_clan_tools` stay this phone's. So history from two phones used in the same week can undercount a little. `cr_sync` itself (`{ code, at, v, h, err, tried }`) isn't synced or backed up. The code is the only secret.
 
 **Suggested friends:** the API has no friends list. `recordCoPlayers()` accumulates who you play *with* per profile tag (`cr_coplayers_v1`, deduped by `battleTime`); a 2v2 teammate seen in 2+ games or anyone from a Friendly battle is suggested (random matchmade teammates almost never repeat). Saved friends, your accounts and dismissed players are left out. `viewFriend()` also fetches the friend's battle log, for the Overview's recent-battle stats and head-to-head (a failure there is ignored).
 
@@ -202,6 +205,7 @@ The friend/clan-member modal has the same tab set (`data-ftab`): Overview, Compa
 | `cr_play_v1` | Per-tag play tally: `{ seen, rec: { seen, daily: { local YYYY-MM-DD: [w, l, d, 3-crown wins] } (400 days), cur, best, bestAt } (Records; own seen list, new battles tallied oldest first for the streak), hours: [24 × [w,l,d]] (local), days: [7 × [w,l,d]] (getDay), seasons: { 'YYYY-MM-DD' start: { first, g, r (ranked), peak, three, decks: { deck key: [w,l,d] }, opp: { card: [w,l,d] } } } }`, last 4 seasons; friendlies and boat battles skipped. Tags kept by `pruneHistoryTags()` |
 | `cr_goals_v1` | Per-tag goals: `[{ type, target, card?, from, at }]` |
 | `cr_saved_decks` | Saved decks: `[{ key, cards: [{ name, form }], from, at }]`, newest first |
+| `cr_sync` | Sync between phones: `{ code, at (last sync), v (the copy's version), h: { key: hash synced last }, err, tried }` |
 | `cr_budget_gold` | The Gold Budget amount last typed |
 | `cr_leaderboards_cache` | `{ items: [{ id, name }], savedAt }` — newest board per game mode |
 | `cr_meta_country` | Meta → Players board: a location id, `''` = global top 1,000 |
@@ -413,3 +417,4 @@ It is **still present in git history** and was served publicly from GitHub Pages
 60. Collector keeps following last season's top 1,000 while a new season's leaderboard fills up; New season note on the Meta screen
 61. Meta archive kept forever: past seasons on Decks / Cards, Season vs season, all-time card trends; Best next unlock in Meta → You; collector read cap 2.3M
 62. Your own accounts' Account-tab history kept for good: Progress This season / All time, every season recap, full Trophy History and Records
+63. Sync between phones with a private code, about once a week (`max-royale-sync` Worker)

@@ -413,7 +413,7 @@
             </div>
           </div>
           <div id="start-accounts"></div>
-          <div style="text-align:center;margin-top:14px"><button class="btn btn-secondary btn-sm" onclick="document.getElementById('backup-file').click()">📂 Restore a backup</button></div>
+          <div style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-top:14px"><button class="btn btn-secondary btn-sm" onclick="syncEnterCode()">☁️ Use a sync code</button><button class="btn btn-secondary btn-sm" onclick="document.getElementById('backup-file').click()">📂 Restore a backup</button></div>
         </div>
       </div>
       <input type="file" id="backup-file" accept=".json,application/json" style="display:none" onchange="importBackup(this)">
@@ -1351,6 +1351,8 @@ function renderSavedAccounts() {
       <button class="btn btn-secondary btn-sm" style="flex:1" onclick="exportBackup()">💾 Save</button>
       <button class="btn btn-secondary btn-sm" style="flex:1" onclick="document.getElementById('backup-file').click()">📂 Restore</button>
     </div>
+    <div style="border-top:1px solid var(--border);margin:12px 0 10px"></div>
+    ${syncMenuHTML()}
     ${_accountsEditMode && window._currentProfile?.data ? `
     <div style="border-top:1px solid var(--border);margin:12px 0 10px"></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Export ${esc(window._currentProfile.data.name)} as a spreadsheet (CSV)</div>
@@ -1469,6 +1471,189 @@ window.importBackup = async function(input) {
   if (tag) loadPlayer(tag, { quiet: tag === window._currentProfile?.data?.tag });
   alert('Backup restored.');
 };
+// ── Sync between phones ──
+// The same keys as the backup, kept in one copy per sync code on the
+// max-royale-sync Worker (sync/). About once a week (SYNC_EVERY), on opening the
+// app, the phone fetches that copy, merges it with its own and sends the result
+// back. Per key a three-way check: unchanged here since the last sync → take
+// the other copy as it is (so removals carry over); unchanged there → keep
+// this one; changed on both → merge (mergeSynced). The code is the only secret.
+const SYNC_URL = 'https://max-royale-sync.jellevandenwouwer.workers.dev';
+const SYNC_KEY = 'cr_sync';
+const SYNC_EVERY = 7 * 864e5;
+// This phone's own choices: kept here when both sides changed them
+const SYNC_LOCAL_PREFS = ['cr_player_tag', 'cr_friends_sort', 'cr_clan_tools'];
+const SYNC_CODE_RE = /^[a-z0-9]{4}(-[a-z0-9]{4}){3}$/;
+let _syncing = null;
+function syncCfg() {
+  try { return JSON.parse(localStorage.getItem(SYNC_KEY) || '{}') || {}; } catch(e) { return {}; }
+}
+function saveSyncCfg(c) { try { localStorage.setItem(SYNC_KEY, JSON.stringify(c)); } catch(e) {} }
+// A short fingerprint of a stored value, to tell whether it changed since the last sync
+function syncHash(str) {
+  if (str == null) return '';
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(36) + ':' + str.length;
+}
+function newSyncCode() {
+  const abc = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const r = [...crypto.getRandomValues(new Uint8Array(16))].map(b => abc[b % abc.length]).join('');
+  return r.match(/.{4}/g).join('-');
+}
+const normalizeSyncCode = t => String(t || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/(.{4})(?=.)/g, '$1-');
+
+// Both phones changed a key: put the two together. Tallies (arrays of numbers,
+// e.g. [wins, losses, draws]) were counted from overlapping battle logs, so the
+// bigger one is taken rather than the sum — no battle is counted twice
+const _syncNum = new Set(['since', 'first', 'from']);   // earliest wins; other numbers: the highest
+function mergeDeep(a, b, key = '') {
+  if (a == null) return b;
+  if (b == null) return a;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const isNums = x => x.every(v => typeof v === 'number');
+    if (isNums(a) && isNums(b)) return b.reduce((s, v) => s + v, 0) > a.reduce((s, v) => s + v, 0) ? b : a;
+    if (a.every(v => typeof v === 'string') && b.every(v => typeof v === 'string'))
+      return [...new Set([...a, ...b])].sort().slice(-Math.max(a.length, b.length, 300));
+    const rows = x => x.every(v => Array.isArray(v) && isNums(v));
+    if (a.length === b.length && rows(a) && rows(b)) return a.map((v, i) => mergeDeep(v, b[i]));   // per hour / weekday
+    if ([...a, ...b].every(v => v && typeof v === 'object')) {
+      const id = v => Array.isArray(v) ? JSON.stringify(v) : String(v.tag ?? v.key ?? v.s ?? JSON.stringify(v));
+      const out = new Map();
+      [...a, ...b].forEach(v => { const k = id(v); out.set(k, out.has(k) ? mergeDeep(out.get(k), v) : v); });
+      const list = [...out.values()];
+      if (list.every(v => Array.isArray(v) && typeof v[0] === 'number')) list.sort((x, y) => x[0] - y[0]);
+      return list;
+    }
+    return a;
+  }
+  if (typeof a === 'object' && typeof b === 'object' && !Array.isArray(a) && !Array.isArray(b)) {
+    const out = { ...a };
+    for (const k of Object.keys(b)) out[k] = k in a ? mergeDeep(a[k], b[k], k) : b[k];
+    return out;
+  }
+  if (typeof a === 'number' && typeof b === 'number') return _syncNum.has(key) ? Math.min(a, b) : Math.max(a, b);
+  return a;
+}
+function mergeSynced(k, a, b) {   // a: this phone's value, b: the synced copy (both strings)
+  if (a == null) return b;
+  if (b == null || SYNC_LOCAL_PREFS.includes(k)) return a;
+  let A, B;
+  try { A = JSON.parse(a); B = JSON.parse(b); } catch(e) { return a; }
+  let out;
+  if (k === 'cr_trophy_history_v1') {
+    out = { ...B, ...A };
+    for (const t of Object.keys(A)) if (B[t]) for (const s of ['road', 'pol'])
+      out[t][s] = mergeTrophyPoints(A[t][s] || [], B[t][s] || [], isOwnTag(t));
+  } else if (k === 'cr_progress_v1') {
+    out = { ...B, ...A };
+    for (const t of Object.keys(A)) if (B[t]) {
+      const byAt = new Map([...expandProgress(B[t]), ...expandProgress(A[t])].map(x => [x.at, x]));
+      out[t] = compactProgress([...byAt.values()].sort((x, y) => x.at - y.at));
+    }
+  } else if (k === 'cr_saved_decks') {
+    out = mergeDeep(A, B).sort((x, y) => (y.at || 0) - (x.at || 0)).slice(0, 40);
+  } else if (k === 'cr_friends') {
+    out = mergeDeep(A, B).slice(0, MAX_FRIENDS);
+  } else out = mergeDeep(A, B);
+  return JSON.stringify(out);
+}
+
+async function syncNow({ quiet = false } = {}) {
+  const cfg = syncCfg();
+  if (!cfg.code) return false;
+  if (_syncing) return _syncing;
+  _syncing = (async () => {
+    const url = `${SYNC_URL}/s/${encodeURIComponent(cfg.code)}`;
+    const before = {};
+    BACKUP_KEYS.forEach(k => before[k] = localStorage.getItem(k));
+    try {
+      let remote = await fetch(url, { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error(`sync ${r.status}`); return r.json(); });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const merged = {}, last = cfg.h || {};
+        BACKUP_KEYS.forEach(k => {
+          const mine = localStorage.getItem(k), theirs = remote.data?.[k] ?? null;
+          const mineChanged = syncHash(mine) !== last[k], theirsChanged = syncHash(theirs) !== last[k];
+          const v = !mineChanged && last[k] != null ? theirs : !theirsChanged ? mine : mergeSynced(k, mine, theirs);
+          if (v != null) merged[k] = v;
+        });
+        const res = await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: merged, base: remote.at || 0 }) });
+        if (res.status === 409) { remote = await res.json(); continue; }   // another phone synced in between: merge again
+        if (!res.ok) throw new Error(`sync ${res.status}`);
+        const { at } = await res.json();
+        BACKUP_KEYS.forEach(k => { try { k in merged ? localStorage.setItem(k, merged[k]) : localStorage.removeItem(k); } catch(e) {} });
+        saveSyncCfg({ ...syncCfg(), at: Date.now(), v: at, err: '', h: Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, syncHash(v)])) });
+        if (BACKUP_KEYS.some(k => localStorage.getItem(k) !== before[k])) afterSyncChange();
+        return true;
+      }
+      throw new Error('busy');
+    } catch(e) {
+      saveSyncCfg({ ...syncCfg(), err: String(e.message || e), tried: Date.now() });
+      if (!quiet) alert("Couldn't sync right now — check your connection and try again.");
+      return false;
+    } finally { _syncing = null; renderSavedAccounts(); }
+  })();
+  return _syncing;
+}
+// Synced data came in: redraw what shows it
+function afterSyncChange() {
+  renderSavedAccounts();
+  const tag = localStorage.getItem('cr_player_tag');
+  if (!window._currentProfile?.data && tag) loadPlayer(tag);
+  else redrawForCatalogChange();
+  if (document.getElementById('screen-friends')?.classList.contains('active')) renderFriends();
+}
+// About once a week, quietly; a failed try waits a day
+function maybeSync() {
+  const c = syncCfg();
+  if (c.code && Date.now() - (c.at || 0) > SYNC_EVERY && Date.now() - (c.tried || 0) > 864e5) syncNow({ quiet: true });
+}
+window.syncSetup = async function(ev) {
+  if (ev) ev.stopPropagation();
+  saveSyncCfg({ code: newSyncCode() });
+  if (await syncNow()) showSyncCode();
+};
+window.syncEnterCode = async function(ev) {
+  if (ev) ev.stopPropagation();
+  const code = normalizeSyncCode(prompt('Sync code from your other phone (e.g. abcd-efgh-jkmn-pqrs):') || '');
+  if (!code) return;
+  if (!SYNC_CODE_RE.test(code)) { alert("That isn't a sync code — it's 16 letters and digits, like abcd-efgh-jkmn-pqrs."); return; }
+  saveSyncCfg({ code });
+  if (await syncNow()) alert('Synced — this phone now has the history from your other phone, and they stay in step about once a week.');
+  else saveSyncCfg({});
+};
+window.syncManual = function(ev) { if (ev) ev.stopPropagation(); syncNow(); };
+window.showSyncCode = function(ev) {
+  if (ev) ev.stopPropagation();
+  const code = syncCfg().code;
+  if (!code) return;
+  navigator.clipboard?.writeText(code).catch(() => {});
+  alert(`Your sync code (copied):\n\n${code}\n\nOn your other phone: open the menu under your name → Sync → "I have a code". Keep it private — anyone with it can read and change your synced history.`);
+};
+window.syncOff = function(ev) {
+  if (ev) ev.stopPropagation();
+  if (!confirm('Stop syncing this phone? Its history stays here, and the synced copy stays for your other phones.')) return;
+  saveSyncCfg({});
+  renderSavedAccounts();
+};
+function syncMenuHTML() {
+  const c = syncCfg();
+  const head = `<div style="font-size:11px;color:var(--muted);margin-bottom:6px">☁️ Sync between phones</div>`;
+  if (!c.code) return `${head}
+    <div class="flex-row">
+      <button class="btn btn-secondary btn-sm" style="flex:1" onclick="syncSetup(event)">Turn on</button>
+      <button class="btn btn-secondary btn-sm" style="flex:1" onclick="syncEnterCode(event)">🔑 I have a code</button>
+    </div>`;
+  const when = _syncing ? 'syncing…' : c.at ? `synced ${formatAgo(c.at)}` : 'not synced yet';
+  return `${head}
+    <div style="font-size:12px;margin-bottom:6px">${when} · about once a week${c.err && (c.tried || 0) > (c.at || 0) ? ` <span class="text-red">· last try failed</span>` : ''}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+      <button class="btn btn-secondary btn-sm" style="justify-content:center;padding:6px 4px" onclick="syncManual(event)" ${_syncing ? 'disabled' : ''}>🔄 Now</button>
+      <button class="btn btn-secondary btn-sm" style="justify-content:center;padding:6px 4px" onclick="showSyncCode(event)">🔑 Code</button>
+      <button class="btn btn-secondary btn-sm" style="justify-content:center;padding:6px 4px" onclick="syncOff(event)">Off</button>
+    </div>`;
+}
+const formatAgo = t => { const m = (Date.now() - t) / 6e4; return m < 1 ? 'just now' : m < 60 ? `${Math.round(m)} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} day${Math.round(m / 1440) === 1 ? '' : 's'} ago`; };
 window.menuLookup = function() {
   const input = document.getElementById('account-tag-input');
   if (!normalizeTag(input?.value)) return;
@@ -9531,7 +9716,7 @@ if (_savedTag) {
     _startup = loadPlayer(_savedTag);  // nothing cached to show — just load it
   }
 }
-_startup.then(() => { takeStartScreen(); takeSharedDeck(); takeLinkParams(); });
+_startup.then(() => { takeStartScreen(); takeSharedDeck(); takeLinkParams(); maybeSync(); });
 
 // Android keeps an installed app alive in the background, so reopening it usually
 // resumes this page rather than reloading it. Refresh on foreground too, otherwise

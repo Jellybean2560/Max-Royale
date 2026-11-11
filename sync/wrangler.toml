@@ -1,0 +1,12 @@
+name = "max-royale-sync"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[[durable_objects.bindings]]
+name = "VAULTS"
+class_name = "Vault"
+
+# SQLite-backed Durable Objects are available on the free Workers plan.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Vault"]
