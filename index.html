@@ -1249,6 +1249,23 @@ function getSavedAccounts() {
   try { return JSON.parse(localStorage.getItem('cr_saved_accounts') || '[]'); }
   catch(e) { return []; }
 }
+// Your own accounts (saved, or the one the app opens on): their Account-tab
+// history — Progress, Trophy History, seasons, Records — is kept for good
+function isOwnTag(tag) {
+  const bare = t => String(t || '').replace('#', '').toUpperCase(), t = bare(tag);
+  if (!t) return false;
+  try { if (bare(localStorage.getItem('cr_player_tag')) === t) return true; } catch(e) {}
+  return getSavedAccounts().some(a => bare(a.tag) === t);
+}
+// History older than HISTORY_THIN_AFTER thinned to the last entry per key (a day, a week)
+const HISTORY_THIN_AFTER = 30 * 864e5;
+function thinOld(list, at, keyOf, timeOf = x => x[0]) {
+  const cut = at - HISTORY_THIN_AFTER, last = new Map();
+  list.forEach((x, i) => { if (timeOf(x) < cut) last.set(keyOf(timeOf(x)), i); });
+  return list.filter((x, i) => timeOf(x) >= cut || last.get(keyOf(timeOf(x))) === i);
+}
+// Monday of the local week, as YYYY-MM-DD
+const localWeek = t => localDay(t - ((new Date(t).getDay() + 6) % 7) * 864e5);
 function saveAccount(tag, name) {
   if (!tag) return;
   let list = getSavedAccounts().filter(a => a.tag !== tag);
@@ -3753,10 +3770,13 @@ function trophyPointsFromBattles(battles) {
 function trophyNow(data) {
   return { road: data.trophies, pol: data.currentPathOfLegendSeasonResult?.trophies || null };
 }
-function mergeTrophyPoints(list, pts) {
+// Others keep their newest TROPHY_POINTS_MAX points; your own accounts keep
+// everything, thinned to one point a day after 30 days
+function mergeTrophyPoints(list, pts, own = false) {
   const byTime = new Map(list);
   pts.forEach(([t, v]) => byTime.set(t, v));
-  return [...byTime].sort((a, b) => a[0] - b[0]).slice(-TROPHY_POINTS_MAX);
+  const sorted = [...byTime].sort((a, b) => a[0] - b[0]);
+  return own ? thinOld(sorted, Date.now(), localDay) : sorted.slice(-TROPHY_POINTS_MAX);
 }
 // The battles' points and the profile's value (as of `at`, when it was fetched)
 // added to a history; persist reads and saves this device's history for the tag
@@ -3764,10 +3784,10 @@ function trophyHistory(data, battles, { persist = false, at = Date.now() } = {})
   let all = {};
   if (persist) try { all = JSON.parse(localStorage.getItem(TROPHY_HISTORY_KEY) || '{}'); } catch(e) {}
   const entry = all[data.tag] || { road: [], pol: [] };
-  const fromBattles = trophyPointsFromBattles(battles), now = trophyNow(data);
+  const fromBattles = trophyPointsFromBattles(battles), now = trophyNow(data), own = isOwnTag(data.tag);
   for (const s of ['road', 'pol']) {
-    let list = mergeTrophyPoints(entry[s] || [], fromBattles[s]);
-    if (now[s] != null && (!list.length || list[list.length - 1][1] !== now[s])) list = mergeTrophyPoints(list, [[at, now[s]]]);
+    let list = mergeTrophyPoints(entry[s] || [], fromBattles[s], own);
+    if (now[s] != null && (!list.length || list[list.length - 1][1] !== now[s])) list = mergeTrophyPoints(list, [[at, now[s]]], own);
     entry[s] = list;
   }
   if (persist) try {
@@ -3929,6 +3949,8 @@ function pruneHistoryTags(all, latest) {
 const PROGRESS_KEY = 'cr_progress_v1';
 const PROGRESS_DAYS = 32;
 const PROGRESS_RANGES = [['today', 'Today'], ['7', '7 days'], ['30', '30 days']];
+// Your own accounts keep every snapshot (one a week after 30 days), so they get these too
+const PROGRESS_RANGES_OWN = [...PROGRESS_RANGES, ['season', 'This season'], ['all', 'All time']];
 function progressSnap(data, at) {
   const lv = c => toDisplayLevel((c.rarity || 'common').toLowerCase(), c.level);
   const map = list => Object.fromEntries((list || []).map(c => [c.id, lv(c) * 4 + ((c.evolutionLevel || 0) & 3)]));
@@ -3961,14 +3983,20 @@ function compactProgress(list) {
 const progressList = tag => expandProgress(loadProgress()[tag]);
 function recordProgress(data, at = Date.now()) {
   if (!data?.tag) return;
-  const all = loadProgress(), list = expandProgress(all[data.tag]);
+  const all = loadProgress();
+  let list = expandProgress(all[data.tag]);
   const snap = progressSnap(data, at), last = list[list.length - 1];
   if (last && (at < last.at || sameProgress(snap, last))) return;
   const day = t => new Date(t).toDateString();
   if (last && list.length > 1 && day(last.at) === day(at)) list[list.length - 1] = snap;
   else list.push(snap);
-  // Keep one snapshot from before the window: it's the 30-day baseline
-  while (list.length > 2 && list[1].at < at - PROGRESS_DAYS * 864e5) list.shift();
+  if (isOwnTag(data.tag)) {
+    // Kept for good: the first snapshot, then one a week once older than 30 days
+    list = [list[0], ...thinOld(list.slice(1), at, localWeek, x => x.at)];
+  } else {
+    // Keep one snapshot from before the window: it's the 30-day baseline
+    while (list.length > 2 && list[1].at < at - PROGRESS_DAYS * 864e5) list.shift();
+  }
   all[data.tag] = compactProgress(list);
   pruneHistoryTags(all, l => l[l.length - 1]?.at || 0);
   try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(all)); } catch(e) {}
@@ -3980,14 +4008,16 @@ function progressHTML(data, scope) {
   return `<div class="card" id="${scope}-progress">${progressCardBody(scope)}</div>`;
 }
 function progressCardBody(scope) {
-  const { data, range: r } = _progressState[scope];
+  const { data } = _progressState[scope];
+  const ranges = isOwnTag(data.tag) ? PROGRESS_RANGES_OWN : PROGRESS_RANGES;
+  const r = ranges.some(([k]) => k === _progressState[scope].range) ? _progressState[scope].range : '7';
   const list = progressList(data.tag);
-  const from = r === 'today' ? new Date().setHours(0, 0, 0, 0) : Date.now() - r * 864e5;
+  const from = r === 'today' ? new Date().setHours(0, 0, 0, 0) : r === 'season' ? seasonStartOf(Date.now()) : r === 'all' ? -Infinity : Date.now() - r * 864e5;
   const cur = progressSnap(data, Date.now());
   // The last snapshot from before the range; with less history, the oldest there is
-  const base = list.filter(s => s.at <= from).pop() || (list.length > 1 ? list[0] : null);
+  const base = r === 'all' ? list[0] || null : list.filter(s => s.at <= from).pop() || (list.length > 1 ? list[0] : null);
   const chips = `<div class="filter-bar" style="margin:0 0 8px">
-    ${PROGRESS_RANGES.map(([k, l]) => `<button class="filter-btn ${r === k ? 'active' : ''}" onclick="setProgressRange('${scope}','${k}')">${l}</button>`).join('')}
+    ${ranges.map(([k, l]) => `<button class="filter-btn ${r === k ? 'active' : ''}" onclick="setProgressRange('${scope}','${k}')">${l}</button>`).join('')}
   </div>`;
   const head = `<h3 style="margin-bottom:10px">🆕 Progress</h3>${chips}`;
   if (!base) return `${head}<div class="empty-msg" style="padding:10px 0;font-size:12px">Tracking started ${progressWhen(list[0]?.at || Date.now())}. What changes — upgrades, unlocks, levels, rating — shows up here after ${scope === 'p' ? 'your next refresh' : 'their profile is loaded again (opening it, or the Friends list refreshing them)'}.</div>`;
@@ -4057,7 +4087,7 @@ function progressWhen(t) {
   const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   if (t >= today) return `${time} today`;
   if (t >= today - 864e5) return `yesterday ${time}`;
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
 }
 window.setProgressRange = function(scope, r) {
   if (!_progressState[scope]) return;
@@ -4093,7 +4123,8 @@ function loadPlay() {
   try { return JSON.parse(localStorage.getItem(PLAY_KEY) || '{}') || {}; } catch(e) { return {}; }
 }
 const newPlay = () => ({ seen: [], hours: Array.from({ length: 24 }, () => [0, 0, 0]), days: Array.from({ length: 7 }, () => [0, 0, 0]), seasons: {} });
-function tallyPlay(entry, battles) {
+// own: your own accounts keep every season and every day; others the last PLAY_SEASONS / RECORD_DAYS
+function tallyPlay(entry, battles, own = false) {
   const seen = new Set(entry.seen);
   let changed = false;
   (battles || []).forEach(b => {
@@ -4123,8 +4154,8 @@ function tallyPlay(entry, battles) {
       .forEach(n => (s.opp[n] || (s.opp[n] = [0, 0, 0]))[i]++);
   });
   entry.seen = [...seen].slice(-300);
-  Object.keys(entry.seasons).sort().slice(0, -PLAY_SEASONS).forEach(k => delete entry.seasons[k]);
-  const recChanged = tallyRecords(entry, battles || []);
+  if (!own) Object.keys(entry.seasons).sort().slice(0, -PLAY_SEASONS).forEach(k => delete entry.seasons[k]);
+  const recChanged = tallyRecords(entry, battles || [], own);
   return changed || recChanged;
 }
 // For Records: per local day [wins, losses, draws, 3-crown wins] and the longest
@@ -4133,7 +4164,7 @@ function tallyPlay(entry, battles) {
 // rolled over unseen can join two streaks — it's what this device saw.
 const RECORD_DAYS = 400;
 const localDay = t => { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
-function tallyRecords(entry, battles) {
+function tallyRecords(entry, battles, own = false) {
   const r = entry.rec || (entry.rec = { seen: [], daily: {}, cur: 0, best: 0, bestAt: 0 });
   const seen = new Set(r.seen);
   const fresh = battles.filter(b => b.battleTime && !seen.has(b.battleTime))
@@ -4152,7 +4183,7 @@ function tallyRecords(entry, battles) {
     else r.cur = 0;
   });
   r.seen = [...seen].slice(-300);
-  Object.keys(r.daily).sort().slice(0, -RECORD_DAYS).forEach(k => delete r.daily[k]);
+  if (!own) Object.keys(r.daily).sort().slice(0, -RECORD_DAYS).forEach(k => delete r.daily[k]);
   return true;
 }
 
@@ -4207,7 +4238,7 @@ function recordPlay(tag, battles, at = Date.now()) {
   if (!tag) return;
   try {
     const all = loadPlay(), entry = all[tag] || newPlay();
-    if (!tallyPlay(entry, battles)) return;
+    if (!tallyPlay(entry, battles, isOwnTag(tag))) return;
     entry.at = at;
     all[tag] = entry;
     pruneHistoryTags(all, e => e.at || 0);
@@ -4233,7 +4264,7 @@ function seasonCardBody(scope) {
   const { data, play, key } = _seasonState[scope];
   const keys = Object.keys(play.seasons).sort().reverse();
   const cur = seasonKey(Date.now());
-  const monthOf = k => new Date(k + 'T12:00:00Z').toLocaleDateString('en-GB', { month: 'long' });
+  const monthOf = k => new Date(k + 'T12:00:00Z').toLocaleDateString('en-GB', { month: 'long', ...(k.slice(0, 4) !== cur.slice(0, 4) ? { year: 'numeric' } : {}) });
   const label = k => k === cur ? 'This season' : `${monthOf(k)}`;
   const chips = keys.length > 1 ? `<div class="filter-bar" style="margin:0 0 8px">
     ${keys.map(k => `<button class="filter-btn ${k === key ? 'active' : ''}" onclick="setSeasonRecap('${scope}','${k}')">${label(k)}</button>`).join('')}
