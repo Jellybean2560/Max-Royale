@@ -1611,11 +1611,14 @@ function maybeSync() {
 window.syncSetup = async function(ev) {
   if (ev) ev.stopPropagation();
   saveSyncCfg({ code: newSyncCode() });
-  if (await syncNow()) showSyncCode();
+  if (await syncNow()) {
+    navigator.clipboard?.writeText(syncCfg().code).catch(() => {});
+    alert(syncCodeHelp(syncCfg().code) + '\n\nTo keep it somewhere safe, tap 🔑 Code: it saves the code as a text file, e.g. to Google Drive.');
+  }
 };
 window.syncEnterCode = async function(ev) {
   if (ev) ev.stopPropagation();
-  const code = normalizeSyncCode(prompt('Sync code from your other phone (e.g. abcd-efgh-jkmn-pqrs):') || '');
+  const code = normalizeSyncCode(prompt('Sync code from your other phone or your saved code file (e.g. abcd-efgh-jkmn-pqrs):') || '');
   if (!code) return;
   if (!SYNC_CODE_RE.test(code)) { alert("That isn't a sync code — it's 16 letters and digits, like abcd-efgh-jkmn-pqrs."); return; }
   saveSyncCfg({ code });
@@ -1623,12 +1626,29 @@ window.syncEnterCode = async function(ev) {
   else saveSyncCfg({});
 };
 window.syncManual = function(ev) { if (ev) ev.stopPropagation(); syncNow(); };
-window.showSyncCode = function(ev) {
+const syncCodeHelp = code => `Your sync code${code ? ` (copied)` : ''}:\n\n${code}\n\nOn your other phone: open the menu under your name → Sync → "I have a code". Keep it private — anyone with it can read and change your synced history.`;
+// 🔑 Code: copies the code and saves it as a small text file — on a phone through
+// the share sheet (Google Drive, Files, mail to yourself…), elsewhere as a download
+window.showSyncCode = async function(ev) {
   if (ev) ev.stopPropagation();
   const code = syncCfg().code;
   if (!code) return;
   navigator.clipboard?.writeText(code).catch(() => {});
-  alert(`Your sync code (copied):\n\n${code}\n\nOn your other phone: open the menu under your name → Sync → "I have a code". Keep it private — anyone with it can read and change your synced history.`);
+  const text = `Max Royale sync code\n\n${code}\n\nOn a new phone: open ${location.origin}${location.pathname} → "Use a sync code" (or the menu under your name → Sync → "I have a code") and type it in.\nKeep it private: anyone with it can read and change your synced history.\n`;
+  const name = 'max-royale-sync-code.txt';
+  const file = new File([text], name, { type: 'text/plain' });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: 'Max Royale sync code' }); } catch(e) {}
+  } else {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file);
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+  alert(syncCodeHelp(code));
 };
 window.syncOff = function(ev) {
   if (ev) ev.stopPropagation();
