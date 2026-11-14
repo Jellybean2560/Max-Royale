@@ -109,3 +109,11 @@ CREATE TABLE IF NOT EXISTS seasons (
   start INTEGER PRIMARY KEY,
   v     TEXT
 );
+-- Per tracked player and deck per archived period, for /top (kept PLAYER_DAYS_KEEP days)
+CREATE TABLE IF NOT EXISTS player_days (
+  start INTEGER NOT NULL, tag TEXT NOT NULL, deck TEXT NOT NULL,
+  n INTEGER, w INTEGER,
+  PRIMARY KEY (start, tag, deck)
+) WITHOUT ROWID;
+-- A season's top decks without scanning all of them
+CREATE INDEX IF NOT EXISTS season_decks_n ON season_decks (season, n);

@@ -80,7 +80,9 @@ const TOWER_SAMPLE = 3000;          // recent matches read to learn full tower H
 // player's log is read at most every 12 h, so their matches can arrive that late
 const ARCHIVE_LAG = 13 * HOUR;
 const SEASON_DECKS = 300;           // decks served per season
-const RIVALS_EVERY = 40 * HOUR;     // /top recounts the rivalries every other day
+const RIVALS_EVERY = 72 * HOUR;     // /top recounts the rivalries every third day (~300k rows, Nov 2026)
+const TOP_STARVED = 48 * HOUR;      // /top this old jumps ahead of the stats
+const PLAYER_DAYS_KEEP = 9;         // days of per-player deck tallies kept for /top
 // While the archive is more than a day behind, /top runs at most every 48 h, so
 // the backlog gets the budget it frees (stats ~1.1M + /top ~0.8M + polling left
 // ~90k a day — one period — in Nov 2026)
@@ -168,6 +170,8 @@ async function tick(env) {
   // A heavy job runs only if what it read last time still fits in today's budget
   const fits = job => readsToday(st, now) + (+st[`${job}_reads`] || 0) <= READ_BUDGET - POLL_RESERVE;
   if (due('board', BOARD_EVERY)) return run('board', refreshBoard);
+  // /top two days stale (stats kept taking the day's budget first): it goes before the stats this once
+  if (+st.matches_total > 0 && now - (+st.top_at || 0) > TOP_STARVED && due('top', 0) && fits('top')) return run('top', computeTop);
   if (+st.matches_total > 0 && due('stats', refreshEvery(+st.stats_reads, STATS_SHARE)) && fits('stats')) return run('stats', computeStats);
   const backlog = +st.archive_to && periodEnd(+st.archive_to) <= now - ARCHIVE_LAG - DAY;
   if (+st.matches_total > 0 && due('top', Math.max(refreshEvery(+st.top_reads, TOP_SHARE), backlog ? TOP_EVERY_BACKLOG : 0)) && fits('top')) return run('top', computeTop);
@@ -578,12 +582,20 @@ async function computeTop(env, now) {
   // Rivalries are recounted every other day (RIVALS_EVERY) — their pass is ~230k
   // rows (Nov 2026) — and kept in their own small state row in between
   const fresh = now - (+st.rivals_at || 0) > RIVALS_EVERY;
+  // Archived days come from player_days ([its first day, archive_to)); the rest of the
+  // window — today and yesterday, and the days before player_days began — from the matches
+  const first = await env.DB.prepare(`SELECT MIN(start) AS s FROM player_days`).first();   // one row, by the key
+  const pdTo = Math.floor((+st.archive_to || 0) / 1000), pdFrom = Math.min(first?.s ?? pdTo, pdTo);
   const [res, pairs, kept] = await env.DB.batch([env.DB.prepare(`
     WITH s AS (
-      SELECT pa AS tag, da AS deck, ca > cb AS w FROM matches WHERE time >= ?1
+      SELECT tag, deck, n, w FROM player_days WHERE start >= max(?1, ?5) AND start < ?6
       UNION ALL
-      SELECT pb, db, cb > ca FROM matches WHERE time >= ?1),
-    g AS (SELECT s.tag, s.deck, COUNT(*) AS n, SUM(s.w) AS w FROM s JOIN players p ON p.tag = s.tag AND p.seen_at >= ?2
+      /* two ranges, each its own index range (an OR would scan the whole week) */
+      SELECT pa, da, 1, ca > cb FROM matches WHERE time >= ?1 AND time < ?5
+      UNION ALL SELECT pb, db, 1, cb > ca FROM matches WHERE time >= ?1 AND time < ?5
+      UNION ALL SELECT pa, da, 1, ca > cb FROM matches WHERE time >= max(?1, ?6)
+      UNION ALL SELECT pb, db, 1, cb > ca FROM matches WHERE time >= max(?1, ?6)),
+    g AS (SELECT s.tag, s.deck, SUM(s.n) AS n, SUM(s.w) AS w FROM s JOIN players p ON p.tag = s.tag AND p.seen_at >= ?2
           GROUP BY s.tag, s.deck),
     /* the player's totals come from the same grouping, so the matches are read once */
     r AS (SELECT tag, deck, n, w, ROW_NUMBER() OVER (PARTITION BY tag ORDER BY n DESC) AS rk,
@@ -592,7 +604,7 @@ async function computeTop(env, now) {
     FROM players p LEFT JOIN r ON r.tag = p.tag AND r.rk = 1
       LEFT JOIN ratings d1 ON d1.day = ?3 AND d1.tag = p.tag
       LEFT JOIN ratings d7 ON d7.day = ?4 AND d7.tag = p.tag
-    WHERE p.seen_at >= ?2 ORDER BY p.rank`).bind(since, onBoard, dayKey(now - DAY), dayKey(now - 7 * DAY)),
+    WHERE p.seen_at >= ?2 ORDER BY p.rank`).bind(since, onBoard, dayKey(now - DAY), dayKey(now - 7 * DAY), pdFrom, pdTo),
     // Rivalries: the pairs who met most (tags are stored sorted, so a pair is one
     // group). One more pass over the window, ~140k rows a run (Oct 2026); only
     // pairs where both are on the board are kept, checked against the list above
@@ -660,6 +672,14 @@ async function archivePeriod(env, now, st) {
       FROM day_decks, json_each(day_decks.tr) AS j WHERE start = ?1 AND j.value ->> 0 IS NOT NULL GROUP BY troop
       ON CONFLICT (season, troop) DO UPDATE SET n = n + excluded.n, w = w + excluded.w, t = t + excluded.t`).bind(a, season),
     env.DB.prepare(`INSERT OR REPLACE INTO periods (start, end, season, matches) SELECT ?1, ?2, ?3, COALESCE(SUM(n), 0) / 2 FROM day_decks WHERE start = ?1`).bind(a, b, season),
+    // Per tracked player and deck, for /top: a week of these is ~30k rows instead
+    // of re-reading the week's matches (~1M rows with the grouping, Nov 2026)
+    env.DB.prepare(`
+      INSERT OR REPLACE INTO player_days (start, tag, deck, n, w)
+      SELECT ?1, tag, deck, COUNT(*), SUM(w) FROM (
+        SELECT pa AS tag, da AS deck, ca > cb AS w FROM matches WHERE time >= ?1 AND time < ?2
+        UNION ALL SELECT pb, db, cb > ca FROM matches WHERE time >= ?1 AND time < ?2)
+      WHERE tag IN (SELECT tag FROM players) GROUP BY tag, deck`).bind(a, b),
     env.DB.prepare(`INSERT INTO state (k, v) VALUES ('archive_to', ?1) ON CONFLICT (k) DO UPDATE SET v = excluded.v`).bind(String(endMs)),
   ]);
   let reads = rowsRead([dayRes]) + rowsRead(batch);
@@ -707,6 +727,7 @@ async function prune(env, now, st) {
   const cutoff = Math.floor((now - KEEP_DAYS * DAY) / 1000);
   await env.DB.batch([
     env.DB.prepare(`DELETE FROM matches WHERE time < ?1`).bind(cutoff),
+    env.DB.prepare(`DELETE FROM player_days WHERE start < ?1`).bind(Math.floor((now - PLAYER_DAYS_KEEP * DAY) / 1000)),
     // Off the leaderboard for a week: stop tracking
     // (last season's top 1,000 are kept while the new board is short)
     env.DB.prepare(`DELETE FROM players WHERE seen_at < ?1`).bind(Math.min(now - 7 * DAY, pollFrom(st))),
