@@ -63,27 +63,41 @@ CREATE TABLE IF NOT EXISTS state (
 -- finished period once — a UTC day, split where a season starts (first Monday
 -- of the month, 09:00 UTC). Times in unix seconds.
 
--- One row per archived period
+-- One row per archived period. x (added 15 Nov 2026): the period's rating gap
+-- and tower troop totals, { z: [16], tr: [[troop, games, wins, 3-crown wins]] };
+-- set means its day_decks rows hold the full tally the stats sum
 CREATE TABLE IF NOT EXISTS periods (
   start   INTEGER PRIMARY KEY,
   end     INTEGER,
   season  INTEGER,             -- the season it belongs to (its start)
-  matches INTEGER
+  matches INTEGER,
+  x       TEXT
 );
 -- Every deck played in a period: games, wins, draws, three-crown wins, and per
--- tower troop [[troop id, games, wins, three-crown wins]] as JSON
+-- tower troop [[troop id, games, wins, three-crown wins]] as JSON. From 15 Nov
+-- 2026 (added with ALTER TABLE … ADD COLUMN) also the rest of the stats tally:
+-- tower damage dealt / taken summed and the games with it (hn), elixir leaked
+-- and its games (ln), rating bands (bd), rating gap games / wins (z0, z1, y0, y1)
+-- and close games (cg) packed four 15-bit counts to an integer, and counters in
+-- c0, c1, … — two cards (by slot, state card_slots) to a column, [games, wins]
+-- each — added by the Worker as cards appear (state card_cols). cx is unused.
 CREATE TABLE IF NOT EXISTS day_decks (
   start INTEGER NOT NULL,
   deck  TEXT NOT NULL,
   n INTEGER, w INTEGER, d INTEGER, t INTEGER,
   tr    TEXT,
+  dealt INTEGER, taken INTEGER, hn INTEGER, leak REAL, ln INTEGER,
+  bd INTEGER, z0 INTEGER, z1 INTEGER, y0 INTEGER, y1 INTEGER, cg INTEGER,
+  cx TEXT,
   PRIMARY KEY (start, deck)
 ) WITHOUT ROWID;
--- Every card (id + e / h form) per period; card '_' holds the period's matches in n
+-- Every card (id + e / h form) per period; card '_' holds the period's matches in n.
+-- b1n / b1w: games and wins at #1–100 rating, b2n / b2w at #101–1000 (from 15 Nov 2026)
 CREATE TABLE IF NOT EXISTS card_days (
   start INTEGER NOT NULL,
   card  TEXT NOT NULL,
   n INTEGER, w INTEGER, d INTEGER, t INTEGER,
+  b1n INTEGER, b1w INTEGER, b2n INTEGER, b2w INTEGER,
   PRIMARY KEY (start, card)
 ) WITHOUT ROWID;
 -- One card's days, for its all-time trend line
@@ -109,7 +123,9 @@ CREATE TABLE IF NOT EXISTS seasons (
   start INTEGER PRIMARY KEY,
   v     TEXT
 );
--- Per tracked player and deck per archived period, for /top (kept PLAYER_DAYS_KEEP days)
+-- Per player and deck per archived period (kept PLAYER_DAYS_KEEP days): /top sums
+-- the tracked players', the stats count each top deck's players. Every player from
+-- 15 Nov 2026 (tracked players only before)
 CREATE TABLE IF NOT EXISTS player_days (
   start INTEGER NOT NULL, tag TEXT NOT NULL, deck TEXT NOT NULL,
   n INTEGER, w INTEGER,

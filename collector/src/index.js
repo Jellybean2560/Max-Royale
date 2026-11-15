@@ -11,9 +11,9 @@
 //    each (rows passed as one JSON parameter — D1 allows only 100 bound
 //    parameters), matches are stored once (no extra index) and kept 90 days,
 //    and the stats are computed every 1–24 hours as their cost allows, not per
-//    request. Each run reads the week's matches once per side plus the distinct
-//    decks (~200k rows at 25k matches), and the week before again once there is
-//    one for trends; the top players' main decks take another pass. Every query's
+//    request. The archive tallies each finished day once (day_decks); a stats
+//    run sums the stored days and reads only the matches not archived yet, and
+//    /top sums per-player daily tallies the same way. Every query's
 //    rows_read (polling too) is counted per UTC day, and a heavy job that would
 //    push the day past READ_BUDGET minus the polling reserve waits for tomorrow
 //    instead of running into D1's limit.
@@ -337,33 +337,31 @@ async function pollPlayers(env, now, st) {
 // The step a stats run is at, for its error message
 let stage = '';
 const step = name => { stage = name; console.log(`stats: ${name} at ${Date.now()}`); };
-async function computeStats(env, now) {
-  step('state');
-  const st = await getState(env);
-  const since = Math.floor((now - WINDOW_DAYS * DAY) / 1000), until = Math.floor(now / 1000) + 60;
-  // One row per deck played (w = won, d = draw, t = won with three crowns),
-  // grouped by deck first: a week's ~50k decks played are only a few thousand
-  // distinct decks, and the cards are unpacked from those. Unpacking every deck
-  // played instead (json_each over each side) read ~950k rows a run — D1 counts
-  // each unpacked card as a row read.
-  // Full tower HP: the highest left standing in a recent sample (a match where a
-  // side's towers went untouched), never below what earlier runs saw
-  const oldMeta = JSON.parse((await env.DB.prepare(`SELECT v FROM state WHERE k = 'meta'`).first())?.v || 'null');
-  step('tower sample');
-  const sample = await env.DB.prepare(`
-    SELECT ta, tb, ka, kb, sa, sb FROM matches WHERE time >= ?1 ORDER BY time DESC LIMIT ?2`).bind(since, TOWER_SAMPLE).all();
+// ── Deck tallies: the same per-deck counts for the archive (one finished period,
+// stored in day_decks) and the stats (the parts of the window not archived yet).
+// Summing stored days instead of re-reading a week of matches keeps a stats run
+// at a fraction of the rows and time — the full-week grouping took 12.9 s by
+// Nov 2026, past the ~10 s D1 allows in a 10-second window.
+//
+// Counters (a top deck's games and wins against each opponent card) are kept as
+// integer columns c0, c1, … of day_decks, two cards to a column — [games, wins]
+// of one card in bits 0–29, the other's in 30–59 — so stored days are summed
+// like any number (a JSON object per deck and day cost ~360k rows read a run to
+// unpack). Each card has a fixed slot (state card_slots, append-only): a new card
+// gets the next one, and a new column is added when the slots outgrow them
+// (card_cols). D1 allows 100 columns a table: day_decks has 19 others, so the
+// columns run out at ~160 cards (Nov 2026: 125) — then counters need their own table.
+
+// What a tally needs: full tower HP, the rating bands, the top decks counters are
+// kept for, the card ids they're counted against, every card's slot and every
+// tower troop seen. New cards get a slot (and a column when needed) here.
+async function tallyContext(env, st, oldMeta, sample) {
   const towers = { king: Math.max(KING_HP, oldMeta?.towers?.king || 0), princess: { ...PRINCESS_HP } };
   for (const [id, hp] of Object.entries(oldMeta?.towers?.princess || {})) towers.princess[id] = Math.max(towers.princess[id] || 0, hp);
-  for (const r of sample.results) for (const [t, k, sp] of [[r.ta, r.ka, r.sa], [r.tb, r.kb, r.sb]]) {
+  for (const r of sample?.results || []) for (const [t, k, sp] of [[r.ta, r.ka, r.sa], [r.tb, r.kb, r.sb]]) {
     if (t != null && sp != null) towers.princess[t] = Math.max(towers.princess[t] || 0, sp);
     if (k != null) towers.king = Math.max(towers.king, k);
   }
-  // Numbers only (troop ids and HP), so they can be written into the SQL: a
-  // json_each lookup per match row would count every lookup as rows read
-  const troopIds = Object.keys(towers.princess).map(Number).filter(Number.isInteger);
-  const fullP = col => `CASE ${col} ${troopIds.map(id => `WHEN ${id} THEN ${Math.round(towers.princess[id])}`).join(' ')} ELSE NULL END`;
-  // Damage a side's towers took: king + both princess towers, full minus what's left
-  const dmg = (t, k, sp) => `CASE WHEN ${k} IS NULL THEN NULL ELSE MAX(0, ${Math.round(towers.king)} - ${k} + ${fullP(t)} - ${sp}) END`;
   // Rating bands: a side's rating at the match against today's #100 and #1000
   // (read off /top inside SQLite: parsing its 140 KB here would eat the CPU limit)
   const bandRow = await env.DB.prepare(`
@@ -372,44 +370,65 @@ async function computeStats(env, now) {
                     json_extract(v, '$.players[#-1][4]')) AS lo
     FROM state WHERE k = 'top'`).first();
   const bands = { hi: Math.round(+bandRow?.hi) || 3000, lo: Math.round(+bandRow?.lo) || 2500 };
-  // Counters: each top deck's record against every opponent card. The decks are
-  // last run's top ones (keys checked to be digits, e/h and commas, so they can
-  // go into the SQL), the cards every card id seen. The opponent's deck is
-  // searched with instr() per card, packed 4 cards to a column — no json_each,
-  // so it reads no extra rows.
+  // Counters are kept for last run's top decks (keys checked to be digits, e/h
+  // and commas, so they can go into the SQL) against every card id seen
   const topKeys = (oldMeta?.decks || []).map(d => d[0]).filter(k => /^[0-9eh,]+$/.test(k));
   const cardIds = [...new Set((oldMeta?.cards || []).map(c => parseInt(c[0], 10)))].filter(Number.isInteger).sort((a, b) => a - b);
-  const counters = topKeys.length && cardIds.length;
-  const chunks = [];
-  for (let i = 0; i < cardIds.length; i += 4) chunks.push(cardIds.slice(i, i + 4));
-  const packed = ids => ids.map((id, i) => `((instr(cx, ',${id}') > 0) << ${i * BITS})`).join(' + ');
-  const unpack = (col, i) => `(${col} >> ${i * BITS}) & ${MASK}`;
-  // One JSON array of unpacked values per CHUNK cards (json_array takes ≤ 127)
-  const cardArray = pre => {
-    const vals = cardIds.map((id, i) => unpack(`${pre}${Math.floor(i / 4)}`, i % 4)), parts = [];
-    for (let i = 0; i < vals.length; i += CHUNK) parts.push(`json_array(${vals.slice(i, i + CHUNK).join(', ')})`);
-    return `CASE WHEN ${pre}0 IS NULL THEN NULL ELSE json_array(${parts.join(', ')}) END`;
-  };
-  const cx = side => counters ? `CASE WHEN ${side === 'a' ? 'da' : 'db'} IN (${topKeys.map(k => `'${k}'`).join(',')}) THEN ',' || ${side === 'a' ? 'db' : 'da'} END` : 'NULL';
-  const bandsOf = col => `json_array(${[0, 1, 2, 3].map(i => unpack(col, i)).join(', ')})`;
+  const slots = JSON.parse(st.card_slots || '[]').filter(Number.isInteger);
+  const fresh = cardIds.filter(id => !slots.includes(id));
+  slots.push(...fresh);
+  const had = +st.card_cols || 0, cols = Math.ceil(slots.length / 2);
+  for (let k = had; k < cols; k++)
+    await env.DB.prepare(`ALTER TABLE day_decks ADD COLUMN c${k} INTEGER`).run().catch(e => { if (!/duplicate column/i.test(e.message)) throw e; });
+  if (fresh.length || cols !== had) await setState(env, { card_slots: JSON.stringify(slots), card_cols: cols });
+  // Troop ids and HP go into the SQL as numbers: a json_each lookup per match would count as rows read
+  const troopIds = [...new Set([...Object.keys(towers.princess), ...Object.keys(JSON.parse(st.troop_names || '{}'))].map(Number))]
+    .filter(Number.isInteger).sort((a, b) => a - b);
+  return { towers, bands, topKeys, cardIds, slots, cols, troopIds };
+}
+
+// The columns a tally row has (day_decks holds them per period). bd, z0…y1, cg
+// are packed four 15-bit counts to an integer, c0… two cards' [games, wins], so
+// stored days can just be summed (no field nears 32,767 for a deck in a week).
+const TALLY_BASE = ['deck', 'n', 'w', 'd', 't', 'dealt', 'taken', 'hn', 'leak', 'ln', 'bd', 'z0', 'z1', 'y0', 'y1', 'cg', 'tr'];
+const counterCols = c => Array.from({ length: c.cols }, (_, k) => `c${k}`);
+const tallyCols = c => TALLY_BASE.concat(counterCols(c)).join(', ');
+const unpack = (col, i) => `((${col} >> ${i * BITS}) & ${MASK})`;
+// [games per gap bucket ×8, wins per gap bucket ×8] off the packed columns (p: a table prefix)
+const gapVals = (p = '', fn = x => x) => ['z', 'y'].flatMap(c => [0, 1].flatMap(j => [0, 1, 2, 3].map(i => fn(unpack(`${p}${c}${j}`, i)))));
+// More than 100 arguments go in nested concat() calls (a function takes ≤ 127)
+const concatAll = parts => parts.length <= 100 ? `concat(${parts.join(', ')})` : `concat(${concatAll(parts.slice(0, 100))}, ${concatAll(parts.slice(100))})`;
+
+// SQL for a tally over the matches in `ranges` ([[lo, hi]] SQL expressions in
+// unix seconds); `tk` is the parameter holding the top deck keys as JSON.
+//   s:   one row per deck played (a side of a match)
+//   g:   the grouping of s by deck, used as `lg`
+//   row: the tally rows (tallyCols) off lg
+function tallySQL(c, ranges, tk) {
+  const { towers, bands, topKeys, slots, cols, troopIds } = c;
+  const hp = troopIds.filter(id => towers.princess[id]);
+  const fullP = col => hp.length ? `CASE ${col} ${hp.map(id => `WHEN ${id} THEN ${Math.round(towers.princess[id])}`).join(' ')} ELSE NULL END` : 'NULL';
+  // Damage a side's towers took: king + both princess towers, full minus what's left
+  const dmg = (t, k, sp) => `CASE WHEN ${k} IS NULL THEN NULL ELSE MAX(0, ${Math.round(towers.king)} - ${k} + ${fullP(t)} - ${sp}) END`;
   // Rating gap (own rating − opponent's, both before the match) → bucket 0…GAPS-1
   const gap = (a, b) => `CASE WHEN ${a} IS NULL OR ${b} IS NULL THEN NULL ELSE MIN(${GAPS - 1}, MAX(0, (${a} - ${b} + ${GAP_STEP * GAPS / 2} + ${GAP_STEP * 100}) / ${GAP_STEP} - 100)) END`;
-  // Per deck: [games per gap bucket ×8, wins per gap bucket ×8, close wins, close losses, three-crowned losses]
-  const gapVals = (fn = x => x) => ['z', 'y'].flatMap(c => [0, 1].flatMap(j => [0, 1, 2, 3].map(i => fn(unpack(`${c}${j}`, i)))));
-  const extraOf = `json_array(${gapVals().join(', ')}, ${[0, 1, 2].map(i => unpack('cg', i)).join(', ')})`;
-  // full: the current window, with everything; else the week before, for trends (cards only)
-  const grouped = full => `
-    WITH s AS (
-      SELECT pa AS tag, da AS deck, ca > cb AS w, ca = cb AS d, ca > cb AND ca = 3 AS t, ta AS tt,
-             ${dmg('tb', 'kb', 'sb')} AS dealt, ${dmg('ta', 'ka', 'sa')} AS taken, la AS leak, ra AS rt, ${full ? cx('a') : 'NULL'} AS cx,
-             ${gap('ra', 'rb')} AS gb, ca - cb AS mg, cb AS oc
-        FROM matches WHERE time >= ?1 AND time < ?2
-      UNION ALL
-      SELECT pb, db, cb > ca, ca = cb, cb > ca AND cb = 3, tb, ${dmg('ta', 'ka', 'sa')}, ${dmg('tb', 'kb', 'sb')}, lb, rb, ${full ? cx('b') : 'NULL'},
-             ${gap('rb', 'ra')}, cb - ca, ca
-        FROM matches WHERE time >= ?1 AND time < ?2),
-    g AS MATERIALIZED (
-      SELECT deck, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d, SUM(t) AS t, COUNT(DISTINCT tag) AS p,
+  // Counters: for a top deck, the opponent's deck (cx) is searched with instr()
+  // per card — no json_each, so it reads no extra rows
+  const counters = topKeys.length > 0;
+  const side = (A, B, lo, hi) => `
+      SELECT d${A} AS deck, c${A} > c${B} AS w, ca = cb AS d, c${A} > c${B} AND c${A} = 3 AS t, t${A} AS tt,
+             ${dmg(`t${B}`, `k${B}`, `s${B}`)} AS dealt, ${dmg(`t${A}`, `k${A}`, `s${A}`)} AS taken, l${A} AS leak, r${A} AS rt,
+             ${counters ? `CASE WHEN d${A} IN (SELECT k FROM tk) THEN ',' || d${B} END` : 'NULL'} AS cx,
+             ${gap(`r${A}`, `r${B}`)} AS gb, c${A} - c${B} AS mg, c${B} AS oc
+        FROM matches WHERE time >= ${lo} AND time < ${hi}`;
+  const s = ranges.flatMap(([lo, hi]) => [side('a', 'b', lo, hi), side('b', 'a', lo, hi)]).join('\n      UNION ALL');
+  const hit = id => `(instr(cx, ',${id}') > 0)`;
+  const counterSum = k => {
+    const ids = slots.slice(2 * k, 2 * k + 2);
+    return counters && ids.length ? `SUM(${ids.map((id, i) => `(${hit(id)} << ${2 * i * BITS}) + ((w * ${hit(id)}) << ${(2 * i + 1) * BITS})`).join(' + ')})` : 'NULL';
+  };
+  const g = `
+      SELECT deck, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d, SUM(t) AS t,
              SUM(dealt) AS dealt, SUM(taken) AS taken, COUNT(dealt) AS hn, SUM(leak) AS leak, COUNT(leak) AS ln,
              /* games and wins at #1–100 rating, then at #101–1000 */
              SUM(CASE WHEN rt >= ${bands.hi} THEN 1 + (w << ${BITS}) WHEN rt >= ${bands.lo} THEN (1 << ${2 * BITS}) + (w << ${3 * BITS}) END) AS bd
@@ -419,42 +438,109 @@ async function computeStats(env, now) {
              , SUM(CASE WHEN mg = 1 AND oc < 2 THEN 1 WHEN mg = -1 AND oc < 3 THEN 1 << ${BITS} WHEN mg < 0 AND oc = 3 THEN 1 << ${2 * BITS} ELSE 0 END) AS cg
              /* per tower troop: games, wins, three-crown wins */
              ${troopIds.map(id => `, SUM(CASE WHEN tt = ${id} THEN 1 + (w << ${BITS}) + (t << ${2 * BITS}) END) AS q${id}`).join('')}
-             /* per opponent card: games against it (o) and wins (v) */
-             ${full && counters ? chunks.map((ids, j) => `, SUM(${packed(ids)}) AS o${j}, SUM(w * (${packed(ids)})) AS v${j}`).join('') : ''}
-      FROM s GROUP BY deck)`;
-  const cardsOfG = `
-    SELECT 'c' AS kind, j.value AS k, SUM(g.n) AS n, SUM(g.w) AS w, SUM(g.d) AS d, SUM(g.t) AS t, NULL AS p,
-           NULL AS dealt, NULL AS taken, NULL AS hn, NULL AS leak, NULL AS ln, NULL AS tr,
-           json_array(${[0, 1, 2, 3].map(i => `SUM(${unpack('g.bd', i)})`).join(', ')}) AS bd, NULL AS cn, NULL AS cw, NULL AS ex
-    FROM g, json_each('["' || replace(g.deck, ',', '","') || '"]') AS j GROUP BY j.value`;
-  // Tower troops: one row off the deck grouping, its totals packed as JSON so it
-  // fits the same columns (and statement) as the decks and cards
-  const troopsOfG = troopIds.length ? `
-    UNION ALL SELECT 'x', json_object(${troopIds.map(id => `'n${id}', SUM(${unpack(`q${id}`, 0)}), 'w${id}', SUM(${unpack(`q${id}`, 1)}), 't${id}', SUM(${unpack(`q${id}`, 2)})`).join(', ')}),
-      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM g` : '';
-  // Calibration for the skill adjustment: games and wins per rating gap bucket over every deck
-  const gapsOfG = `
-    UNION ALL SELECT 'z', json_array(${gapVals(v => `SUM(${v})`).join(', ')}),
-      NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM g`;
-  const troopsOfDeck = troopIds.length ? `json_array(${troopIds.map(id => [0, 1, 2].map(i => unpack(`q${id}`, i)).join(', ')).join(', ')})` : 'NULL';
-  // MIN / MAX read one row each off the primary key; match counts come from the
-  // card tally (every match is 2 decks × 8 cards) instead of another scan
-  // One at a time with a pause (D1_PAUSE), not as a batch: D1 runs a batch as one job
-  const results = [];
-  for (const q of [
-    env.DB.prepare(`SELECT (SELECT MIN(time) FROM matches WHERE time >= ?1) AS first,
-                           (SELECT MAX(time) FROM matches) AS last`).bind(since),
-    // top decks and every card in one statement, off one grouping
-    env.DB.prepare(`${grouped(true)}
-      SELECT * FROM (SELECT 'd' AS kind, deck AS k, n, w, d, t, p, dealt, taken, hn, leak, ln, ${troopsOfDeck} AS tr, ${bandsOf('bd')} AS bd,
-                            ${counters ? `${cardArray('o')} AS cn, ${cardArray('v')} AS cw` : 'NULL AS cn, NULL AS cw'}, ${extraOf} AS ex
-                     FROM g ORDER BY n DESC LIMIT ?3)
-      UNION ALL SELECT * FROM (${cardsOfG}) ${troopsOfG} ${gapsOfG}`).bind(since, until, TOP_DECKS),
-  ]) {
-    step(['range', 'grouping'][results.length]);
-    results.push(await q.all());
+             /* per opponent card (by slot, two to a column): games against it and wins */
+             ${Array.from({ length: cols }, (_, k) => `, ${counterSum(k)} AS c${k}`).join('')}
+      FROM s GROUP BY deck`;
+  // Tower troops as [[id, games, wins, three-crown wins]], the ones played only
+  const tr = troopIds.length ? `'[' || rtrim(${concatAll(troopIds.map(id =>
+    `CASE WHEN ${unpack(`q${id}`, 0)} > 0 THEN '[${id},' || ${unpack(`q${id}`, 0)} || ',' || ${unpack(`q${id}`, 1)} || ',' || ${unpack(`q${id}`, 2)} || '],' ELSE '' END`))}, ',') || ']'` : `'[]'`;
+  const row = `SELECT ${TALLY_BASE.slice(0, -1).join(', ')}, ${tr} AS tr${counterCols(c).map(x => `, ${x}`).join('')} FROM lg`;
+  // Every deck's troop and gap totals off lg, for the period / the untallied part
+  const troopTotals = `json_object(${troopIds.map(id => `'${id}', json_array(SUM(${unpack(`q${id}`, 0)}), SUM(${unpack(`q${id}`, 1)}), SUM(${unpack(`q${id}`, 2)}))`).join(', ')})`;
+  const gapTotals = `json_array(${gapVals('', v => `SUM(${v})`).join(', ')})`;
+  return { tk: `tk(k) AS (SELECT value FROM json_each(${tk}))`, s, g, row, troopTotals, gapTotals };
+}
+
+// The window's top decks, cards, troop and gap totals: stored days summed plus
+// the untallied matches (useTallies false: every match in the window, for testing)
+async function statsGrouping(env, st, oldMeta, since, until, useTallies = true) {
+  // Full tower HP: the highest left standing in a recent sample (a match where a
+  // side's towers went untouched), never below what earlier runs saw
+  step('tower sample');
+  const sample = await env.DB.prepare(`
+    SELECT ta, tb, ka, kb, sa, sb FROM matches WHERE time >= ?1 ORDER BY time DESC LIMIT ?2`).bind(since, TOWER_SAMPLE).all();
+  const c = await tallyContext(env, st, oldMeta, sample);
+  const { cardIds, slots } = c;
+  // The window's archived periods with a full tally (x set; those archived before
+  // 15 Nov 2026 have deck and card totals only): [tFrom, tTo), contiguous. The
+  // matches before and after it are tallied here.
+  step('range');
+  const [range, per] = await env.DB.batch([
+    env.DB.prepare(`SELECT (SELECT MIN(time) FROM matches WHERE time >= ?1) AS first, (SELECT MAX(time) FROM matches) AS last`).bind(since),
+    env.DB.prepare(`SELECT start, end, x FROM periods WHERE start >= ?1 ORDER BY start`).bind(since),
+  ]);
+  const tallied = [];
+  for (const p of useTallies ? per.results : []) {
+    if (!p.x) { if (tallied.length) break; continue; }
+    if (tallied.length && p.start !== tallied[tallied.length - 1].end) break;
+    tallied.push(p);
   }
-  const [range, both] = results;
+  const tFrom = tallied[0]?.start ?? since, tTo = tallied[tallied.length - 1]?.end ?? since;
+  const live = [['?1', '?5'], ['?6', '?2']];
+  const q = tallySQL(c, live, '?4');
+  // A top deck's games (i 0) or wins (i 1) against each card, in cardIds order, CHUNK to an array
+  const cardArray = i => {
+    const vals = cardIds.map(id => { const sl = slots.indexOf(id); return unpack(`COALESCE(tp.c${sl >> 1}, 0)`, 2 * (sl & 1) + i); }), parts = [];
+    for (let k = 0; k < vals.length; k += CHUNK) parts.push(`json_array(${vals.slice(k, k + CHUNK).join(', ')})`);
+    return `CASE WHEN tp.c0 IS NULL THEN NULL ELSE json_array(${parts.join(', ')}) END`;
+  };
+  const bandsOf = col => `json_array(${[0, 1, 2, 3].map(i => unpack(col, i)).join(', ')})`;
+  // Per deck: [games per gap bucket ×8, wins per gap bucket ×8, close wins, close losses, three-crowned losses]
+  const extraOf = p => `json_array(${gapVals(p).join(', ')}, ${[0, 1, 2].map(i => unpack(`${p}cg`, i)).join(', ')})`;
+  const nulls = n => Array(n).fill('NULL').join(', ');
+  const sums = ['n', 'w', 'd', 't', 'dealt', 'taken', 'hn', 'leak', 'ln', 'bd', 'z0', 'z1', 'y0', 'y1', 'cg', ...counterCols(c)];
+  // Players per top deck: player_days (every player, from 15 Nov 2026) and the untallied matches' sides
+  const liveSides = live.flatMap(([lo, hi]) => ['a', 'b'].map(A => `SELECT d${A}, p${A} FROM matches WHERE time >= ${lo} AND time < ${hi} AND d${A} IN (SELECT deck FROM tp)`)).join(' UNION ALL ');
+  // Top decks and every card in one statement. u: the stored days plus the
+  // untallied matches' tally, in the same columns; g sums them per deck.
+  step('grouping');
+  const both = await env.DB.prepare(`
+    WITH ${q.tk},
+    s AS (${q.s}),
+    lg AS MATERIALIZED (${q.g}),
+    u AS MATERIALIZED (
+      SELECT ${tallyCols(c)} FROM day_decks WHERE start >= ?5 AND start < ?6
+      UNION ALL ${q.row}),
+    g AS MATERIALIZED (SELECT deck, ${sums.map(x => `SUM(${x}) AS ${x}`).join(', ')} FROM u GROUP BY deck),
+    tp AS MATERIALIZED (SELECT * FROM g ORDER BY n DESC LIMIT ?3),
+    trs AS MATERIALIZED (
+      SELECT deck, json_group_array(json_array(troop, n, w, t)) AS tr FROM (
+        /* not "id": json_each has an id column of its own, which GROUP BY would take */
+        SELECT u.deck, j.value ->> 0 AS troop, SUM(j.value ->> 1) AS n, SUM(j.value ->> 2) AS w, SUM(j.value ->> 3) AS t
+        FROM u, json_each(u.tr) AS j WHERE u.deck IN (SELECT deck FROM tp) AND j.value ->> 0 IS NOT NULL GROUP BY u.deck, troop ORDER BY troop)
+      GROUP BY deck),
+    pl AS MATERIALIZED (
+      SELECT deck, COUNT(DISTINCT tag) AS p FROM (
+        SELECT deck, tag FROM player_days WHERE start >= ?5 AND start < ?6 AND deck IN (SELECT deck FROM tp)
+        UNION ALL ${liveSides})
+      GROUP BY deck)
+    SELECT * FROM (
+      SELECT 'd' AS kind, tp.deck AS k, tp.n, tp.w, tp.d, tp.t, pl.p, tp.dealt, tp.taken, tp.hn, tp.leak, tp.ln, trs.tr,
+             ${bandsOf('tp.bd')} AS bd, ${cardIds.length ? `${cardArray(0)} AS cn, ${cardArray(1)} AS cw` : 'NULL AS cn, NULL AS cw'}, ${extraOf('tp.')} AS ex
+      FROM tp LEFT JOIN trs ON trs.deck = tp.deck LEFT JOIN pl ON pl.deck = tp.deck
+      ORDER BY tp.n DESC)
+    UNION ALL
+    SELECT 'c', card, SUM(n), SUM(w), SUM(d), SUM(t), ${nulls(7)}, json_array(SUM(b1n), SUM(b1w), SUM(b2n), SUM(b2w)), NULL, NULL, NULL FROM (
+      SELECT card, n, w, d, t, b1n, b1w, b2n, b2w FROM card_days WHERE start >= ?5 AND start < ?6 AND card != '_'
+      UNION ALL
+      SELECT j.value, lg.n, lg.w, lg.d, lg.t, ${[0, 1, 2, 3].map(i => unpack('lg.bd', i)).join(', ')}
+      FROM lg, json_each('["' || replace(lg.deck, ',', '","') || '"]') AS j)
+    GROUP BY card
+    UNION ALL SELECT 'x', ${q.troopTotals}, ${nulls(15)} FROM lg
+    UNION ALL SELECT 'z', ${q.gapTotals}, ${nulls(15)} FROM lg`)
+    .bind(since, until, TOP_DECKS, JSON.stringify(c.topKeys), tFrom, tTo).all();
+  return { c, sample, range, per, both, tallied };
+}
+
+async function computeStats(env, now) {
+  step('state');
+  const st = await getState(env);
+  const since = Math.floor((now - WINDOW_DAYS * DAY) / 1000), until = Math.floor(now / 1000) + 60;
+  const oldMeta = JSON.parse((await env.DB.prepare(`SELECT v FROM state WHERE k = 'meta'`).first())?.v || 'null');
+  const { c, sample, range, per, both, tallied } = await statsGrouping(env, st, oldMeta, since, until);
+  const { towers, cardIds } = c;
+  const results = [range, per, both];
+  const counters = c.topKeys.length > 0 && cardIds.length > 0, bands = c.bands;
   // Trend lines: each run's card tally (a 7-day window) is that day's point — the
   // day's last run replaces earlier ones. Nothing extra is scanned for it. With
   // no history yet, the previous run's stats seed a first point.
@@ -493,15 +579,18 @@ async function computeStats(env, now) {
     act.seeded = true;
   }
   const reads = rowsRead(results) + rowsRead(stored) + rowsRead([sample]) + (seed ? rowsRead([seed]) : 0) + 2;
-  const tx = JSON.parse(both.results.find(r => r.kind === 'x')?.k || '{}'), names = JSON.parse(st.troop_names || '{}');
+  const names = JSON.parse(st.troop_names || '{}');
+  // Troop and gap totals: the untallied matches' (rows x, z) plus each stored period's (periods.x)
+  const archived = tallied.map(p => JSON.parse(p.x));
+  const troopTot = {};
+  for (const [id, v] of Object.entries(JSON.parse(both.results.find(r => r.kind === 'x')?.k || '{}'))) if (v?.[0]) troopTot[id] = [v[0] || 0, v[1] || 0, v[2] || 0];
+  for (const a of archived) for (const [id, n, w, t3] of a.tr || []) { const e = (troopTot[id] ||= [0, 0, 0]); e[0] += n || 0; e[1] += w || 0; e[2] += t3 || 0; }
   const avg = (sum, n) => n ? Math.round(sum / n * 10) / 10 : null;
   const bandsOfRow = r => (JSON.parse(r.bd || 'null') || []).concat([0, 0, 0, 0]).slice(0, 4).map(v => v || 0);
-  const troopsOfRow = r => {
-    const a = JSON.parse(r.tr || '[]');
-    return troopIds.map((id, i) => [id, a[3 * i] || 0, a[3 * i + 1] || 0, a[3 * i + 2] || 0]).filter(x => x[1] > 0);
-  };
+  const troopsOfRow = r => JSON.parse(r.tr || '[]').map(x => [+x[0], x[1] || 0, x[2] || 0, x[3] || 0]).filter(x => x[1] > 0);
   // Skill adjustment: the win rate at each rating gap, from every deck played
   const zr = JSON.parse(both.results.find(r => r.kind === 'z')?.k || '[]');
+  for (const a of archived) (a.z || []).forEach((v, i) => { zr[i] = (zr[i] || 0) + (v || 0); });
   const gapRates = Array.from({ length: GAPS }, (_, i) => [zr[i] || 0, zr[GAPS + i] || 0]);
   const exOf = r => JSON.parse(r.ex || '[]');
   // A deck's expected wins: its games at each gap × the win rate there
@@ -545,7 +634,7 @@ async function computeStats(env, now) {
     // the rest of a deck's or card's games were below lo
     bands,
     // [tower troop id, name, art, games, wins, three-crown wins], most played first
-    troops: troopIds.map(id => [id, names[id]?.[0] || null, names[id]?.[1] || null, tx[`n${id}`] || 0, tx[`w${id}`] || 0, tx[`t${id}`] || 0])
+    troops: Object.entries(troopTot).map(([id, v]) => [+id, names[id]?.[0] || null, names[id]?.[1] || null, ...v])
       .filter(r => r[3] > 0).sort((a, b) => b[3] - a[3]),
     // Full tower HP the damage figures are measured against
     towers,
@@ -644,22 +733,14 @@ async function computeTop(env, now) {
 async function archivePeriod(env, now, st) {
   const startMs = +st.archive_to, endMs = periodEnd(startMs);
   const a = startMs / 1000, b = endMs / 1000, season = seasonStartOf(startMs) / 1000;
+  // The full tally per deck (tower damage, rating bands and gaps, close games,
+  // troops, counters for the top decks), so the stats can sum stored days
   step('archive decks');
-  const dayRes = await env.DB.prepare(`
-    INSERT OR REPLACE INTO day_decks (start, deck, n, w, d, t, tr)
-    SELECT ?1, deck, SUM(n), SUM(w), SUM(d), SUM(t), json_group_array(json_array(tr, n, w, t)) FROM (
-      SELECT deck, tr, COUNT(*) AS n, SUM(w) AS w, SUM(d) AS d, SUM(t) AS t FROM (
-        SELECT da AS deck, ta AS tr, ca > cb AS w, ca = cb AS d, ca > cb AND ca = 3 AS t FROM matches WHERE time >= ?1 AND time < ?2
-        UNION ALL SELECT db, tb, cb > ca, ca = cb, cb > ca AND cb = 3 FROM matches WHERE time >= ?1 AND time < ?2)
-      GROUP BY deck, tr)
-    GROUP BY deck`).bind(a, b).run();
+  const dayRes = await archiveDecks(env, st, a, b);
   step('archive totals');
+  const [cardDays, periodRow, playerDays] = periodTotals(env, a, b, season);
   const batch = await env.DB.batch([
-    env.DB.prepare(`
-      INSERT OR REPLACE INTO card_days (start, card, n, w, d, t)
-      SELECT ?1, j.value, SUM(n), SUM(w), SUM(d), SUM(t) FROM day_decks, json_each('["' || replace(deck, ',', '","') || '"]') AS j
-      WHERE start = ?1 GROUP BY j.value
-      UNION ALL SELECT ?1, '_', COALESCE(SUM(n), 0) / 2, 0, 0, 0 FROM day_decks WHERE start = ?1`).bind(a),
+    cardDays,
     env.DB.prepare(`
       INSERT INTO season_decks (season, deck, n, w, d, t) SELECT ?2, deck, n, w, d, t FROM day_decks WHERE start = ?1
       ON CONFLICT (season, deck) DO UPDATE SET n = n + excluded.n, w = w + excluded.w, d = d + excluded.d, t = t + excluded.t`).bind(a, season),
@@ -671,15 +752,8 @@ async function archivePeriod(env, now, st) {
       SELECT ?2, j.value ->> 0 AS troop, SUM(j.value ->> 1), SUM(j.value ->> 2), SUM(j.value ->> 3)
       FROM day_decks, json_each(day_decks.tr) AS j WHERE start = ?1 AND j.value ->> 0 IS NOT NULL GROUP BY troop
       ON CONFLICT (season, troop) DO UPDATE SET n = n + excluded.n, w = w + excluded.w, t = t + excluded.t`).bind(a, season),
-    env.DB.prepare(`INSERT OR REPLACE INTO periods (start, end, season, matches) SELECT ?1, ?2, ?3, COALESCE(SUM(n), 0) / 2 FROM day_decks WHERE start = ?1`).bind(a, b, season),
-    // Per tracked player and deck, for /top: a week of these is ~30k rows instead
-    // of re-reading the week's matches (~1M rows with the grouping, Nov 2026)
-    env.DB.prepare(`
-      INSERT OR REPLACE INTO player_days (start, tag, deck, n, w)
-      SELECT ?1, tag, deck, COUNT(*), SUM(w) FROM (
-        SELECT pa AS tag, da AS deck, ca > cb AS w FROM matches WHERE time >= ?1 AND time < ?2
-        UNION ALL SELECT pb, db, cb > ca FROM matches WHERE time >= ?1 AND time < ?2)
-      WHERE tag IN (SELECT tag FROM players) GROUP BY tag, deck`).bind(a, b),
+    periodRow,
+    playerDays,
     env.DB.prepare(`INSERT INTO state (k, v) VALUES ('archive_to', ?1) ON CONFLICT (k) DO UPDATE SET v = excluded.v`).bind(String(endMs)),
   ]);
   let reads = rowsRead([dayRes]) + rowsRead(batch);
@@ -690,6 +764,47 @@ async function archivePeriod(env, now, st) {
   if (build) { step('archive season'); reads += await buildSeason(env, now, season); }
   await countReads(env, 'archive', now, reads, { archive_at: now, ...(build ? { season_built_at: now } : {}) });
   step('');
+}
+
+// A period's day_decks rows: the full tally per deck (tower damage, rating bands
+// and gaps, close games, troops, counters for the top decks), so the stats can sum stored days
+async function archiveDecks(env, st, a, b) {
+  const meta = await env.DB.prepare(`SELECT v FROM state WHERE k = 'meta'`).first();
+  const c = await tallyContext(env, st, JSON.parse(meta?.v || 'null'), null);
+  const q = tallySQL(c, [['?1', '?2']], '?3');
+  return env.DB.prepare(`
+    WITH ${q.tk}, s AS (${q.s}), lg AS (${q.g})
+    INSERT OR REPLACE INTO day_decks (start, ${tallyCols(c)}) SELECT ?1, ${tallyCols(c)} FROM (${q.row})`).bind(a, b, JSON.stringify(c.topKeys)).run();
+}
+
+// A period's card totals (with rating bands), its periods row and the per-player
+// deck tallies — everything of the archive but the running season totals
+function periodTotals(env, a, b, season) {
+  return [
+    env.DB.prepare(`
+      INSERT OR REPLACE INTO card_days (start, card, n, w, d, t, b1n, b1w, b2n, b2w)
+      SELECT ?1, j.value, SUM(n), SUM(w), SUM(d), SUM(t), ${[0, 1, 2, 3].map(i => `SUM(${unpack('bd', i)})`).join(', ')}
+      FROM day_decks, json_each('["' || replace(deck, ',', '","') || '"]') AS j
+      WHERE start = ?1 GROUP BY j.value
+      UNION ALL SELECT ?1, '_', COALESCE(SUM(n), 0) / 2, 0, 0, 0, NULL, NULL, NULL, NULL FROM day_decks WHERE start = ?1`).bind(a),
+    // x: the period's rating gap and tower troop totals over every deck; set
+    // means the period's day_decks hold the full tally the stats can sum
+    env.DB.prepare(`
+      INSERT OR REPLACE INTO periods (start, end, season, matches, x)
+      SELECT ?1, ?2, ?3, COALESCE(SUM(n), 0) / 2, json_object('z', json_array(${gapVals('', v => `COALESCE(SUM(${v}), 0)`).join(', ')}),
+        'tr', json(COALESCE((SELECT json_group_array(json_array(troop, n, w, t)) FROM (
+          SELECT j.value ->> 0 AS troop, SUM(j.value ->> 1) AS n, SUM(j.value ->> 2) AS w, SUM(j.value ->> 3) AS t
+          FROM day_decks, json_each(day_decks.tr) AS j WHERE start = ?1 AND j.value ->> 0 IS NOT NULL GROUP BY troop)), '[]')))
+      FROM day_decks WHERE start = ?1`).bind(a, b, season),
+    // Per player and deck: /top sums a week of these (tracked players) instead of
+    // re-reading the week's matches, the stats count each deck's players from them
+    env.DB.prepare(`
+      INSERT OR REPLACE INTO player_days (start, tag, deck, n, w)
+      SELECT ?1, tag, deck, COUNT(*), SUM(w) FROM (
+        SELECT pa AS tag, da AS deck, ca > cb AS w FROM matches WHERE time >= ?1 AND time < ?2
+        UNION ALL SELECT pb, db, cb > ca FROM matches WHERE time >= ?1 AND time < ?2)
+      GROUP BY tag, deck`).bind(a, b),
+  ];
 }
 
 // One season's stats for /season, and the list of seasons for /seasons
