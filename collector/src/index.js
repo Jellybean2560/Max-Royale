@@ -27,7 +27,11 @@
 const MINUTE = 60e3, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 const BOARD_EVERY = 6 * HOUR;       // leaderboard refresh
 const PRUNE_EVERY = DAY;
-const KEEP_DAYS = 90;               // matches older than this are deleted (storage only: the stats read a 7-day window)
+// Raw matches older than this are deleted. The stats, /top and the archive only
+// read the last ~9 days (everything older lives on in the daily tallies, kept
+// forever); at 90 days the matches alone would have filled D1's free 500 MB by
+// Jan 2027 (~5 MB a day, Nov 2026)
+const KEEP_DAYS = 30;
 const WINDOW_DAYS = 7;              // the stats cover this many days
 const PLAYERS_PER_RUN = 5;          // battle logs fetched per minute (~7,200 a day max)
 const RETRY_AFTER = 30 * MINUTE;    // a failed periodic job or battle log waits this long
@@ -54,6 +58,12 @@ const refreshEvery = (reads, share) => Math.min(MAX_REFRESH, Math.max(MIN_REFRES
 // queries counted; heavy jobs leave POLL_RESERVE for polling (~150k a day),
 // the leaderboard, pruning and /status
 const READ_BUDGET = 2.3e6, POLL_RESERVE = 250e3;   // raised from 2M by the user, 10 Nov 2026
+// D1's free 100k rows written a day (index entries count too; Cloudflare mails
+// when it's hit, 14 Nov 2026). Writes are counted like reads; the archive and
+// prune only run if their last run's writes leave WRITE_RESERVE for polling
+// (~25k a day), and everything but the stats and /top stops at WRITE_BUDGET,
+// below the limit for what isn't counted (state rows, manual work)
+const WRITE_BUDGET = 92e3, WRITE_RESERVE = 30e3, WRITE_GUESS = { archive: 12e3, prune: 25e3 };
 // next_poll of players who fell off the leaderboard: past the end of the poll
 // index's range, so picking who to poll no longer walks over them (700 stale
 // overdue rows were read on every poll — ~1M rows a day — before this)
@@ -78,7 +88,9 @@ const pause = () => new Promise(r => setTimeout(r, D1_PAUSE));
 const TOWER_SAMPLE = 3000;          // recent matches read to learn full tower HP
 // The archive (kept forever): a period is tallied once it's this old — a
 // player's log is read at most every 12 h, so their matches can arrive that late
-const ARCHIVE_LAG = 13 * HOUR;
+// 13 h left ~1.5% of a day's matches out (14 Nov 2026: players woken or polled
+// late); after 25 h fewer than 0.2% still arrive
+const ARCHIVE_LAG = 25 * HOUR;
 const SEASON_DECKS = 300;           // decks served per season
 const RIVALS_EVERY = 72 * HOUR;     // /top recounts the rivalries every third day (~300k rows, Nov 2026)
 const TOP_STARVED = 48 * HOUR;      // /top this old jumps ahead of the stats
@@ -169,15 +181,20 @@ async function tick(env) {
   if (!st.started_at) await setState(env, { started_at: now });
   // A heavy job runs only if what it read last time still fits in today's budget
   const fits = job => readsToday(st, now) + (+st[`${job}_reads`] || 0) <= READ_BUDGET - POLL_RESERVE;
-  if (due('board', BOARD_EVERY)) return run('board', refreshBoard);
+  // The heavy writers run only if what they wrote last time leaves room for polling
+  const fitsWrites = job => writesToday(st, now) + (+st[`${job}_writes`] || WRITE_GUESS[job]) <= WRITE_BUDGET - WRITE_RESERVE;
+  const writesFull = writesToday(st, now) >= WRITE_BUDGET;
+  if (!writesFull && due('board', BOARD_EVERY)) return run('board', refreshBoard);
   // /top two days stale (stats kept taking the day's budget first): it goes before the stats this once
   if (+st.matches_total > 0 && now - (+st.top_at || 0) > TOP_STARVED && due('top', 0) && fits('top')) return run('top', computeTop);
   if (+st.matches_total > 0 && due('stats', refreshEvery(+st.stats_reads, STATS_SHARE)) && fits('stats')) return run('stats', computeStats);
   const backlog = +st.archive_to && periodEnd(+st.archive_to) <= now - ARCHIVE_LAG - DAY;
   if (+st.matches_total > 0 && due('top', Math.max(refreshEvery(+st.top_reads, TOP_SHARE), backlog ? TOP_EVERY_BACKLOG : 0)) && fits('top')) return run('top', computeTop);
   // The archive takes one finished period a run, oldest first (a backlog drains as the budget allows)
-  if (+st.archive_to && periodEnd(+st.archive_to) <= now - ARCHIVE_LAG && now - (+st.archive_try_at || 0) > 10 * MINUTE && fits('archive')) return run('archive', archivePeriod);
-  if (due('prune', PRUNE_EVERY)) return run('prune', prune);
+  if (+st.archive_to && periodEnd(+st.archive_to) <= now - ARCHIVE_LAG && now - (+st.archive_try_at || 0) > 10 * MINUTE && fits('archive') && fitsWrites('archive')) return run('archive', archivePeriod);
+  if (due('prune', PRUNE_EVERY) && fitsWrites('prune')) return run('prune', prune);
+  // Near the day's write limit: wait for midnight UTC (a log polled late still has 30 battles)
+  if (writesFull) return;
   return pollPlayers(env, now, st);
 }
 
@@ -185,10 +202,15 @@ async function tick(env) {
 const dayKey = now => new Date(now).toISOString().slice(0, 10);
 const readsToday = (st, now) => st.reads_day === dayKey(now) ? +st.reads_count || 0 : 0;
 const rowsRead = results => results.reduce((sum, r) => sum + (r?.meta?.rows_read || 0), 0);
+const writesToday = (st, now) => st.writes_day === dayKey(now) ? +st.writes_count || 0 : 0;
+const rowsWritten = results => results.reduce((sum, r) => sum + (r?.meta?.rows_written || 0), 0);
+// Today's read and write counters with a job's added
+const usage = (st, now, reads, writes) => ({ reads_day: dayKey(now), reads_count: readsToday(st, now) + reads,
+  writes_day: dayKey(now), writes_count: writesToday(st, now) + writes });
 // Adds a job's reads to today's count and remembers them as its next estimate
-async function countReads(env, job, now, reads, extra) {
+async function countReads(env, job, now, reads, extra, writes = 0) {
   const st = await getState(env);
-  await setState(env, { ...extra, reads_day: dayKey(now), reads_count: readsToday(st, now) + reads, [`${job}_reads`]: reads });
+  await setState(env, { ...extra, ...usage(st, now, reads, writes), [`${job}_reads`]: reads, ...(writes ? { [`${job}_writes`]: writes } : {}) });
 }
 
 // The app's proxy Worker forwards the path to the Clash Royale API
@@ -204,28 +226,29 @@ async function refreshBoard(env, now, st) {
   const board = await api(env, '/locations/global/pathoflegend/players?limit=1000');
   const items = (board.items || []).map(p => ({ tag: p.tag, name: p.name, rank: p.rank, rating: p.eloRating, clan: p.clan?.name || null }));
   if (!items.length) throw new Error('empty leaderboard');
+  const used = [];
   // New players are due at once; existing ones keep their schedule
-  await env.DB.prepare(`
+  used.push(await env.DB.prepare(`
     INSERT INTO players (tag, name, rank, rating, clan, seen_at, next_poll)
     SELECT json_extract(value, '$.tag'), json_extract(value, '$.name'), json_extract(value, '$.rank'),
            json_extract(value, '$.rating'), json_extract(value, '$.clan'), ?2, ?2
     FROM json_each(?1) WHERE true
     ON CONFLICT (tag) DO UPDATE SET name = excluded.name, rank = excluded.rank,
       rating = excluded.rating, clan = excluded.clan, seen_at = excluded.seen_at,
-      next_poll = CASE WHEN players.next_poll >= ${PARKED} THEN excluded.next_poll ELSE players.next_poll END`).bind(JSON.stringify(items), now).run();
+      next_poll = CASE WHEN players.next_poll >= ${PARKED} THEN excluded.next_poll ELSE players.next_poll END`).bind(JSON.stringify(items), now).run());
   const full = items.length >= MIN_BOARD;
   if (full) {
     // Players no longer on it are parked until they come back
-    await env.DB.prepare(`UPDATE players SET next_poll = ${PARKED} WHERE seen_at < ?1 AND next_poll < ${PARKED}`).bind(now).run();
+    used.push(await env.DB.prepare(`UPDATE players SET next_poll = ${PARKED} WHERE seen_at < ?1 AND next_poll < ${PARKED}`).bind(now).run());
   } else if (st.full_board_at) {
     // Season start: last season's top 1,000 are woken (once) and kept polled
-    await env.DB.prepare(`UPDATE players SET next_poll = ?2 WHERE next_poll >= ${PARKED} AND seen_at >= ?1`).bind(+st.full_board_at - HOUR, now).run();
+    used.push(await env.DB.prepare(`UPDATE players SET next_poll = ?2 WHERE next_poll >= ${PARKED} AND seen_at >= ?1`).bind(+st.full_board_at - HOUR, now).run());
   }
   // Each UTC day's first refresh keeps everyone's rating, for the climb over a day / week
-  await env.DB.prepare(`
+  used.push(await env.DB.prepare(`
     INSERT OR IGNORE INTO ratings (day, tag, rating)
-    SELECT ?2, json_extract(value, '$.tag'), json_extract(value, '$.rating') FROM json_each(?1)`).bind(JSON.stringify(items), dayKey(now)).run();
-  await setState(env, { board_at: now, board_size: items.length, ...(full ? { full_board_at: now } : {}) });
+    SELECT ?2, json_extract(value, '$.tag'), json_extract(value, '$.rating') FROM json_each(?1)`).bind(JSON.stringify(items), dayKey(now)).run());
+  await setState(env, { board_at: now, board_size: items.length, ...(full ? { full_board_at: now } : {}), ...usage(st, now, rowsRead(used), rowsWritten(used) + 3) });
 }
 
 // API timestamps look like 20261012T105805.000Z → unix seconds
@@ -321,7 +344,7 @@ async function pollPlayers(env, now, st) {
     FROM json_each(?1) AS j WHERE players.tag = json_extract(j.value, '$.tag')`).bind(JSON.stringify(updates)).run();
   const reads = rowsRead([dueRes, insertRes, updateRes]) + 25;  // + the tick's state read
   await setState(env, {
-    reads_day: dayKey(now), reads_count: readsToday(st, now) + reads,
+    ...usage(st, now, reads, rowsWritten([insertRes, updateRes]) + 4),  // + the state rows
     last_poll_at: now,
     polls_total: (+st.polls_total || 0) + due.length,
     matches_total: (+st.matches_total || 0) + inserted,
@@ -658,7 +681,7 @@ async function computeStats(env, now) {
     decks.filter(r => r.cn).map(r => `[${JSON.stringify(r.k)},${r.cn},${r.cw}]`).join(',')}]}` : null;
   step('save');
   await countReads(env, 'stats', now, reads, { stats_at: now, meta: JSON.stringify(meta), history: JSON.stringify(hist), deck_days: JSON.stringify(deckDays),
-    ...(counterJSON ? { counters: counterJSON } : {}), ...(seed ? { activity: JSON.stringify(act) } : {}) });
+    ...(counterJSON ? { counters: counterJSON } : {}), ...(seed ? { activity: JSON.stringify(act) } : {}) }, 10);
   step('');
 }
 
@@ -720,7 +743,7 @@ async function computeTop(env, now) {
     rivals_at: fresh ? now : +st.rivals_at,
   };
   await countReads(env, 'top', now, reads, { top_at: now, top: JSON.stringify(top),
-    ...(fresh ? { rivals: JSON.stringify(rivals), rivals_at: now, rivals_reads: rowsRead([pairs]) } : {}) });
+    ...(fresh ? { rivals: JSON.stringify(rivals), rivals_at: now, rivals_reads: rowsRead([pairs]) } : {}) }, 8);
   await setState(env, { top_reads: estimate });
 }
 
@@ -757,12 +780,13 @@ async function archivePeriod(env, now, st) {
     env.DB.prepare(`INSERT INTO state (k, v) VALUES ('archive_to', ?1) ON CONFLICT (k) DO UPDATE SET v = excluded.v`).bind(String(endMs)),
   ]);
   let reads = rowsRead([dayRes]) + rowsRead(batch);
+  const writes = rowsWritten([dayRes, ...batch]) + 4;  // + the season's JSON and state rows
   // The season's stats are rebuilt when the archive is caught up, or at a season's last period during a backlog
   // (and at least every 6 h, so a long backlog still shows its progress)
   const caughtUp = periodEnd(endMs) > now - ARCHIVE_LAG, seasonDone = endMs >= nextSeasonStart(startMs);
   const build = caughtUp || seasonDone || now - (+st.season_built_at || 0) > 6 * HOUR;
   if (build) { step('archive season'); reads += await buildSeason(env, now, season); }
-  await countReads(env, 'archive', now, reads, { archive_at: now, ...(build ? { season_built_at: now } : {}) });
+  await countReads(env, 'archive', now, reads, { archive_at: now, ...(build ? { season_built_at: now } : {}) }, writes);
   step('');
 }
 
@@ -840,14 +864,15 @@ async function buildSeason(env, now, season) {
 
 async function prune(env, now, st) {
   const cutoff = Math.floor((now - KEEP_DAYS * DAY) / 1000);
-  await env.DB.batch([
+  const res = await env.DB.batch([
     env.DB.prepare(`DELETE FROM matches WHERE time < ?1`).bind(cutoff),
     env.DB.prepare(`DELETE FROM player_days WHERE start < ?1`).bind(Math.floor((now - PLAYER_DAYS_KEEP * DAY) / 1000)),
     // Off the leaderboard for a week: stop tracking
     // (last season's top 1,000 are kept while the new board is short)
     env.DB.prepare(`DELETE FROM players WHERE seen_at < ?1`).bind(Math.min(now - 7 * DAY, pollFrom(st))),
   ]);
-  await setState(env, { prune_at: now });
+  // Each deleted match is a row written: ~15–25k a day once matches reach KEEP_DAYS
+  await setState(env, { prune_at: now, prune_writes: rowsWritten(res), ...usage(st, now, rowsRead(res), rowsWritten(res) + 2) });
 }
 
 async function getState(env) {
