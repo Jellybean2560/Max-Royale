@@ -1442,7 +1442,7 @@ window.setTheme = function(v, ev) {
 // replaces them.
 const BACKUP_KEYS = ['cr_clan_log_v1', 'cr_player_tag', 'cr_saved_accounts', 'cr_friends', 'cr_friends_sort',
                      'cr_deck_history_v1', 'cr_matchups_v1', 'cr_coplayers_v1', 'cr_trophy_history_v1',
-                     'cr_progress_v1', 'cr_clan_tools', 'cr_play_v1', 'cr_goals_v1', 'cr_saved_decks'];
+                     'cr_progress_v1', 'cr_clan_tools', 'cr_play_v1', 'cr_goals_v1', 'cr_saved_decks', 'cr_boat_v1'];
 window.exportBackup = function() {
   const data = {};
   BACKUP_KEYS.forEach(k => { const v = localStorage.getItem(k); if (v != null) data[k] = v; });
@@ -4132,6 +4132,7 @@ function recordHistory(data, battles, at = Date.now()) {
   recordTrophies(data, battles, at);
   recordProgress(data, at);
   recordPlay(data.tag, battles, at);
+  recordBoat(data.tag, battles, at);
 }
 // Tags whose history stays: your accounts, saved friends and the loaded profile,
 // plus the HISTORY_OTHERS most recently seen other players (clan members etc.)
@@ -4914,6 +4915,67 @@ function archetypeRecordHTML(data, battles, scope) {
     + `<div style="font-size:11px;color:var(--muted);margin-top:6px">Opponent decks named by their win condition, as in Meta → Archetypes · most faced first</div>`;
 }
 
+// ── Boat attacks: a record per deck, kept on the device like the other history.
+// A boat attack is won by destroying at least one tower (boatBattleWon). Attacks on
+// a boat with towers already down (prevTowersDestroyed) are easier, so they're
+// counted apart too. cr_boat_v1: per tag { since, at, seen: [battleTime],
+// decks: { deck key: [attacks, won, towers destroyed, attacks on an untouched boat, those won] } }
+const BOAT_KEY = 'cr_boat_v1', BOAT_SEEN_MAX = 300;
+const isBoatAttack = b => b?.type === 'boatBattle' && b.boatBattleSide === 'attacker' && b.team?.[0]?.cards?.length === 8;
+function tallyBoat(entry, battles) {
+  const seen = new Set(entry.seen);
+  let changed = false;
+  for (const b of battles || []) {
+    if (!isBoatAttack(b) || seen.has(b.battleTime)) continue;
+    const k = deckKeyOf(b.team[0].cards), r = (entry.decks[k] ||= [0, 0, 0, 0, 0]);
+    const won = b.boatBattleWon ? 1 : 0, fresh = !b.prevTowersDestroyed;
+    r[0]++; r[1] += won; r[2] += b.newTowersDestroyed || 0;
+    if (fresh) { r[3]++; r[4] += won; }
+    seen.add(b.battleTime); changed = true;
+  }
+  entry.seen = [...seen].sort().slice(-BOAT_SEEN_MAX);
+  return changed;
+}
+function recordBoat(tag, battles, at = Date.now()) {
+  if (!tag || !(battles || []).some(isBoatAttack)) return;
+  try {
+    const all = JSON.parse(localStorage.getItem(BOAT_KEY) || '{}');
+    const entry = all[tag] || { since: at, seen: [], decks: {} };
+    if (!tallyBoat(entry, battles)) return;
+    entry.at = at;
+    all[tag] = entry;
+    pruneHistoryTags(all, e => e.at || e.since || 0);
+    localStorage.setItem(BOAT_KEY, JSON.stringify(all));
+  } catch(e) {}
+}
+// A deck key (deckKeyOf: "Name[evo]|Name|…") as cards in game slot order
+const deckKeyCards = key => slotOrder(key.split('|').map(x => {
+  const m = x.match(/^(.*?)(?:\[(evo|hero)\])?$/);
+  return { name: m[1], form: m[2] || '', champion: isChampionCard(m[1]) };
+}), false);
+function boatRecordHTML(data, battles, scope) {
+  let e = null;
+  try { e = JSON.parse(localStorage.getItem(BOAT_KEY) || '{}')[data.tag]; } catch(err) {}
+  if (!e) { e = { seen: [], decks: {} }; tallyBoat(e, battles); }
+  const rows = Object.entries(e.decks).map(([key, [n, w, t, fn, fw]]) => ({ key, n, w, t, fn, fw })).sort((a, b) => b.n - a.n || b.w - a.w);
+  const tot = rows.reduce((s, r) => [s[0] + r.n, s[1] + r.w, s[2] + r.t], [0, 0, 0]);
+  const since = e.since ? ` since ${new Date(e.since).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : '';
+  const head = `<div style="${OV_SECTION_STYLE}">Boat Attacks <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--muted)">· ${tot[0]} attack${tot[0] === 1 ? '' : 's'}${since}</span></div>`;
+  if (!rows.length) return head + `<div style="font-size:12px;color:var(--muted)">No boat attacks seen yet — they're counted as ${scope === 'p' ? 'you attack' : 'they attack'} in River Race. Meta → You suggests boat decks from other players' attacks.</div>`;
+  const art = buildCardArtMap(battles);
+  const pc = (a, b) => `${Math.round(a / Math.max(b, 1) * 100)}%`;
+  return head
+    + `<div style="font-size:12px;margin-bottom:6px">Won <b class="${rateCls(tot[1] / tot[0])}">${pc(tot[1], tot[0])}</b> (a tower or more) · ${(tot[2] / tot[0]).toFixed(1)} towers an attack</div>`
+    + rows.map(r => `<div style="margin-bottom:8px">
+        <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:3px;margin-bottom:3px">${deckKeyCards(r.key).map(c => deckTileHTML(c.name, c.form, art[c.name], 'deck-list-tile')).join('')}</div>
+        <div style="font-size:12px;display:flex;justify-content:space-between;gap:8px">
+          <span>${r.n} attack${r.n === 1 ? '' : 's'} · ${(r.t / r.n).toFixed(1)} towers each${r.fn && r.fn < r.n ? ` · untouched boats ${r.fw}/${r.fn}` : ''}</span>
+          <span class="${rateCls(r.w / r.n)}" style="font-weight:700">${r.w}/${r.n} · ${pc(r.w, r.n)}</span>
+        </div>
+      </div>`).join('')
+    + `<div style="font-size:11px;color:var(--muted);margin-top:2px">Won = at least one tower destroyed · "untouched boats": attacks on a boat with no tower down yet · Meta → You has the boat decks that win most for other players</div>`;
+}
+
 // ── Streaks and tilt, from the battle log (friendlies and boat battles left out) ──
 const TILT_GAP_MS = 30 * 60 * 1000;  // the next game counts as "right after" within this
 const competitiveBattles = battles => (battles || []).filter(b => b.battleTime && !/friendly|clanMate|boat/i.test(b.type || ''));
@@ -5089,6 +5151,8 @@ function battleStatsHTML(data, battles, scope = 'p') {
       ${levelAdvantageHTML(data, battles, scope)}
 
       ${momentumHTML(battles, scope)}
+
+      ${boatRecordHTML(data, battles, scope)}
 
       ${playTimesHTML(data, battles, scope)}
 
@@ -8647,6 +8711,11 @@ function warSetHTML(P, data) {
   const W = _metaWar?.data?.decks ? _metaWar.data : null;
   const owned = Object.fromEntries((data.cards || []).map(c => [c.id, c]));
   const lvl = pc => toDisplayLevel((pc.rarity || 'common').toLowerCase(), pc.level);
+  const chip = (on, label, fn) => `<button class="filter-btn ${on ? 'active' : ''}" onclick="${fn}">${label}</button>`;
+  const sizeChips = `<div class="filter-bar" style="margin-bottom:${_warSize === 'boat' ? 10 : 6}px">
+        ${chip(_warSize === 4, 'River Race · 4', 'setWarSize(4)')}${chip(_warSize === 3, 'Duel · 3', 'setWarSize(3)')}${chip(_warSize === 'boat', '⛵ Boat attack', "setWarSize('boat')")}
+      </div>`;
+  if (_warSize === 'boat') return boatDecksHTML(W, owned, lvl, data, sizeChips);
   const cand = new Map();  // by card set (forms aside): the best-scoring version
   const add = (key, n, w, level, src) => {
     const cards = metaDeckCards(key);
@@ -8665,7 +8734,6 @@ function warSetHTML(P, data) {
   if (_warSource === 'all') P.decks.filter(d => d.n >= META_FIT_MIN_GAMES).forEach(d => add(d.key, d.n, d.w, null, 'ranked'));
   const pool = [...cand.values()].sort((a, b) => b.score - a.score).slice(0, WAR_POOL);
   const set = pool.length >= _warSize ? bestWarSet(pool, _warSize) : null;
-  const chip = (on, label, fn) => `<button class="filter-btn ${on ? 'active' : ''}" onclick="${fn}">${label}</button>`;
   const art = buildCardArtMap([]);
   const note = W
     ? `${fmtNum(W.games)} war games collected${W.first ? ` since ${new Date(W.first).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : ''} — ${warCount} of their decks (${WAR_MIN_GAMES}+ games) use only cards you've unlocked.${_warSource === 'all' && warCount < 40 ? ' Until there are more, top ranked decks fill in.' : ''}`
@@ -8673,11 +8741,9 @@ function warSetHTML(P, data) {
     : _metaWar?.error ? `War games couldn't be loaded (${esc(_metaWar.error)}) — using top ranked decks.` : 'Loading war games…';
   return `
     <div class="card">
-      <h3 style="margin-bottom:6px">⚔️ War deck set</h3>
+      <h3 style="margin-bottom:6px">⚔️ War decks</h3>
       <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${_warSize} decks without a card in two of them, from your unlocked cards. Ranked by win rate (pulled toward 50% for decks with few games), minus ${Math.round(WAR_LEVEL_PENALTY * 100)} points per level your cards sit below the level the deck is usually played at — war has no level cap. ${note}</div>
-      <div class="filter-bar" style="margin-bottom:6px">
-        ${chip(_warSize === 4, 'River Race · 4', 'setWarSize(4)')}${chip(_warSize === 3, 'Duel · 3', 'setWarSize(3)')}
-      </div>
+      ${sizeChips}
       <div class="filter-bar" style="margin-bottom:10px">
         ${chip(_warSource === 'all', 'War + ranked decks', "setWarSource('all')")}${chip(_warSource === 'war', 'War games only', "setWarSource('war')")}
       </div>
@@ -8691,6 +8757,54 @@ function warSetHTML(P, data) {
               <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
               <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="upgradeDeck('${esc(names)}')">💰 Upgrade Cost</button>
               ${starBtnHTML(d.cards.map(c => ({ name: c.name, form: c.form })), `War set · ${wr}% win rate`)}
+            </div>
+          </div>`;
+        }).join('')}
+    </div>`;
+}
+
+// Boat attack decks: other players' boat attacks (/war's boat, found in River Race
+// logs by the collector — top players hardly attack boats) per deck: won = at least
+// one tower destroyed. Decks you can build, ranked like the war set: win rate pulled
+// toward the overall boat win rate (BOAT_PRIOR attacks' worth), minus
+// WAR_LEVEL_PENALTY per level below the deck's usual level and WAR_FORM_PENALTY per
+// form lacking. Your own record with a deck (Battle Stats → Boat Attacks) is shown next to it.
+const BOAT_MIN_ATTACKS = 3, BOAT_PRIOR = 4, BOAT_SHOWN = 5;
+function boatDecksHTML(W, owned, lvl, data, sizeChips) {
+  const B = W?.boat;
+  let mine = {};
+  try { mine = JSON.parse(localStorage.getItem(BOAT_KEY) || '{}')[data.tag]?.decks || {}; } catch(e) {}
+  const avg = B?.attacks ? B.won / B.attacks : 0.5;
+  const list = (B?.decks || []).filter(d => d[1] >= BOAT_MIN_ATTACKS).map(([key, n, w, t, fn, fw, v, p]) => {
+    const cards = metaDeckCards(key);
+    if (cards.length !== 8 || !cards.every(c => owned[c.id])) return null;
+    const my = cards.reduce((sum, c) => sum + lvl(owned[c.id]), 0) / 8;
+    const missing = cards.filter(c => (c.form === 'evo' && !ownsEvo(owned[c.id])) || (c.form === 'hero' && !ownsHero(owned[c.id])));
+    const score = (w + BOAT_PRIOR * avg) / (n + BOAT_PRIOR) - WAR_LEVEL_PENALTY * Math.max(0, (v || 0) - my) - WAR_FORM_PENALTY * missing.length;
+    const own = mine[deckKeyOf(cards.map(c => ({ name: c.name, evolutionLevel: c.form === 'evo' ? 1 : c.form === 'hero' ? 2 : 0 })))];
+    return { cards, names: cards.map(c => c.name), n, w, t, fn, fw, v, p, my, missing, score, own };
+  }).filter(Boolean).sort((a, b) => b.score - a.score).slice(0, BOAT_SHOWN);
+  const art = buildCardArtMap([]);
+  const pc = (a, b) => `${Math.round(a / Math.max(b, 1) * 100)}%`;
+  const note = B?.attacks
+    ? `${fmtNum(B.attacks)} boat attacks by other players over ${B.days} days — ${pc(B.won, B.attacks)} took a tower or more.`
+    : _metaWar?.data ? 'No boat attacks collected yet — the collector is still finding players who attack boats (it reads River Race logs, and boat attacks are rare), so this fills in over the next war days.'
+    : 'Loading boat attacks…';
+  return `
+    <div class="card">
+      <h3 style="margin-bottom:6px">⚔️ War decks</h3>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Boat attack decks you can build: an attack counts as won when it destroys at least one tower. Ranked by win rate (pulled toward the average for decks with few attacks), minus ${Math.round(WAR_LEVEL_PENALTY * 100)} points per level your cards sit below the level the deck is usually played at. ${note}</div>
+      ${sizeChips}
+      ${!list.length ? (B?.attacks ? `<div style="font-size:12px;color:var(--muted)">No boat deck with ${BOAT_MIN_ATTACKS}+ attacks uses only cards you've unlocked yet.</div>` : '')
+        : list.map((d, i) => {
+          const names = d.names.join(', ');
+          return `<div class="deck-item">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:6px"><b style="color:var(--text)">#${i + 1}</b> · ${fmtNum(d.n)} attacks by ${fmtNum(d.p)} player${d.p === 1 ? '' : 's'} · <span class="${rateCls(d.w / d.n)}">${pc(d.w, d.n)} won</span> · ${(d.t / d.n).toFixed(1)} towers each${d.fn && d.fn < d.n ? ` · untouched boats ${pc(d.fw, d.fn)}` : ''} · usually level ${d.v?.toFixed(1) ?? '?'}, yours ${d.my.toFixed(1)}${d.missing.length ? ` · <span class="text-red">no ${d.missing.map(c => `${c.form === 'evo' ? 'Evo' : 'Hero'} ${esc(c.name)}`).join(', ')}</span>` : ''}${d.own ? ` · <b style="color:var(--text)">you: ${d.own[1]}/${d.own[0]}</b>` : ''}</div>
+            <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:3px">${d.cards.map(c => deckTileHTML(c.name, c.form, art[c.name], 'deck-list-tile')).join('')}</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-top:8px">
+              <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
+              <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="upgradeDeck('${esc(names)}')">💰 Upgrade Cost</button>
+              ${starBtnHTML(d.cards.map(c => ({ name: c.name, form: c.form })), `Boat attacks · ${pc(d.w, d.n)} won`)}
             </div>
           </div>`;
         }).join('')}

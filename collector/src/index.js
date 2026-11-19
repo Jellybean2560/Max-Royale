@@ -63,7 +63,7 @@ const READ_BUDGET = 2.3e6, POLL_RESERVE = 250e3;   // raised from 2M by the user
 // prune only run if their last run's writes leave WRITE_RESERVE for polling
 // (~25k a day), and everything but the stats and /top stops at WRITE_BUDGET,
 // below the limit for what isn't counted (state rows, manual work)
-const WRITE_BUDGET = 92e3, WRITE_RESERVE = 30e3, WRITE_GUESS = { archive: 12e3, prune: 25e3, draft: 8e3 };
+const WRITE_BUDGET = 92e3, WRITE_RESERVE = 30e3, WRITE_GUESS = { archive: 12e3, prune: 25e3, draft: 8e3, scout: 500 };
 // next_poll of players who fell off the leaderboard: past the end of the poll
 // index's range, so picking who to poll no longer walks over them (700 stale
 // overdue rows were read on every poll — ~1M rows a day — before this)
@@ -168,10 +168,10 @@ export default {
     if (url.pathname === '/status') {
       const st = await getState(env);
       const board = await env.DB.prepare(`SELECT COUNT(*) AS n, SUM(polls > 0) AS polled FROM players WHERE seen_at >= ?1`).bind(pollFrom(st)).first();
-      const [day, war] = await env.DB.batch([`matches`, `war_games`].map(t =>
+      const [day, war, boat] = await env.DB.batch([`matches`, `war_games`, `boat_games`].map(t =>
         env.DB.prepare(`SELECT COUNT(*) AS n FROM ${t} WHERE time >= ?1`).bind(Math.floor((Date.now() - DAY) / 1000))));
       return new Response(JSON.stringify({ ...st, players: board?.n || 0, players_polled: board?.polled || 0, matches_last_24h: day.results[0]?.n || 0,
-        war_games_last_24h: war.results[0]?.n || 0 }, null, 2), { headers });
+        war_games_last_24h: war.results[0]?.n || 0, boat_attacks_last_24h: boat.results[0]?.n || 0 }, null, 2), { headers });
     }
     return new Response('Max Royale meta collector — see /meta, /top and /status', { status: 404 });
   },
@@ -218,9 +218,12 @@ async function tick(env) {
   if (+st.archive_to && periodEnd(+st.archive_to) <= now - ARCHIVE_LAG && now - (+st.archive_try_at || 0) > 10 * MINUTE && fits('archive') && fitsWrites('archive')) return run('archive', archivePeriod);
   if (due('prune', PRUNE_EVERY) && fitsWrites('prune')) return run('prune', prune);
   if (due('war', WAR_EVERY) && fits('war')) return run('war', computeWar);
+  if (due('scout', SCOUT_EVERY) && fits('scout') && fitsWrites('scout')) return run('scout', scout);
   // Near the day's write limit: wait for midnight UTC (a log polled late still has 30 battles)
   if (writesFull) return;
-  return pollPlayers(env, now, st);
+  await pollPlayers(env, now, st);
+  // Around war days, a couple of boat attackers / war clan members as well
+  if (inWarWindow(now)) await pollWarPlayers(env, now);
 }
 
 // D1's daily limits reset at midnight UTC
@@ -315,13 +318,99 @@ function warGames(b, t) {
   return game(0, a, o);
 }
 
+// ── Boat attackers and war clan members (19 Nov 2026). Top players hardly attack
+// boats (1 attack in 1,200 battles of top war clans' members), so the players who
+// do are found from River Race logs: a race lists every member of all 5 clans with
+// their boatAttacks. scout() reads SCOUT_CLANS clans' latest race a run; the clans
+// come from the global clan war board (seed; its top WAR_TOP_CLANS clans' members
+// with WAR_MIN_DECKS+ decks are followed for war games too), then country boards
+// one at a time, and the rival clans of races that had boat attackers. A clan with
+// boat attackers is read again after SCOUT_AGAIN, one without is left alone for
+// SCOUT_IDLE. Players are polled every WAR_PLAYER_EVERY around war days
+// (inWarWindow), WAR_PLAYERS_PER_RUN a tick after the top players, and dropped when
+// no race log has shown them attacking for WAR_PLAYER_KEEP.
+const SCOUT_EVERY = 2 * HOUR, SCOUT_CLANS = 10, SCOUT_AGAIN = 7 * DAY, SCOUT_IDLE = 60 * DAY, WAR_TOP_CLANS = 10, WAR_MIN_DECKS = 12;
+const WAR_PLAYER_EVERY = 20 * HOUR, WAR_PLAYERS_PER_RUN = 2, WAR_PLAYER_KEEP = 21 * DAY, WAR_CLANS_MAX = 5000;
+// Thursday 10:00 UTC to Monday 14:00 UTC: war days end ~09:45 UTC, logs hold 30 battles
+const inWarWindow = now => { const d = new Date(now), w = d.getUTCDay(), h = d.getUTCHours(); return w === 5 || w === 6 || w === 0 || (w === 4 && h >= 10) || (w === 1 && h < 14); };
+async function scout(env, now, st) {
+  const used = [];
+  const q = async stmt => { const r = await stmt.run(); used.push(r); return r; };
+  const due = async () => (await env.DB.prepare(`SELECT tag, top FROM war_clans WHERE scanned_at <= ?1 ORDER BY scanned_at LIMIT ?2`)
+    .bind(now - SCOUT_AGAIN, SCOUT_CLANS).all());
+  let pick = await due(); used.push(pick);
+  const extra = {};
+  // Too few clans waiting: the global clan war board (once), else the next country's board
+  if (pick.results.length < SCOUT_CLANS && (+st.war_clans_n || 0) < WAR_CLANS_MAX) {
+    let board, top = false;
+    if (!st.scout_seeded) { board = await api(env, '/locations/global/rankings/clanwars?limit=50'); top = true; extra.scout_seeded = 1; }
+    else {
+      const locs = (await api(env, '/locations?limit=300')).items?.filter(l => l.isCountry) || [];
+      const i = (+st.scout_loc || 0) % Math.max(locs.length, 1);
+      if (locs[i]) board = await api(env, `/locations/${locs[i].id}/rankings/clanwars?limit=200`).catch(() => null);
+      extra.scout_loc = i + 1;
+    }
+    const clans = (board?.items || []).map((c, r) => ({ tag: c.tag, top: top && r < WAR_TOP_CLANS ? 1 : 0 }));
+    if (clans.length) {
+      const r = await q(env.DB.prepare(`INSERT OR IGNORE INTO war_clans (tag, top, scanned_at) SELECT value ->> 'tag', value ->> 'top', 0 FROM json_each(?1)`).bind(JSON.stringify(clans)));
+      extra.war_clans_n = (+st.war_clans_n || 0) + (r.meta?.changes || 0);
+      pick = await due(); used.push(pick);
+    }
+  }
+  const logs = await Promise.all(pick.results.map(c => api(env, `/clans/${c.tag}/riverracelog?limit=1`).catch(() => null)));
+  const players = {}, rivals = new Set(), scanned = [];
+  pick.results.forEach((c, i) => {
+    let boats = 0;
+    for (const race of logs[i]?.items || []) for (const sd of race.standings || []) {
+      const own = sd.clan?.tag === c.tag;
+      let here = 0;
+      for (const pp of sd.clan?.participants || []) {
+        if (pp.boatAttacks > 0) { players[pp.tag] = { tag: pp.tag, src: 'boat', clan: sd.clan.tag, boat: pp.boatAttacks }; here += pp.boatAttacks; }
+        else if (own && c.top && pp.decksUsed >= WAR_MIN_DECKS && !players[pp.tag]) players[pp.tag] = { tag: pp.tag, src: 'war', clan: c.tag, boat: 0 };
+      }
+      if (own) boats += here;
+      else if (here) rivals.add(sd.clan.tag);   // boat attackers there: worth a look
+    }
+    scanned.push({ tag: c.tag, at: logs[i] ? (boats || c.top ? now : now + SCOUT_IDLE) : now - SCOUT_AGAIN + RETRY_AFTER });
+  });
+  const list = Object.values(players);
+  if (list.length) await q(env.DB.prepare(`
+    INSERT INTO war_players (tag, src, clan, boat, seen_at, next_poll, polls)
+    SELECT value ->> 'tag', value ->> 'src', value ->> 'clan', value ->> 'boat', ?2, ?2, 0 FROM json_each(?1) WHERE true
+    ON CONFLICT (tag) DO UPDATE SET src = excluded.src, clan = excluded.clan, boat = excluded.boat, seen_at = excluded.seen_at`).bind(JSON.stringify(list), now));
+  if (rivals.size && (+st.war_clans_n || 0) < WAR_CLANS_MAX) {
+    const r = await q(env.DB.prepare(`INSERT OR IGNORE INTO war_clans (tag, top, scanned_at) SELECT value, 0, 0 FROM json_each(?1)`).bind(JSON.stringify([...rivals])));
+    extra.war_clans_n = (+extra.war_clans_n || +st.war_clans_n || 0) + (r.meta?.changes || 0);
+  }
+  if (scanned.length) await q(env.DB.prepare(`UPDATE war_clans SET scanned_at = j.value ->> 'at' FROM json_each(?1) AS j WHERE war_clans.tag = j.value ->> 'tag'`).bind(JSON.stringify(scanned)));
+  await countReads(env, 'scout', now, rowsRead(used), { scout_at: now, ...extra }, rowsWritten(used) + 3);
+}
+// A couple of war players' logs: war games and boat attacks only (they aren't top
+// players, so their ranked games would skew the meta)
+async function pollWarPlayers(env, now) {
+  const st = await getState(env);
+  if (writesToday(st, now) >= WRITE_BUDGET) return;
+  const dueRes = await env.DB.prepare(`SELECT tag FROM war_players WHERE next_poll <= ?1 ORDER BY next_poll LIMIT ?2`).bind(now, WAR_PLAYERS_PER_RUN).all();
+  if (!dueRes.results.length) return;
+  const logs = await Promise.all(dueRes.results.map(p => api(env, `/players/${p.tag}/battlelog`).catch(() => null)));
+  const wb = { war: [], boat: [], duel: null };
+  logs.forEach(log => { if (Array.isArray(log)) logWarBoat(log, wb); });
+  const res = await saveWarBoat(env, wb, now);
+  const upd = await env.DB.prepare(`UPDATE war_players SET next_poll = j.value ->> 'next', polls = polls + 1 FROM json_each(?1) AS j WHERE war_players.tag = j.value ->> 'tag'`)
+    .bind(JSON.stringify(dueRes.results.map((p, i) => ({ tag: p.tag, next: now + (Array.isArray(logs[i]) ? WAR_PLAYER_EVERY : RETRY_AFTER) })))).run();
+  await setState(env, { ...usage(st, now, rowsRead([dueRes, upd, ...res]) + 25, rowsWritten([upd, ...res]) + 2), war_polls: (+st.war_polls || 0) + dueRes.results.length,
+    ...warBoatState(st, wb, res) });
+}
+
 // /war: every deck in the war games of the last WAR_DAYS, both sides (the
 // opponent's deck is a war deck too) — [key, games, wins, avg card level of the
 // players with it, of their opponents, different players], most played first
-const WAR_DAYS = 28, WAR_EVERY = 6 * HOUR, WAR_DECKS = 500;
+// boat: [key, attacks, won (a tower or more), towers destroyed, attacks on a boat
+// with no tower down yet, those won, avg card level, players] over BOAT_DAYS (boat attacks are rare)
+const WAR_DAYS = 28, WAR_EVERY = 6 * HOUR, WAR_DECKS = 500, BOAT_DAYS = 56;
 async function computeWar(env, now) {
   const since = Math.floor((now - WAR_DAYS * DAY) / 1000);
-  const [decks, tot] = await env.DB.batch([
+  const [decks, tot, boat, btot] = await env.DB.batch([
     env.DB.prepare(`
       WITH s AS (
         SELECT da AS deck, pa AS p, ca > cb AS w, va AS v, vb AS o FROM war_games WHERE time >= ?1
@@ -329,12 +418,59 @@ async function computeWar(env, now) {
       SELECT deck, COUNT(*) AS n, SUM(w) AS w, ROUND(AVG(v), 2) AS v, ROUND(AVG(o), 2) AS o, COUNT(DISTINCT p) AS p
       FROM s GROUP BY deck ORDER BY n DESC LIMIT ?2`).bind(since, WAR_DECKS),
     env.DB.prepare(`SELECT COUNT(*) AS n, MIN(time) AS first FROM war_games WHERE time >= ?1`).bind(since),
+    env.DB.prepare(`
+      SELECT deck, COUNT(*) AS n, SUM(won) AS w, SUM(nw) AS t, SUM(pv = 0) AS fn, SUM(pv = 0 AND won) AS fw, ROUND(AVG(lv), 2) AS v, COUNT(DISTINCT tag) AS p
+      FROM boat_games WHERE time >= ?1 GROUP BY deck ORDER BY n DESC LIMIT ?2`).bind(Math.floor((now - BOAT_DAYS * DAY) / 1000), WAR_DECKS),
+    env.DB.prepare(`SELECT COUNT(*) AS n, SUM(won) AS w, MIN(time) AS first FROM boat_games WHERE time >= ?1`).bind(Math.floor((now - BOAT_DAYS * DAY) / 1000)),
   ]);
+  const bt = btot.results[0] || {};
   const t = tot.results[0] || {};
   const war = { updated: now, next: now + WAR_EVERY, window_days: WAR_DAYS, games: t.n || 0, first: t.first ? t.first * 1000 : null,
-    decks: decks.results.map(r => [r.deck, r.n, r.w, r.v, r.o, r.p]) };
-  await countReads(env, 'war', now, rowsRead([decks, tot]), { war_at: now, war: JSON.stringify(war) }, 3);
+    decks: decks.results.map(r => [r.deck, r.n, r.w, r.v, r.o, r.p]),
+    boat: { days: BOAT_DAYS, attacks: bt.n || 0, won: bt.w || 0, first: bt.first ? bt.first * 1000 : null,
+      decks: boat.results.map(r => [r.deck, r.n, r.w, r.t, r.fn, r.fw, r.v, r.p]) } };
+  await countReads(env, 'war', now, rowsRead([decks, tot, boat, btot]), { war_at: now, war: JSON.stringify(war) }, 3);
 }
+
+// A boat attack (boatBattle, attacker side): "won" = at least one tower destroyed.
+// pv: towers already down when attacked (those boats are easier), rm: towers left.
+function boatGame(b, t) {
+  const me = b.team?.[0];
+  if (b.boatBattleSide !== 'attacker' || !me?.tag || me.cards?.length !== 8) return [];
+  return [{ t, tag: me.tag, deck: deckKey(me.cards), won: b.boatBattleWon ? 1 : 0, nw: b.newTowersDestroyed || 0, pv: b.prevTowersDestroyed || 0,
+            rm: b.remainingTowers ?? null, lv: avgLevel(me.cards), clan: me.clan?.tag || null, dclan: b.opponent?.[0]?.clan?.tag || null }];
+}
+// War games and boat attacks of one battle log
+function logWarBoat(log, out) {
+  for (const b of log) {
+    if (!b.battleTime) continue;
+    if (WAR_TYPES.includes(b.type)) out.war.push(...warGames(b, apiTime(b.battleTime)));
+    else if (b.type === 'boatBattle') out.boat.push(...boatGame(b, apiTime(b.battleTime)));
+    if (b.type === 'riverRaceDuel' || b.type === 'riverRaceDuelColosseum') out.duel ||= b;
+  }
+  return out;
+}
+// Saves them (both inserts skip games already saved); [war result, boat result]
+function saveWarBoat(env, out, now) {
+  return Promise.all([
+    out.war.length ? env.DB.prepare(`
+      INSERT OR IGNORE INTO war_games (time, pa, pb, rnd, kind, da, db, ca, cb, va, vb, la, lb, seen)
+      SELECT value ->> 't', value ->> 'pa', value ->> 'pb', value ->> 'rnd', value ->> 'kind', value ->> 'da', value ->> 'db',
+             value ->> 'ca', value ->> 'cb', value ->> 'va', value ->> 'vb', value ->> 'la', value ->> 'lb', ?2
+      FROM json_each(?1)`).bind(JSON.stringify(out.war), now).run() : null,
+    out.boat.length ? env.DB.prepare(`
+      INSERT OR IGNORE INTO boat_games (time, tag, deck, won, nw, pv, rm, lv, clan, dclan, seen)
+      SELECT value ->> 't', value ->> 'tag', value ->> 'deck', value ->> 'won', value ->> 'nw', value ->> 'pv', value ->> 'rm',
+             value ->> 'lv', value ->> 'clan', value ->> 'dclan', ?2
+      FROM json_each(?1)`).bind(JSON.stringify(out.boat), now).run() : null,
+  ]);
+}
+// Counters for /status, and the first duel seen whole (to check how its rounds are listed)
+const warBoatState = (st, out, res) => {
+  const w = res[0]?.meta?.changes || 0, bt = res[1]?.meta?.changes || 0;
+  return { ...(w ? { war_total: (+st.war_total || 0) + w } : {}), ...(bt ? { boat_total: (+st.boat_total || 0) + bt } : {}),
+    ...(out.duel && !st.war_duel_seen ? { war_duel_sample: JSON.stringify(out.duel), war_duel_seen: 1 } : {}) };
+};
 
 async function pollPlayers(env, now, st) {
   const dueRes = await env.DB.prepare(`
@@ -344,8 +480,8 @@ async function pollPlayers(env, now, st) {
   if (!due.length) return;
   const logs = await Promise.all(due.map(p => api(env, `/players/${p.tag}/battlelog`).catch(e => ({ error: e.message }))));
 
-  const matches = [], updates = [], war = [];
-  let errors = 0, duelSample = null;
+  const matches = [], updates = [], wb = { war: [], boat: [], duel: null };
+  let errors = 0;
   // Tower troop names and art, so /meta can show them; saved when a new one turns up
   const troopNames = JSON.parse(st.troop_names || '{}'), newTroops = {};
   due.forEach((p, i) => {
@@ -356,13 +492,9 @@ async function pollPlayers(env, now, st) {
       return;
     }
     let last = p.last_time || 0;
+    // War games and boat attacks: every one in the log (the inserts skip those already saved)
+    logWarBoat(log, wb);
     for (const b of log) {
-      // War battles: every one in the log (the insert skips those already saved)
-      if (WAR_TYPES.includes(b.type) && b.battleTime) {
-        war.push(...warGames(b, apiTime(b.battleTime)));
-        if (b.type !== 'riverRacePvP' && !st.war_duel_seen && !duelSample) duelSample = b;
-        continue;
-      }
       if (b.type !== 'pathOfLegend' || !b.battleTime) continue;
       const t = apiTime(b.battleTime);
       if (t <= (p.last_time || 0)) continue;
@@ -396,12 +528,7 @@ async function pollPlayers(env, now, st) {
       FROM json_each(?1) RETURNING time`).bind(JSON.stringify(matches), now).all();
     inserted = res.results.length;
   }
-  let warRes = null;
-  if (war.length) warRes = await env.DB.prepare(`
-    INSERT OR IGNORE INTO war_games (time, pa, pb, rnd, kind, da, db, ca, cb, va, vb, la, lb, seen)
-    SELECT value ->> 't', value ->> 'pa', value ->> 'pb', value ->> 'rnd', value ->> 'kind', value ->> 'da', value ->> 'db',
-           value ->> 'ca', value ->> 'cb', value ->> 'va', value ->> 'vb', value ->> 'la', value ->> 'lb', ?2
-    FROM json_each(?1)`).bind(JSON.stringify(war), now).run();
+  const wbRes = await saveWarBoat(env, wb, now);
   // Matches per UTC hour, from the ones actually inserted (a match between two
   // top players is seen twice). Matches before `from` are counted once by the
   // stats job (seedActivity).
@@ -422,13 +549,10 @@ async function pollPlayers(env, now, st) {
     UPDATE players SET next_poll = json_extract(j.value, '$.next'), last_time = json_extract(j.value, '$.last'),
       polls = polls + 1
     FROM json_each(?1) AS j WHERE players.tag = json_extract(j.value, '$.tag')`).bind(JSON.stringify(updates)).run();
-  const reads = rowsRead([dueRes, insertRes, updateRes, warRes]) + 25;  // + the tick's state read
-  const warNew = warRes?.meta?.changes || 0;
+  const reads = rowsRead([dueRes, insertRes, updateRes, ...wbRes]) + 25;  // + the tick's state read
   await setState(env, {
-    ...usage(st, now, reads, rowsWritten([insertRes, updateRes, warRes]) + 4),  // + the state rows
-    ...(warNew ? { war_total: (+st.war_total || 0) + warNew } : {}),
-    // The first duel seen, whole, to check how the log lists its rounds
-    ...(duelSample ? { war_duel_sample: JSON.stringify(duelSample), war_duel_seen: 1 } : {}),
+    ...usage(st, now, reads, rowsWritten([insertRes, updateRes, ...wbRes]) + 4),  // + the state rows
+    ...warBoatState(st, wb, wbRes),
     last_poll_at: now,
     polls_total: (+st.polls_total || 0) + due.length,
     matches_total: (+st.matches_total || 0) + inserted,
@@ -1020,6 +1144,8 @@ async function prune(env, now, st) {
     // Off the leaderboard for a week: stop tracking
     // (last season's top 1,000 are kept while the new board is short)
     env.DB.prepare(`DELETE FROM players WHERE seen_at < ?1`).bind(Math.min(now - 7 * DAY, pollFrom(st))),
+    // Boat attackers / war clan members no race log has shown lately
+    env.DB.prepare(`DELETE FROM war_players WHERE seen_at < ?1`).bind(now - WAR_PLAYER_KEEP),
   ]);
   // Each deleted match is a row written: ~15–25k a day once matches reach KEEP_DAYS
   await setState(env, { prune_at: now, prune_writes: rowsWritten(res), ...usage(st, now, rowsRead(res), rowsWritten(res) + 2) });

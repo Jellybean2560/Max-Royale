@@ -145,3 +145,21 @@ CREATE TABLE IF NOT EXISTS war_games (
   seen INTEGER,
   PRIMARY KEY (time, pa, pb, rnd)
 ) WITHOUT ROWID;
+
+-- Boat attacks (19 Nov 2026), attacker side: won = at least one tower destroyed,
+-- nw new towers destroyed, pv towers already down, rm towers left, lv avg card level
+CREATE TABLE IF NOT EXISTS boat_games (
+  time INTEGER NOT NULL, tag TEXT NOT NULL, deck TEXT,
+  won INTEGER, nw INTEGER, pv INTEGER, rm INTEGER, lv REAL, clan TEXT, dclan TEXT, seen INTEGER,
+  PRIMARY KEY (time, tag)
+) WITHOUT ROWID;
+-- Players followed for war games and boat attacks (found by scout() in River Race logs)
+CREATE TABLE IF NOT EXISTS war_players (
+  tag TEXT PRIMARY KEY, src TEXT, clan TEXT, boat INTEGER, seen_at INTEGER, next_poll INTEGER, polls INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS war_players_next ON war_players (next_poll);
+-- Clans whose latest race scout() reads (scanned_at: when, or when next for clans without boat attackers)
+CREATE TABLE IF NOT EXISTS war_clans (
+  tag TEXT PRIMARY KEY, top INTEGER DEFAULT 0, scanned_at INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS war_clans_scan ON war_clans (scanned_at);
