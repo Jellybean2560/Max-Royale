@@ -6779,7 +6779,7 @@ let _metaPeriod = '', _metaSeasons = null, _metaSeasonsLoading = false, _metaSea
 const metaUtcDay = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 const metaSeasonName = start => new Date(start).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 async function loadMetaSeasons() {
-  if (_metaSeasonsLoading) return;
+  if (_metaSeasonsLoading || metaWaitRetry(META_BASE + '/seasons')) return;
   _metaSeasonsLoading = true;
   try { _metaSeasons = await fetchMetaJSON(META_BASE + '/seasons', META_SEASONS_CACHE_KEY); }
   catch(e) { if (!_metaSeasons) _metaSeasons = { error: e.message }; }
@@ -6809,6 +6809,8 @@ async function fetchSeason(start) {
     if (!res.ok) throw new Error(res.status === 404 ? 'This season isn\'t archived yet.' : `The meta service isn't responding right now (error ${res.status}).`);
     _metaSeasonData[start] = { data: await res.json(), savedAt: Date.now() };
   } catch(e) {
+    const had = _metaSeasonData[start];
+    if (had?.data) { had.loading = false; had.savedAt = Date.now(); return; }  // keep the season shown; try again in 30 min
     _metaSeasonData[start] = { error: /fetch/i.test(e.message) ? 'Connection failed — check your internet connection and try again.' : e.message };
   }
   if (currentScreen === 'meta') drawMeta();
@@ -6909,8 +6911,17 @@ function metaNextText(d) {
   if (next > 60e3) return `Next update in ~${next < 3600e3 ? Math.round(next / 60e3) + ' min' : Math.round(next / 3600e3) + ' h'}`;
   return next > -15 * 60e3 ? 'Updating now' : 'Next update delayed — it runs as soon as the collector can';
 }
+// A failed collector fetch isn't tried again for 5 min. The loaders redraw after a
+// failure and the redraw asks again, so without this a down collector redrew the
+// Meta screen nonstop, closing open menus and the keyboard (19 Nov 2026)
+const META_RETRY_MS = 5 * 60e3, _metaFailedAt = {};
+const metaWaitRetry = url => Date.now() - (_metaFailedAt[url] || 0) < META_RETRY_MS;
 // GET a collector endpoint as { data, savedAt }, saved to localStorage
 async function fetchMetaJSON(url, cacheKey) {
+  try { const out = await fetchMetaJSONOnce(url, cacheKey); delete _metaFailedAt[url]; return out; }
+  catch(e) { _metaFailedAt[url] = Date.now(); throw e; }
+}
+async function fetchMetaJSONOnce(url, cacheKey) {
   let res;
   try { res = await fetch(url, { cache: 'no-cache' }); }  // the 30-min checks decide freshness
   catch(e) { throw new Error('Connection failed — check your internet connection and try again.'); }
@@ -6956,7 +6967,7 @@ async function renderMetaScreen() {
   await maybeLoadCards();
   if (_meta?.data) drawMeta();
   else el.innerHTML = '<div class="spinner"></div>';
-  if (!metaStale(_meta) || _metaLoading) return;
+  if (!metaStale(_meta) || _metaLoading || metaWaitRetry(META_URL)) return;
   _metaLoading = true;
   try {
     _meta = await fetchMetaJSON(META_URL, META_CACHE_KEY);
@@ -7184,7 +7195,7 @@ const META_COUNTERS_URL = 'https://max-royale-meta.jellevandenwouwer.workers.dev
 const META_COUNTERS_CACHE_KEY = 'cr_meta_counters_cache';
 let _metaCounters = null, _metaCountersLoading = false, _metaCountersTried = 0, _metaCountersMap = null;
 async function loadMetaCounters() {
-  if (_metaCountersLoading || Date.now() - _metaCountersTried < 60e3) return;
+  if (_metaCountersLoading || Date.now() - _metaCountersTried < 60e3 || metaWaitRetry(META_COUNTERS_URL)) return;
   _metaCountersLoading = true; _metaCountersTried = Date.now();
   try {
     _metaCounters = await fetchMetaJSON(META_COUNTERS_URL, META_COUNTERS_CACHE_KEY);
@@ -8105,7 +8116,7 @@ function metaFormsHTML(totals) {
 // 5 · A card's share of decks over time, from /history (one point a day, each a
 // 7-day window, so the line is smoothed)
 async function loadMetaHistory() {
-  if (_metaHistLoading) return;
+  if (_metaHistLoading || metaWaitRetry(META_HISTORY_URL)) return;
   _metaHistLoading = true;
   try {
     _metaHist = await fetchMetaJSON(META_HISTORY_URL, META_HISTORY_CACHE_KEY);
@@ -8672,7 +8683,7 @@ async function loadMetaWar() {
   if (!_metaWar) {
     try { _metaWar = JSON.parse(localStorage.getItem(META_WAR_CACHE_KEY) || 'null'); } catch(e) {}
   }
-  if ((_metaWar?.data && !metaStale(_metaWar)) || _metaWarLoading) return;
+  if ((_metaWar?.data && !metaStale(_metaWar)) || _metaWarLoading || metaWaitRetry(META_WAR_URL)) return;
   _metaWarLoading = true;
   try { _metaWar = await fetchMetaJSON(META_WAR_URL, META_WAR_CACHE_KEY); }
   catch(e) { if (!_metaWar) _metaWar = { error: e.message }; }
@@ -8818,7 +8829,7 @@ async function loadMetaTop() {
   if (!_metaTop) {
     try { _metaTop = JSON.parse(localStorage.getItem(META_TOP_CACHE_KEY) || 'null'); } catch(e) {}
   }
-  if ((_metaTop?.data && !metaStale(_metaTop)) || _metaTopLoading) return;
+  if ((_metaTop?.data && !metaStale(_metaTop)) || _metaTopLoading || metaWaitRetry(META_TOP_URL)) return;
   _metaTopLoading = true;
   try {
     _metaTop = await fetchMetaJSON(META_TOP_URL, META_TOP_CACHE_KEY);
