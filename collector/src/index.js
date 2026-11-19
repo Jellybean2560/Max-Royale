@@ -165,6 +165,20 @@ export default {
       return new Response(JSON.stringify({ status, now, resumes: (Math.floor(now / DAY) + 1) * DAY, polled_at: polled || null, stats_at: +st.stats_at || null,
         reads, read_budget: READ_BUDGET, writes, write_budget: WRITE_BUDGET }), { headers: { ...headers, 'Cache-Control': 'public, max-age=300' } });
     }
+    // The day log: per UTC day reads, writes, ticks and what each job cost, matches /
+    // war games / boat attacks saved, errors and gaps (no tick for 10+ min, e.g. D1 limits)
+    if (url.pathname === '/days') {
+      const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k IN ('day_log', 'today')`).all();
+      const kv = Object.fromEntries(results.map(r => [r.k, r.v]));
+      const days = [...JSON.parse(kv.day_log || '[]'), ...(kv.today ? [{ ...JSON.parse(kv.today), today: true }] : [])].map(t => ({
+        day: t.d, ticks: t.ticks, reads: t.r, writes: t.w,
+        limit: t.w >= WRITE_BUDGET ? 'writes' : t.r >= READ_BUDGET - POLL_RESERVE ? 'reads' : null,
+        jobs: t.jobs, matches: t.m || 0, war_games: t.war || 0, boat_attacks: t.boat || 0,
+        errors: t.err, last_errors: t.errs,
+        gaps: t.gaps.map(([a, b]) => [new Date(a).toISOString(), new Date(b).toISOString(), Math.round((b - a) / MINUTE) + ' min']),
+        ...(t.stopped ? { stopped_at: new Date(t.stopped).toISOString() } : {}), ...(t.today ? { today: true } : {}) }));
+      return new Response(JSON.stringify({ days }, null, 2), { headers });
+    }
     if (url.pathname === '/status') {
       const st = await getState(env);
       const board = await env.DB.prepare(`SELECT COUNT(*) AS n, SUM(polls > 0) AS polled FROM players WHERE seen_at >= ?1`).bind(pollFrom(st)).first();
@@ -184,12 +198,22 @@ export default {
 // time), and polling carries on in between.
 async function tick(env) {
   const now = Date.now(), st = await getState(env);
+  let job = 'idle', error = null;
+  stage = '';  // set by the stats job's steps; cleared so an error elsewhere isn't labelled with an old one
+  try { job = await doTick(env, now, st); }
+  catch (e) { error = e; job = e.job || 'poll'; }
+  await logDay(env, now, st, job, error).catch(() => {});
+  if (error) throw error;
+}
+async function doTick(env, now, st) {
   const due = (job, every) => now - (+st[`${job}_at`] || 0) > every && now - (+st[`${job}_try_at`] || 0) > RETRY_AFTER;
   const run = async (job, fn) => {
     await setState(env, { [`${job}_try_at`]: now });
     try {
-      return await fn(env, now, st);
+      await fn(env, now, st);
+      return job;
     } catch (e) {
+      e.job = job;
       // A heavy job that fails late has still read its rows (D1 counts them), so
       // they go on today's count — six uncounted failed stats runs took a day past
       // D1's free 5M reads (4 Nov 2026). Its last run's reads are the estimate.
@@ -220,10 +244,53 @@ async function tick(env) {
   if (due('war', WAR_EVERY) && fits('war')) return run('war', computeWar);
   if (due('scout', SCOUT_EVERY) && fits('scout') && fitsWrites('scout')) return run('scout', scout);
   // Near the day's write limit: wait for midnight UTC (a log polled late still has 30 battles)
-  if (writesFull) return;
+  if (writesFull) return 'held';
   await pollPlayers(env, now, st);
   // Around war days, a couple of boat attackers / war clan members as well
   if (inWarWindow(now)) await pollWarPlayers(env, now);
+  return 'poll';
+}
+
+// ── Day log (19 Nov 2026): one summary per UTC day, to see at a glance what each
+// job read and wrote, the errors and when collection stopped (a day lost to D1's
+// limits shows as a gap). `today` (in getState) is the running day, updated after
+// every tick (+1 row written, +4 read); at the first tick of a new day it moves to
+// `day_log` (DAY_LOG_KEEP days, left out of getState). Served at GET /days.
+const DAY_LOG_KEEP = 90, GAP_MIN = 10 * MINUTE;
+async function logDay(env, now, st, job, error) {
+  const day = dayKey(now), dayStart = Math.floor(now / DAY) * DAY;
+  let t = null;
+  try { t = JSON.parse(st.today || 'null'); } catch (e) {}
+  const writes = [];
+  if (t?.d !== day) {
+    if (t?.d) {
+      if (dayStart - t.last > GAP_MIN) t.stopped = t.last;  // nothing ran for the end of that day
+      const row = await env.DB.prepare(`SELECT v FROM state WHERE k = 'day_log'`).first();
+      let log = [];
+      try { log = JSON.parse(row?.v || '[]'); } catch (e) {}
+      log = [...log.filter(x => x.d !== t.d), t].slice(-DAY_LOG_KEEP);
+      writes.push(['day_log', JSON.stringify(log)]);
+    }
+    const from = t?.last ? Math.max(t.last, dayStart) : null;
+    t = { d: day, first: now, last: null, ticks: 0, jobs: {}, err: 0, errs: [], gaps: [],
+      m0: +st.matches_total || 0, w0: +st.war_total || 0, b0: +st.boat_total || 0, r: 0, w: 0 };
+    if (from && now - from > GAP_MIN) t.gaps.push([from, now]);
+  }
+  if (t.last && now - t.last > GAP_MIN) t.gaps = [...t.gaps, [t.last, now]].slice(-10);
+  // Today's reads and writes after the job: the difference is what the tick cost
+  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k IN ('reads_day', 'reads_count', 'writes_day', 'writes_count')`).all();
+  const cur = Object.fromEntries(results.map(x => [x.k, x.v]));
+  const r = readsToday(cur, now), w = writesToday(cur, now);
+  const j = (t.jobs[job] ||= [0, 0, 0]);
+  j[0]++; j[1] += Math.max(0, r - readsToday(st, now)); j[2] += Math.max(0, w - writesToday(st, now));
+  Object.assign(t, { last: now, ticks: t.ticks + 1, r, w,
+    m: (+st.matches_total || 0) - t.m0, war: (+st.war_total || 0) - t.w0, boat: (+st.boat_total || 0) - t.b0 });
+  if (error) {
+    t.err++;
+    t.errs = [...t.errs, `${new Date(now).toISOString().slice(11, 16)} [${job}] ${String(error.message).slice(0, 160)}`].slice(-5);
+  }
+  writes.push(['today', JSON.stringify(t)]);
+  await setState(env, Object.fromEntries(writes));
 }
 
 // D1's daily limits reset at midnight UTC
@@ -1152,7 +1219,7 @@ async function prune(env, now, st) {
 }
 
 async function getState(env) {
-  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top', 'history', 'counters', 'deck_days', 'season_list', 'rivals', 'war_duel_sample', 'war')`).all();
+  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top', 'history', 'counters', 'deck_days', 'season_list', 'rivals', 'war_duel_sample', 'war', 'day_log')`).all();
   return Object.fromEntries(results.map(r => [r.k, r.v]));
 }
 async function setState(env, values) {

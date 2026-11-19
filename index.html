@@ -4919,22 +4919,56 @@ function archetypeRecordHTML(data, battles, scope) {
 // A boat attack is won by destroying at least one tower (boatBattleWon). Attacks on
 // a boat with towers already down (prevTowersDestroyed) are easier, so they're
 // counted apart too. cr_boat_v1: per tag { since, at, seen: [battleTime],
-// decks: { deck key: [attacks, won, towers destroyed, attacks on an untouched boat, those won] } }
-const BOAT_KEY = 'cr_boat_v1', BOAT_SEEN_MAX = 300;
+// decks: { deck key: [attacks, won, towers destroyed, attacks on an untouched boat, those won] },
+// wk: { war week start (ms): [attacks, won, towers] }, wseen: [battleTime] } — the
+// weeks have their own seen list, so attacks tallied before they existed count once
+const BOAT_KEY = 'cr_boat_v1', BOAT_SEEN_MAX = 300, BOAT_WEEKS_KEPT = 26, BOAT_WEEKS_SHOWN = 8;
 const isBoatAttack = b => b?.type === 'boatBattle' && b.boatBattleSide === 'attacker' && b.team?.[0]?.cards?.length === 8;
+// A clan war week runs from Monday's war-day reset (~09:45 UTC, WAR_DAY_END_UTC) to the next
+function boatWeekStart(t) {
+  const d = new Date(t), back = (d.getUTCDay() + 6) % 7;
+  const start = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - back, ...WAR_DAY_END_UTC);
+  return start > t ? start - 7 * 864e5 : start;
+}
 function tallyBoat(entry, battles) {
-  const seen = new Set(entry.seen);
+  const seen = new Set(entry.seen), wseen = new Set(entry.wseen || []);
+  entry.wk ||= {};
   let changed = false;
   for (const b of battles || []) {
-    if (!isBoatAttack(b) || seen.has(b.battleTime)) continue;
-    const k = deckKeyOf(b.team[0].cards), r = (entry.decks[k] ||= [0, 0, 0, 0, 0]);
-    const won = b.boatBattleWon ? 1 : 0, fresh = !b.prevTowersDestroyed;
-    r[0]++; r[1] += won; r[2] += b.newTowersDestroyed || 0;
-    if (fresh) { r[3]++; r[4] += won; }
-    seen.add(b.battleTime); changed = true;
+    if (!isBoatAttack(b)) continue;
+    const won = b.boatBattleWon ? 1 : 0;
+    if (!seen.has(b.battleTime)) {
+      const k = deckKeyOf(b.team[0].cards), r = (entry.decks[k] ||= [0, 0, 0, 0, 0]);
+      r[0]++; r[1] += won; r[2] += b.newTowersDestroyed || 0;
+      if (!b.prevTowersDestroyed) { r[3]++; r[4] += won; }
+      seen.add(b.battleTime); changed = true;
+    }
+    if (!wseen.has(b.battleTime)) {
+      const w = (entry.wk[boatWeekStart(parseApiTime(b.battleTime).getTime())] ||= [0, 0, 0]);
+      w[0]++; w[1] += won; w[2] += b.newTowersDestroyed || 0;
+      wseen.add(b.battleTime); changed = true;
+    }
   }
   entry.seen = [...seen].sort().slice(-BOAT_SEEN_MAX);
+  entry.wseen = [...wseen].sort().slice(-BOAT_SEEN_MAX);
+  const weeks = Object.keys(entry.wk).sort((a, b) => b - a);
+  weeks.slice(BOAT_WEEKS_KEPT).forEach(k => delete entry.wk[k]);
   return changed;
+}
+// Attacks per war week, newest first: a bar per week, won (a tower or more) in green
+function boatWeeksHTML(wk) {
+  const weeks = Object.entries(wk || {}).map(([k, v]) => [+k, ...v]).sort((a, b) => b[0] - a[0]).slice(0, BOAT_WEEKS_SHOWN);
+  if (weeks.length < 2) return '';
+  const max = Math.max(...weeks.map(w => w[1]));
+  const day = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return `<div style="margin:8px 0 10px">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:4px">Per war week · <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--green)"></span> won · <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--border)"></span> not won</div>
+      ${weeks.map(([t, n, w, tw]) => `<div style="display:grid;grid-template-columns:58px 1fr auto;gap:8px;align-items:center;font-size:12px;margin-bottom:3px" title="Week of ${day(t)}: ${n} attack${n === 1 ? '' : 's'}, ${w} won, ${(tw / n).toFixed(1)} towers each">
+        <span style="color:var(--muted)">${day(t)}</span>
+        <span style="display:flex;gap:2px;height:10px">${w ? `<span style="width:${w / max * 100}%;background:var(--green);border-radius:4px"></span>` : ''}${n - w ? `<span style="width:${(n - w) / max * 100}%;background:var(--border);border-radius:4px"></span>` : ''}</span>
+        <span><b class="${rateCls(w / n)}">${w}/${n}</b> · ${Math.round(w / n * 100)}%</span>
+      </div>`).join('')}
+    </div>`;
 }
 function recordBoat(tag, battles, at = Date.now()) {
   if (!tag || !(battles || []).some(isBoatAttack)) return;
@@ -4966,6 +5000,7 @@ function boatRecordHTML(data, battles, scope) {
   const pc = (a, b) => `${Math.round(a / Math.max(b, 1) * 100)}%`;
   return head
     + `<div style="font-size:12px;margin-bottom:6px">Won <b class="${rateCls(tot[1] / tot[0])}">${pc(tot[1], tot[0])}</b> (a tower or more) · ${(tot[2] / tot[0]).toFixed(1)} towers an attack</div>`
+    + boatWeeksHTML(e.wk)
     + rows.map(r => `<div style="margin-bottom:8px">
         <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:3px;margin-bottom:3px">${deckKeyCards(r.key).map(c => deckTileHTML(c.name, c.form, art[c.name], 'deck-list-tile')).join('')}</div>
         <div style="font-size:12px;display:flex;justify-content:space-between;gap:8px">
@@ -6792,11 +6827,23 @@ function metaSeasonList() {
   if (!_metaSeasons?.data || Date.now() - (_metaSeasons.savedAt || 0) > META_MAX_AGE_MS) setTimeout(loadMetaSeasons, 0);
   return [...(_metaSeasons?.data?.seasons || [])].filter(x => x.matches > 0).sort((a, b) => b.start - a.start);
 }
-// One season's stats, kept in memory (30 min)
+// A fetch that never got an answer: offline, or the collector failed without CORS
+// headers (a crashed Worker, e.g. at D1's daily limit), which the browser can't tell apart
+const metaFetchError = e => /fetch|network|load failed/i.test(e?.message || '')
+  ? (navigator.onLine === false ? 'Connection failed — check your internet connection and try again.'
+    : 'The stats service isn\'t responding right now — try again in a while.')
+  : e.message;
+// One season's stats, kept in memory (30 min) and on the device: the last
+// META_SEASONS_KEPT seasons viewed (cr_meta_season_v1), so they open while the collector is down
+const META_SEASON_STORE = 'cr_meta_season_v1', META_SEASONS_KEPT = 3;
 function metaSeason(start) {
-  const s = _metaSeasonData[start];
+  let s = _metaSeasonData[start];
+  if (!s) {
+    try { const kept = JSON.parse(localStorage.getItem(META_SEASON_STORE) || '{}')[start]; if (kept?.data) s = _metaSeasonData[start] = kept; } catch(e) {}
+  }
   if (s?.data || s?.loading || s?.error) {
-    if (s.data && Date.now() - s.savedAt > META_MAX_AGE_MS && !s.loading) { s.loading = true; fetchSeason(start); }
+    const retry = s.data ? Date.now() - s.savedAt > META_MAX_AGE_MS : s.error && Date.now() - s.at > META_RETRY_MS;
+    if (retry && !s.loading) { s.loading = true; fetchSeason(start); }
     return s;
   }
   _metaSeasonData[start] = { loading: true };
@@ -6806,12 +6853,18 @@ function metaSeason(start) {
 async function fetchSeason(start) {
   try {
     const res = await fetch(`${META_BASE}/season?start=${start}`, { cache: 'no-cache' });
-    if (!res.ok) throw new Error(res.status === 404 ? 'This season isn\'t archived yet.' : `The meta service isn't responding right now (error ${res.status}).`);
+    if (!res.ok) throw new Error(res.status === 404 ? 'This season isn\'t archived yet.' : `The stats service isn't responding right now (error ${res.status}).`);
     _metaSeasonData[start] = { data: await res.json(), savedAt: Date.now() };
+    try {
+      const kept = JSON.parse(localStorage.getItem(META_SEASON_STORE) || '{}');
+      kept[start] = _metaSeasonData[start];
+      const keep = Object.keys(kept).sort((a, b) => kept[b].savedAt - kept[a].savedAt).slice(0, META_SEASONS_KEPT);
+      localStorage.setItem(META_SEASON_STORE, JSON.stringify(Object.fromEntries(keep.map(k => [k, kept[k]]))));
+    } catch(e) {}  // storage full: memory only
   } catch(e) {
     const had = _metaSeasonData[start];
     if (had?.data) { had.loading = false; had.savedAt = Date.now(); return; }  // keep the season shown; try again in 30 min
-    _metaSeasonData[start] = { error: /fetch/i.test(e.message) ? 'Connection failed — check your internet connection and try again.' : e.message };
+    _metaSeasonData[start] = { error: metaFetchError(e), at: Date.now() };
   }
   if (currentScreen === 'meta') drawMeta();
 }
@@ -6918,32 +6971,43 @@ const META_RETRY_MS = 5 * 60e3, _metaFailedAt = {};
 const metaWaitRetry = url => Date.now() - (_metaFailedAt[url] || 0) < META_RETRY_MS;
 // GET a collector endpoint as { data, savedAt }, saved to localStorage
 async function fetchMetaJSON(url, cacheKey) {
-  try { const out = await fetchMetaJSONOnce(url, cacheKey); delete _metaFailedAt[url]; return out; }
+  try {
+    const out = await fetchMetaJSONOnce(url, cacheKey);
+    delete _metaFailedAt[url];
+    if (_metaHealth?.status === 'down') { _metaHealth = null; _metaHealthAt = 0; }  // it answers again: drop the note, ask /health anew
+    return out;
+  }
   catch(e) { _metaFailedAt[url] = Date.now(); throw e; }
 }
 async function fetchMetaJSONOnce(url, cacheKey) {
   let res;
   try { res = await fetch(url, { cache: 'no-cache' }); }  // the 30-min checks decide freshness
-  catch(e) { throw new Error('Connection failed — check your internet connection and try again.'); }
-  if (!res.ok) throw new Error(`The meta service isn't responding right now (error ${res.status}).`);
+  catch(e) { throw new Error(metaFetchError(e)); }
+  if (!res.ok) throw new Error(`The stats service isn't responding right now (error ${res.status}).`);
   const out = { data: await res.json(), savedAt: Date.now() };
   try { localStorage.setItem(cacheKey, JSON.stringify(out)); } catch(e) {}
   return out;
 }
 
 // The collector's live health (/health): paused at its daily database limits, or
-// stopped. Asked when the Meta screen opens, at most every 5 min; kept in memory
+// stopped. Asked when the Meta screen opens, at most every 5 min; kept in memory.
+// No answer while the phone is online means the collector itself is down (status
+// 'down') — at D1's daily limit even /health fails (19 Nov 2026)
 let _metaHealth = null, _metaHealthAt = 0;
 async function loadMetaHealth() {
   if (Date.now() - _metaHealthAt < 5 * 60e3) return;
   _metaHealthAt = Date.now();
+  let h;
   try {
     const res = await fetch(META_URL.replace(/\/meta$/, '/health'), { cache: 'no-cache' });
-    if (!res.ok) return;
-    const h = await res.json(), changed = h.status !== _metaHealth?.status;
-    _metaHealth = h;
-    if (changed && currentScreen === 'meta') drawMeta();
-  } catch(e) {}  // offline: no note
+    h = res.ok ? await res.json() : { status: 'down' };
+  } catch(e) {
+    if (navigator.onLine === false) return;  // offline: no note
+    h = { status: 'down' };
+  }
+  const changed = h.status !== _metaHealth?.status;
+  _metaHealth = h;
+  if (changed && currentScreen === 'meta') drawMeta();
 }
 function metaHealthHTML() {
   const h = _metaHealth;
@@ -6954,6 +7018,7 @@ function metaHealthHTML() {
     reads: `⏳ <b>Stats update delayed.</b> The collector has used today's database reads, so the next update waits until after ${at(h.resumes)}. Matches are still being collected.`,
     stalled: `⚠️ <b>Collection has stopped.</b> No battle logs read since ${h.polled_at ? metaStatsTime(h.polled_at) : 'a while'}. The stats below may be out of date.`,
     paused: `⏸️ <b>Collection is paused.</b> The stats below are from ${h.stats_at ? metaStatsTime(h.stats_at) : 'the last run'}.`,
+    down: `⚠️ <b>The stats service isn't responding.</b> Showing the stats saved on this phone${_meta?.data?.updated ? `, from ${metaStatsTime(_meta.data.updated)}` : ''}; past seasons you haven't opened before and other new data load once it's back.`,
   }[h.status];
   return msg ? `<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--surface2);border-left:3px solid var(--accent);font-size:12px">${msg}</div>` : '';
 }
@@ -8196,12 +8261,12 @@ function metaTrendsHTML(P, totals) {
 // One card's daily tally since collection began (/card), kept in memory for 1 h
 function metaCardDaysFor(id) {
   const c = _metaCardDays[id];
-  if (c && (c.loading || c.error || Date.now() - c.savedAt < 3600e3)) return c;
+  if (c && (c.loading || (c.error && Date.now() - c.at < META_RETRY_MS) || (!c.error && Date.now() - c.savedAt < 3600e3))) return c;
   _metaCardDays[id] = { ...(c || {}), loading: true };
   fetch(`${META_BASE}/card?id=${id}`, { cache: 'no-cache' })
     .then(r => { if (!r.ok) throw new Error(`The meta service isn't responding right now (error ${r.status}).`); return r.json(); })
     .then(d => { _metaCardDays[id] = { days: d.days, savedAt: Date.now() }; })
-    .catch(e => { _metaCardDays[id] = { error: /fetch/i.test(e.message) ? 'Connection failed — check your internet connection and try again.' : e.message }; })
+    .catch(e => { _metaCardDays[id] = c?.days ? { ...c, savedAt: Date.now() } : { error: metaFetchError(e), at: Date.now() }; })
     .finally(() => { if (currentScreen === 'meta' && _metaView === 'stats') redrawMetaList(); });
   return _metaCardDays[id];
 }
@@ -8746,7 +8811,7 @@ function warSetHTML(P, data) {
   const pool = [...cand.values()].sort((a, b) => b.score - a.score).slice(0, WAR_POOL);
   const set = pool.length >= _warSize ? bestWarSet(pool, _warSize) : null;
   const art = buildCardArtMap([]);
-  const note = W
+  const note = W?.games
     ? `${fmtNum(W.games)} war games collected${W.first ? ` since ${new Date(W.first).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : ''} — ${warCount} of their decks (${WAR_MIN_GAMES}+ games) use only cards you've unlocked.${_warSource === 'all' && warCount < 40 ? ' Until there are more, top ranked decks fill in.' : ''}`
     : _metaWar?.data ? 'No war games collected yet — using top ranked decks.'
     : _metaWar?.error ? `War games couldn't be loaded (${esc(_metaWar.error)}) — using top ranked decks.` : 'Loading war games…';
