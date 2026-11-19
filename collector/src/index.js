@@ -168,8 +168,10 @@ export default {
     if (url.pathname === '/status') {
       const st = await getState(env);
       const board = await env.DB.prepare(`SELECT COUNT(*) AS n, SUM(polls > 0) AS polled FROM players WHERE seen_at >= ?1`).bind(pollFrom(st)).first();
-      const day = await env.DB.prepare(`SELECT COUNT(*) AS n FROM matches WHERE time >= ?1`).bind(Math.floor((Date.now() - DAY) / 1000)).first();
-      return new Response(JSON.stringify({ ...st, players: board?.n || 0, players_polled: board?.polled || 0, matches_last_24h: day?.n || 0 }, null, 2), { headers });
+      const [day, war] = await env.DB.batch([`matches`, `war_games`].map(t =>
+        env.DB.prepare(`SELECT COUNT(*) AS n FROM ${t} WHERE time >= ?1`).bind(Math.floor((Date.now() - DAY) / 1000))));
+      return new Response(JSON.stringify({ ...st, players: board?.n || 0, players_polled: board?.polled || 0, matches_last_24h: day.results[0]?.n || 0,
+        war_games_last_24h: war.results[0]?.n || 0 }, null, 2), { headers });
     }
     return new Response('Max Royale meta collector — see /meta, /top and /status', { status: 404 });
   },
@@ -290,6 +292,28 @@ const side = (k, p) => ({
   [`l${k}`]: p.elixirLeaked ?? null,
 });
 
+// ── War games (19 Nov 2026): River Race battles and duels in the same battle logs,
+// kept apart from ranked (war_games) for a war deck set builder later. War isn't
+// matched by rating, so the opponent can be anyone. A duel's rounds are stored one
+// row each (rnd 1…) if the log lists them, else the battle as rnd 0. Kept forever (small).
+const WAR_TYPES = ['riverRacePvP', 'riverRaceDuel', 'riverRaceDuelColosseum'];
+// A side's average card level on the 1–16 scale (war has no level cap)
+const avgLevel = cards => {
+  const lv = (cards || []).filter(c => c.level && c.maxLevel).map(c => c.level + 16 - c.maxLevel);
+  return lv.length ? Math.round(lv.reduce((a, b) => a + b, 0) / lv.length * 100) / 100 : null;
+};
+function warGames(b, t) {
+  const me = b.team?.[0], opp = b.opponent?.[0];
+  if (!me?.tag || !opp?.tag) return [];
+  const [a, o] = [me, opp].sort((x, y) => (x.tag < y.tag ? -1 : 1));
+  const game = (rnd, A, O) => A?.cards?.length === 8 && O?.cards?.length === 8 ? [{
+    t, pa: a.tag, pb: o.tag, rnd, kind: b.type, da: deckKey(A.cards), db: deckKey(O.cards), ca: A.crowns || 0, cb: O.crowns || 0,
+    va: avgLevel(A.cards), vb: avgLevel(O.cards), la: A.elixirLeaked ?? null, lb: O.elixirLeaked ?? null }] : [];
+  const ra = a.rounds, ro = o.rounds;
+  if (Array.isArray(ra) && Array.isArray(ro) && ra.length && ra.length === ro.length) return ra.flatMap((r, i) => game(i + 1, r, ro[i]));
+  return game(0, a, o);
+}
+
 async function pollPlayers(env, now, st) {
   const dueRes = await env.DB.prepare(`
     SELECT tag, last_time FROM players WHERE seen_at >= ?1 AND next_poll <= ?2
@@ -298,8 +322,8 @@ async function pollPlayers(env, now, st) {
   if (!due.length) return;
   const logs = await Promise.all(due.map(p => api(env, `/players/${p.tag}/battlelog`).catch(e => ({ error: e.message }))));
 
-  const matches = [], updates = [];
-  let errors = 0;
+  const matches = [], updates = [], war = [];
+  let errors = 0, duelSample = null;
   // Tower troop names and art, so /meta can show them; saved when a new one turns up
   const troopNames = JSON.parse(st.troop_names || '{}'), newTroops = {};
   due.forEach((p, i) => {
@@ -311,6 +335,12 @@ async function pollPlayers(env, now, st) {
     }
     let last = p.last_time || 0;
     for (const b of log) {
+      // War battles: every one in the log (the insert skips those already saved)
+      if (WAR_TYPES.includes(b.type) && b.battleTime) {
+        war.push(...warGames(b, apiTime(b.battleTime)));
+        if (b.type !== 'riverRacePvP' && !st.war_duel_seen && !duelSample) duelSample = b;
+        continue;
+      }
       if (b.type !== 'pathOfLegend' || !b.battleTime) continue;
       const t = apiTime(b.battleTime);
       if (t <= (p.last_time || 0)) continue;
@@ -344,6 +374,12 @@ async function pollPlayers(env, now, st) {
       FROM json_each(?1) RETURNING time`).bind(JSON.stringify(matches), now).all();
     inserted = res.results.length;
   }
+  let warRes = null;
+  if (war.length) warRes = await env.DB.prepare(`
+    INSERT OR IGNORE INTO war_games (time, pa, pb, rnd, kind, da, db, ca, cb, va, vb, la, lb, seen)
+    SELECT value ->> 't', value ->> 'pa', value ->> 'pb', value ->> 'rnd', value ->> 'kind', value ->> 'da', value ->> 'db',
+           value ->> 'ca', value ->> 'cb', value ->> 'va', value ->> 'vb', value ->> 'la', value ->> 'lb', ?2
+    FROM json_each(?1)`).bind(JSON.stringify(war), now).run();
   // Matches per UTC hour, from the ones actually inserted (a match between two
   // top players is seen twice). Matches before `from` are counted once by the
   // stats job (seedActivity).
@@ -364,9 +400,13 @@ async function pollPlayers(env, now, st) {
     UPDATE players SET next_poll = json_extract(j.value, '$.next'), last_time = json_extract(j.value, '$.last'),
       polls = polls + 1
     FROM json_each(?1) AS j WHERE players.tag = json_extract(j.value, '$.tag')`).bind(JSON.stringify(updates)).run();
-  const reads = rowsRead([dueRes, insertRes, updateRes]) + 25;  // + the tick's state read
+  const reads = rowsRead([dueRes, insertRes, updateRes, warRes]) + 25;  // + the tick's state read
+  const warNew = warRes?.meta?.changes || 0;
   await setState(env, {
-    ...usage(st, now, reads, rowsWritten([insertRes, updateRes]) + 4),  // + the state rows
+    ...usage(st, now, reads, rowsWritten([insertRes, updateRes, warRes]) + 4),  // + the state rows
+    ...(warNew ? { war_total: (+st.war_total || 0) + warNew } : {}),
+    // The first duel seen, whole, to check how the log lists its rounds
+    ...(duelSample ? { war_duel_sample: JSON.stringify(duelSample), war_duel_seen: 1 } : {}),
     last_poll_at: now,
     polls_total: (+st.polls_total || 0) + due.length,
     matches_total: (+st.matches_total || 0) + inserted,
@@ -964,7 +1004,7 @@ async function prune(env, now, st) {
 }
 
 async function getState(env) {
-  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top', 'history', 'counters', 'deck_days', 'season_list', 'rivals')`).all();
+  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top', 'history', 'counters', 'deck_days', 'season_list', 'rivals', 'war_duel_sample')`).all();
   return Object.fromEntries(results.map(r => [r.k, r.v]));
 }
 async function setState(env, values) {

@@ -134,3 +134,14 @@ CREATE TABLE IF NOT EXISTS player_days (
 ) WITHOUT ROWID;
 -- A season's top decks without scanning all of them
 CREATE INDEX IF NOT EXISTS season_decks_n ON season_decks (season, n);
+
+-- River Race battles and duels from the same battle logs (19 Nov 2026), for a war
+-- deck set builder; kept forever. rnd: a duel's round (1…), 0 for a single battle.
+-- kind: the API's battle type. va / vb: average card level (1–16; war has no cap).
+CREATE TABLE IF NOT EXISTS war_games (
+  time INTEGER NOT NULL, pa TEXT NOT NULL, pb TEXT NOT NULL, rnd INTEGER NOT NULL,
+  kind TEXT, da TEXT, db TEXT, ca INTEGER, cb INTEGER,
+  va REAL, vb REAL, la REAL, lb REAL,
+  seen INTEGER,
+  PRIMARY KEY (time, pa, pb, rnd)
+) WITHOUT ROWID;
