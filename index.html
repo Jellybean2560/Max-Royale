@@ -6974,7 +6974,7 @@ async function fetchMetaJSON(url, cacheKey) {
   try {
     const out = await fetchMetaJSONOnce(url, cacheKey);
     delete _metaFailedAt[url];
-    if (_metaHealth?.status === 'down') { _metaHealth = null; _metaHealthAt = 0; }  // it answers again: drop the note, ask /health anew
+    if (!out.backup && _metaHealth?.status === 'down') { _metaHealth = null; _metaHealthAt = 0; }  // it answers again: drop the note, ask /health anew
     return out;
   }
   catch(e) { _metaFailedAt[url] = Date.now(); throw e; }
@@ -6984,7 +6984,8 @@ async function fetchMetaJSONOnce(url, cacheKey) {
   try { res = await fetch(url, { cache: 'no-cache' }); }  // the 30-min checks decide freshness
   catch(e) { throw new Error(metaFetchError(e)); }
   if (!res.ok) throw new Error(`The stats service isn't responding right now (error ${res.status}).`);
-  const out = { data: await res.json(), savedAt: Date.now() };
+  // X-Backup: the collector's database refused, so this is its last saved copy (KV)
+  const out = { data: await res.json(), savedAt: Date.now(), ...(res.headers.get('X-Backup') === '1' ? { backup: true } : {}) };
   try { localStorage.setItem(cacheKey, JSON.stringify(out)); } catch(e) {}
   return out;
 }
@@ -7018,7 +7019,7 @@ function metaHealthHTML() {
     reads: `⏳ <b>Stats update delayed.</b> The collector has used today's database reads, so the next update waits until after ${at(h.resumes)}. Matches are still being collected.`,
     stalled: `⚠️ <b>Collection has stopped.</b> No battle logs read since ${h.polled_at ? metaStatsTime(h.polled_at) : 'a while'}. The stats below may be out of date.`,
     paused: `⏸️ <b>Collection is paused.</b> The stats below are from ${h.stats_at ? metaStatsTime(h.stats_at) : 'the last run'}.`,
-    down: `⚠️ <b>The stats service isn't responding.</b> Showing the stats saved on this phone${_meta?.data?.updated ? `, from ${metaStatsTime(_meta.data.updated)}` : ''}; past seasons you haven't opened before and other new data load once it's back.`,
+    down: `⚠️ <b>The stats service's database isn't responding.</b> Showing the last saved stats${_meta?.data?.updated ? `, from ${metaStatsTime(_meta.data.updated)}` : ''}; anything not saved before it stopped loads once it's back.`,
   }[h.status];
   return msg ? `<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--surface2);border-left:3px solid var(--accent);font-size:12px">${msg}</div>` : '';
 }

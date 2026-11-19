@@ -125,21 +125,41 @@ export default {
       await setState(env, error).catch(() => new Promise(r => setTimeout(r, 15e3)).then(() => setState(env, error)));
     }));
   },
-  async fetch(req, env) {
+  // Any failure answers 503 with CORS headers, so the app can read it (a thrown
+  // error answers without them, which a browser can't tell from being offline)
+  async fetch(req, env, ctx) {
+    try { return await this.route(req, env, ctx); }
+    catch (e) {
+      return new Response(JSON.stringify({ error: String(e.message).slice(0, 200) }), { status: 503,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Retry-After': '300' } });
+    }
+  },
+  async route(req, env, ctx) {
     const url = new URL(req.url);
-    const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
-    if (['/meta', '/top', '/history', '/counters', '/war'].includes(url.pathname)) {
-      const row = await env.DB.prepare(`SELECT v FROM state WHERE k = ?1`).bind(url.pathname.slice(1)).first();
-      return new Response(row?.v || JSON.stringify({ empty: true }), { headers: { ...headers, 'Cache-Control': 'public, max-age=600' } });
+    const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Expose-Headers': 'X-Backup' };
+    // From D1, else (D1 refusing, e.g. at its daily limits) the copy in KV, marked X-Backup
+    const serve = async (key, read, empty) => {
+      let v;
+      try { v = await read(); }
+      catch (e) {
+        const copy = await env.BACKUP?.get(key).catch(() => null);
+        if (copy == null) throw e;
+        return new Response(copy, { headers: { ...headers, 'X-Backup': '1', 'Cache-Control': 'public, max-age=120' } });
+      }
+      if (v != null && SEED_BACKUP(key)) ctx.waitUntil(env.BACKUP?.get(key).then(c => c == null && env.BACKUP.put(key, v)).catch(() => {}));
+      return new Response(v ?? empty, { status: v == null && key.startsWith('season:') ? 404 : 200, headers: { ...headers, 'Cache-Control': 'public, max-age=600' } });
+    };
+    if (BACKED_UP.includes(url.pathname.slice(1))) {
+      const k = url.pathname.slice(1);
+      return serve(k, async () => (await env.DB.prepare(`SELECT v FROM state WHERE k = ?1`).bind(k).first())?.v, JSON.stringify({ empty: true }));
     }
     // The archive: the seasons kept, one season's stats, one card's daily tally since collection began
     if (url.pathname === '/seasons') {
-      const row = await env.DB.prepare(`SELECT v FROM state WHERE k = 'season_list'`).first();
-      return new Response(row?.v || '{"seasons":[]}', { headers: { ...headers, 'Cache-Control': 'public, max-age=600' } });
+      return serve('season_list', async () => (await env.DB.prepare(`SELECT v FROM state WHERE k = 'season_list'`).first())?.v, '{"seasons":[]}');
     }
     if (url.pathname === '/season') {
-      const row = await env.DB.prepare(`SELECT v FROM seasons WHERE start = ?1`).bind(Math.floor(+url.searchParams.get('start') / 1000) || 0).first();
-      return new Response(row?.v || JSON.stringify({ empty: true }), { status: row ? 200 : 404, headers: { ...headers, 'Cache-Control': 'public, max-age=600' } });
+      const start = Math.floor(+url.searchParams.get('start') / 1000) || 0;
+      return serve(`season:${start}`, async () => (await env.DB.prepare(`SELECT v FROM seasons WHERE start = ?1`).bind(start).first())?.v, JSON.stringify({ empty: true }));
     }
     if (url.pathname === '/card') {
       const id = parseInt(url.searchParams.get('id'), 10);
@@ -154,7 +174,10 @@ export default {
     // Small and live, for the app's Meta screen: whether collection is paused at a
     // daily limit or has stopped (~40 state rows read; the app asks at most every 5 min)
     if (url.pathname === '/health') {
-      const st = await getState(env), now = Date.now();
+      const now = Date.now();
+      let st;
+      try { st = await getState(env); }
+      catch (e) { return new Response(JSON.stringify({ status: 'down', now, resumes: (Math.floor(now / DAY) + 1) * DAY, error: String(e.message).slice(0, 200) }), { headers }); }
       const reads = readsToday(st, now), writes = writesToday(st, now), polled = +st.last_poll_at || 0;
       const statsLate = now - (+st.stats_at || 0) > refreshEvery(+st.stats_reads, STATS_SHARE) + 30 * MINUTE;
       const status = env.PAUSED === '1' ? 'paused'
@@ -1200,6 +1223,7 @@ async function buildSeason(env, now, season) {
     env.DB.prepare(`INSERT OR REPLACE INTO seasons (start, v) VALUES (?1, ?2)`).bind(season, JSON.stringify(out)),
     env.DB.prepare(`INSERT INTO state (k, v) VALUES ('season_list', ?1) ON CONFLICT (k) DO UPDATE SET v = excluded.v`).bind(JSON.stringify({ updated: now, seasons })),
   ]);
+  await backup(env, [[`season:${season}`, JSON.stringify(out)], ['season_list', JSON.stringify({ updated: now, seasons })]]);
   return rowsRead([decks, cards, troops, span, prevCards, list]);
 }
 
@@ -1222,7 +1246,19 @@ async function getState(env) {
   const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top', 'history', 'counters', 'deck_days', 'season_list', 'rivals', 'war_duel_sample', 'war', 'day_log')`).all();
   return Object.fromEntries(results.map(r => [r.k, r.v]));
 }
+// ── Backup (19 Nov 2026): D1's daily limits were hit on 19 Nov 2026 and every
+// endpoint failed for ~20 h. Each served JSON is also put in KV (BACKUP) when it
+// changes — ~30 writes a day of KV's free 1,000 — and served from there while D1 refuses.
+const BACKED_UP = ['meta', 'top', 'history', 'counters', 'war'];
+// A served JSON with no copy yet (built before the backup existed) is copied when it's read
+const SEED_BACKUP = () => true;
+async function backup(env, entries) {
+  if (!env.BACKUP) return;
+  await Promise.all(entries.map(([k, v]) => env.BACKUP.put(k, v))).catch(e => console.log(`backup: ${e.message}`));
+}
 async function setState(env, values) {
+  const copies = BACKED_UP.filter(k => typeof values[k] === 'string').map(k => [k, values[k]]);
+  if (copies.length) await backup(env, copies);
   await env.DB.prepare(`
     INSERT INTO state (k, v) SELECT key, value FROM json_each(?1) WHERE true
     ON CONFLICT (k) DO UPDATE SET v = excluded.v`).bind(JSON.stringify(values)).run();

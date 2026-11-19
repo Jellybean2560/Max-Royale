@@ -17,6 +17,13 @@ database_id = "83db5505-795b-4d7c-bc0f-e02dd74ef43d"
 binding = "CR"
 service = "quiet-frost-f9f0"
 
+# A copy of every served stats JSON (/meta, /top, /history, /counters, /war,
+# /seasons, /season), outside D1: served when D1 refuses (its daily limits), see
+# backup() in src/index.js. KV's free plan: 1,000 writes and 100k reads a day.
+[[kv_namespaces]]
+binding = "BACKUP"
+id = "0ea8c43fcc584ac4883b2b85fb099940"
+
 [observability]
 enabled = true
 
