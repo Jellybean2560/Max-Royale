@@ -63,7 +63,7 @@ const READ_BUDGET = 2.3e6, POLL_RESERVE = 250e3;   // raised from 2M by the user
 // prune only run if their last run's writes leave WRITE_RESERVE for polling
 // (~25k a day), and everything but the stats and /top stops at WRITE_BUDGET,
 // below the limit for what isn't counted (state rows, manual work)
-const WRITE_BUDGET = 92e3, WRITE_RESERVE = 30e3, WRITE_GUESS = { archive: 12e3, prune: 25e3 };
+const WRITE_BUDGET = 92e3, WRITE_RESERVE = 30e3, WRITE_GUESS = { archive: 12e3, prune: 25e3, draft: 8e3 };
 // next_poll of players who fell off the leaderboard: past the end of the poll
 // index's range, so picking who to poll no longer walks over them (700 stale
 // overdue rows were read on every poll — ~1M rows a day — before this)
@@ -91,6 +91,12 @@ const TOWER_SAMPLE = 3000;          // recent matches read to learn full tower H
 // 13 h left ~1.5% of a day's matches out (14 Nov 2026: players woken or polled
 // late); after 25 h fewer than 0.2% still arrive
 const ARCHIVE_LAG = 25 * HOUR;
+// Until then a finished day gets a provisional tally (a "draft") DRAFT_LAG after
+// it ends, from the matches saved by then (matches.seen before its cut); the stats
+// and /top sum it like an archived day and read only the day's matches saved
+// after the cut live. The final archive replaces its rows. Without it the stats
+// tallied ~2 days of raw matches a run (~540k rows, Nov 2026).
+const DRAFT_LAG = 30 * MINUTE;
 const SEASON_DECKS = 300;           // decks served per season
 const RIVALS_EVERY = 72 * HOUR;     // /top recounts the rivalries every third day (~300k rows, Nov 2026)
 const TOP_STARVED = 48 * HOUR;      // /top this old jumps ahead of the stats
@@ -145,6 +151,20 @@ export default {
       return new Response(JSON.stringify({ id, days: results.map(r => [r.start * 1000, r.m || 0, r.n || 0, r.w || 0]) }),
         { headers: { ...headers, 'Cache-Control': 'public, max-age=3600' } });
     }
+    // Small and live, for the app's Meta screen: whether collection is paused at a
+    // daily limit or has stopped (~40 state rows read; the app asks at most every 5 min)
+    if (url.pathname === '/health') {
+      const st = await getState(env), now = Date.now();
+      const reads = readsToday(st, now), writes = writesToday(st, now), polled = +st.last_poll_at || 0;
+      const statsLate = now - (+st.stats_at || 0) > refreshEvery(+st.stats_reads, STATS_SHARE) + 30 * MINUTE;
+      const status = env.PAUSED === '1' ? 'paused'
+        : writes >= WRITE_BUDGET ? 'writes'
+        : now - polled > 2 * HOUR ? 'stalled'
+        : statsLate && reads + (+st.stats_reads || 0) > READ_BUDGET - POLL_RESERVE ? 'reads'
+        : 'ok';
+      return new Response(JSON.stringify({ status, now, resumes: (Math.floor(now / DAY) + 1) * DAY, polled_at: polled || null, stats_at: +st.stats_at || null,
+        reads, read_budget: READ_BUDGET, writes, write_budget: WRITE_BUDGET }), { headers: { ...headers, 'Cache-Control': 'public, max-age=300' } });
+    }
     if (url.pathname === '/status') {
       const st = await getState(env);
       const board = await env.DB.prepare(`SELECT COUNT(*) AS n, SUM(polls > 0) AS polled FROM players WHERE seen_at >= ?1`).bind(pollFrom(st)).first();
@@ -187,6 +207,8 @@ async function tick(env) {
   if (!writesFull && due('board', BOARD_EVERY)) return run('board', refreshBoard);
   // /top two days stale (stats kept taking the day's budget first): it goes before the stats this once
   if (+st.matches_total > 0 && now - (+st.top_at || 0) > TOP_STARVED && due('top', 0) && fits('top')) return run('top', computeTop);
+  // A finished day's draft goes first, so the stats after it can use it
+  if (+st.archive_to && periodEnd(draftStart(st)) <= now - DRAFT_LAG && now - (+st.draft_try_at || 0) > 10 * MINUTE && fits('draft') && fitsWrites('draft')) return run('draft', draftPeriod);
   if (+st.matches_total > 0 && due('stats', refreshEvery(+st.stats_reads, STATS_SHARE)) && fits('stats')) return run('stats', computeStats);
   const backlog = +st.archive_to && periodEnd(+st.archive_to) <= now - ARCHIVE_LAG - DAY;
   if (+st.matches_total > 0 && due('top', Math.max(refreshEvery(+st.top_reads, TOP_SHARE), backlog ? TOP_EVERY_BACKLOG : 0)) && fits('top')) return run('top', computeTop);
@@ -312,14 +334,14 @@ async function pollPlayers(env, now, st) {
   let inserted = 0, insertRes = null;
   if (matches.length) {
     const res = insertRes = await env.DB.prepare(`
-      INSERT OR IGNORE INTO matches (time, pa, pb, da, db, ca, cb, ra, rb, ta, tb, ka, kb, sa, sb, la, lb)
+      INSERT OR IGNORE INTO matches (time, pa, pb, da, db, ca, cb, ra, rb, ta, tb, ka, kb, sa, sb, la, lb, seen)
       SELECT json_extract(value, '$.t'), json_extract(value, '$.pa'), json_extract(value, '$.pb'),
              json_extract(value, '$.da'), json_extract(value, '$.db'), json_extract(value, '$.ca'),
              json_extract(value, '$.cb'), json_extract(value, '$.ra'), json_extract(value, '$.rb'),
              json_extract(value, '$.ta'), json_extract(value, '$.tb'), json_extract(value, '$.ka'),
              json_extract(value, '$.kb'), json_extract(value, '$.sa'), json_extract(value, '$.sb'),
-             json_extract(value, '$.la'), json_extract(value, '$.lb')
-      FROM json_each(?1) RETURNING time`).bind(JSON.stringify(matches)).all();
+             json_extract(value, '$.la'), json_extract(value, '$.lb'), ?2
+      FROM json_each(?1) RETURNING time`).bind(JSON.stringify(matches), now).all();
     inserted = res.results.length;
   }
   // Matches per UTC hour, from the ones actually inserted (a match between two
@@ -422,8 +444,8 @@ const gapVals = (p = '', fn = x => x) => ['z', 'y'].flatMap(c => [0, 1].flatMap(
 // More than 100 arguments go in nested concat() calls (a function takes ≤ 127)
 const concatAll = parts => parts.length <= 100 ? `concat(${parts.join(', ')})` : `concat(${concatAll(parts.slice(0, 100))}, ${concatAll(parts.slice(100))})`;
 
-// SQL for a tally over the matches in `ranges` ([[lo, hi]] SQL expressions in
-// unix seconds); `tk` is the parameter holding the top deck keys as JSON.
+// SQL for a tally over the matches in `ranges` ([[lo, hi, condition?]] SQL
+// expressions in unix seconds); `tk` is the parameter holding the top deck keys as JSON.
 //   s:   one row per deck played (a side of a match)
 //   g:   the grouping of s by deck, used as `lg`
 //   row: the tally rows (tallyCols) off lg
@@ -438,13 +460,13 @@ function tallySQL(c, ranges, tk) {
   // Counters: for a top deck, the opponent's deck (cx) is searched with instr()
   // per card — no json_each, so it reads no extra rows
   const counters = topKeys.length > 0;
-  const side = (A, B, lo, hi) => `
+  const side = (A, B, lo, hi, cond) => `
       SELECT d${A} AS deck, c${A} > c${B} AS w, ca = cb AS d, c${A} > c${B} AND c${A} = 3 AS t, t${A} AS tt,
              ${dmg(`t${B}`, `k${B}`, `s${B}`)} AS dealt, ${dmg(`t${A}`, `k${A}`, `s${A}`)} AS taken, l${A} AS leak, r${A} AS rt,
              ${counters ? `CASE WHEN d${A} IN (SELECT k FROM tk) THEN ',' || d${B} END` : 'NULL'} AS cx,
              ${gap(`r${A}`, `r${B}`)} AS gb, c${A} - c${B} AS mg, c${B} AS oc
-        FROM matches WHERE time >= ${lo} AND time < ${hi}`;
-  const s = ranges.flatMap(([lo, hi]) => [side('a', 'b', lo, hi), side('b', 'a', lo, hi)]).join('\n      UNION ALL');
+        FROM matches WHERE time >= ${lo} AND time < ${hi}${cond ? ` AND ${cond}` : ''}`;
+  const s = ranges.flatMap(([lo, hi, cond]) => [side('a', 'b', lo, hi, cond), side('b', 'a', lo, hi, cond)]).join('\n      UNION ALL');
   const hit = id => `(instr(cx, ',${id}') > 0)`;
   const counterSum = k => {
     const ids = slots.slice(2 * k, 2 * k + 2);
@@ -492,14 +514,20 @@ async function statsGrouping(env, st, oldMeta, since, until, useTallies = true) 
     env.DB.prepare(`SELECT (SELECT MIN(time) FROM matches WHERE time >= ?1) AS first, (SELECT MAX(time) FROM matches) AS last`).bind(since),
     env.DB.prepare(`SELECT start, end, x FROM periods WHERE start >= ?1 ORDER BY start`).bind(since),
   ]);
+  // Drafts carry on where the archive ends (a period archived since wins)
+  const stored = per.results.concat(draftsOf(st).filter(d => d.start >= since && !per.results.some(p => p.start === d.start)))
+    .sort((x, y) => x.start - y.start);
   const tallied = [];
-  for (const p of useTallies ? per.results : []) {
+  for (const p of useTallies ? stored : []) {
     if (!p.x) { if (tallied.length) break; continue; }
     if (tallied.length && p.start !== tallied[tallied.length - 1].end) break;
     tallied.push(p);
   }
   const tFrom = tallied[0]?.start ?? since, tTo = tallied[tallied.length - 1]?.end ?? since;
-  const live = [['?1', '?5'], ['?6', '?2']];
+  // Live: before and after the stored run, and each draft's matches saved after
+  // its cut — read with the matches after the run, as one index range from the
+  // first draft on (D1 allows 5 terms in a UNION)
+  const live = [['?1', '?5'], lateRange(tallied, '?6', '?2')];
   const q = tallySQL(c, live, '?4');
   // A top deck's games (i 0) or wins (i 1) against each card, in cardIds order, CHUNK to an array
   const cardArray = i => {
@@ -513,7 +541,8 @@ async function statsGrouping(env, st, oldMeta, since, until, useTallies = true) 
   const nulls = n => Array(n).fill('NULL').join(', ');
   const sums = ['n', 'w', 'd', 't', 'dealt', 'taken', 'hn', 'leak', 'ln', 'bd', 'z0', 'z1', 'y0', 'y1', 'cg', ...counterCols(c)];
   // Players per top deck: player_days (every player, from 15 Nov 2026) and the untallied matches' sides
-  const liveSides = live.flatMap(([lo, hi]) => ['a', 'b'].map(A => `SELECT d${A}, p${A} FROM matches WHERE time >= ${lo} AND time < ${hi} AND d${A} IN (SELECT deck FROM tp)`)).join(' UNION ALL ');
+  const liveSides = live.flatMap(([lo, hi, cond]) => ['a', 'b'].map(A =>
+    `SELECT d${A}, p${A} FROM matches WHERE time >= ${lo} AND time < ${hi}${cond ? ` AND ${cond}` : ''} AND d${A} IN (SELECT deck FROM tp)`)).join(' UNION ALL ');
   // Top decks and every card in one statement. u: the stored days plus the
   // untallied matches' tally, in the same columns; g sums them per deck.
   step('grouping');
@@ -694,10 +723,19 @@ async function computeTop(env, now) {
   // Rivalries are recounted every other day (RIVALS_EVERY) — their pass is ~230k
   // rows (Nov 2026) — and kept in their own small state row in between
   const fresh = now - (+st.rivals_at || 0) > RIVALS_EVERY;
-  // Archived days come from player_days ([its first day, archive_to)); the rest of the
-  // window — today and yesterday, and the days before player_days began — from the matches
-  const first = await env.DB.prepare(`SELECT MIN(start) AS s FROM player_days`).first();   // one row, by the key
-  const pdTo = Math.floor((+st.archive_to || 0) / 1000), pdFrom = Math.min(first?.s ?? pdTo, pdTo);
+  // Stored days come from player_days (archived and drafts, from the first one in the window);
+  // the rest of the window — its start, today, and the drafts' late matches — from the matches
+  // The first stored day in the window: the matches before it are read live (the
+  // window rarely starts at midnight; taking the table's first day left that part
+  // of the window out until 19 Nov 2026)
+  const first = await env.DB.prepare(`SELECT MIN(start) AS s FROM player_days WHERE start >= ?1`).bind(since).first();   // one row, by the key
+  // Drafts (contiguous from archive_to) have player_days too; their matches saved after the cut are read live
+  const drafts = [];
+  for (const d of draftsOf(st)) if (d.start === (drafts.length ? drafts[drafts.length - 1].end : Math.floor((+st.archive_to || 0) / 1000))) drafts.push(d);
+  const archTo = Math.floor((+st.archive_to || 0) / 1000);
+  const pdTo = drafts.length ? drafts[drafts.length - 1].end : archTo, pdFrom = Math.min(first?.s ?? archTo, archTo);
+  const [lo, , cond] = lateRange(drafts, '?6', '');
+  const after = `time >= max(?1, ${lo})${cond ? ` AND ${cond}` : ''}`;
   const [res, pairs, kept] = await env.DB.batch([env.DB.prepare(`
     WITH s AS (
       SELECT tag, deck, n, w FROM player_days WHERE start >= max(?1, ?5) AND start < ?6
@@ -705,8 +743,8 @@ async function computeTop(env, now) {
       /* two ranges, each its own index range (an OR would scan the whole week) */
       SELECT pa, da, 1, ca > cb FROM matches WHERE time >= ?1 AND time < ?5
       UNION ALL SELECT pb, db, 1, cb > ca FROM matches WHERE time >= ?1 AND time < ?5
-      UNION ALL SELECT pa, da, 1, ca > cb FROM matches WHERE time >= max(?1, ?6)
-      UNION ALL SELECT pb, db, 1, cb > ca FROM matches WHERE time >= max(?1, ?6)),
+      UNION ALL SELECT pa, da, 1, ca > cb FROM matches WHERE ${after}
+      UNION ALL SELECT pb, db, 1, cb > ca FROM matches WHERE ${after}),
     g AS (SELECT s.tag, s.deck, SUM(s.n) AS n, SUM(s.w) AS w FROM s JOIN players p ON p.tag = s.tag AND p.seen_at >= ?2
           GROUP BY s.tag, s.deck),
     /* the player's totals come from the same grouping, so the matches are read once */
@@ -761,9 +799,9 @@ async function archivePeriod(env, now, st) {
   step('archive decks');
   const dayRes = await archiveDecks(env, st, a, b);
   step('archive totals');
-  const [cardDays, periodRow, playerDays] = periodTotals(env, a, b, season);
+  const tot = await periodTotals(env, a);
   const batch = await env.DB.batch([
-    cardDays,
+    cardDays(env, a, tot),
     env.DB.prepare(`
       INSERT INTO season_decks (season, deck, n, w, d, t) SELECT ?2, deck, n, w, d, t FROM day_decks WHERE start = ?1
       ON CONFLICT (season, deck) DO UPDATE SET n = n + excluded.n, w = w + excluded.w, d = d + excluded.d, t = t + excluded.t`).bind(a, season),
@@ -772,64 +810,114 @@ async function archivePeriod(env, now, st) {
       ON CONFLICT (season, card) DO UPDATE SET n = n + excluded.n, w = w + excluded.w, d = d + excluded.d, t = t + excluded.t`).bind(a, season),
     env.DB.prepare(`
       INSERT INTO season_troops (season, troop, n, w, t)
-      SELECT ?2, j.value ->> 0 AS troop, SUM(j.value ->> 1), SUM(j.value ->> 2), SUM(j.value ->> 3)
-      FROM day_decks, json_each(day_decks.tr) AS j WHERE start = ?1 AND j.value ->> 0 IS NOT NULL GROUP BY troop
-      ON CONFLICT (season, troop) DO UPDATE SET n = n + excluded.n, w = w + excluded.w, t = t + excluded.t`).bind(a, season),
-    periodRow,
-    playerDays,
+      SELECT ?2, value ->> 0, value ->> 1, value ->> 2, value ->> 3 FROM json_each(?1) WHERE true
+      ON CONFLICT (season, troop) DO UPDATE SET n = n + excluded.n, w = w + excluded.w, t = t + excluded.t`).bind(JSON.stringify(tot.x.tr), season),
+    // x: the period's rating gap and tower troop totals over every deck; set
+    // means the period's day_decks hold the full tally the stats can sum
+    env.DB.prepare(`INSERT OR REPLACE INTO periods (start, end, season, matches, x) VALUES (?1, ?2, ?3, ?4, ?5)`)
+      .bind(a, b, season, tot.matches, JSON.stringify(tot.x)),
+    playerDays(env, a, b),
     env.DB.prepare(`INSERT INTO state (k, v) VALUES ('archive_to', ?1) ON CONFLICT (k) DO UPDATE SET v = excluded.v`).bind(String(endMs)),
   ]);
-  let reads = rowsRead([dayRes]) + rowsRead(batch);
-  const writes = rowsWritten([dayRes, ...batch]) + 4;  // + the season's JSON and state rows
+  let reads = rowsRead([dayRes, ...tot.res]) + rowsRead(batch);
+  const writes = rowsWritten([dayRes, ...batch]) + 5;  // + the season's JSON and state rows
   // The season's stats are rebuilt when the archive is caught up, or at a season's last period during a backlog
   // (and at least every 6 h, so a long backlog still shows its progress)
   const caughtUp = periodEnd(endMs) > now - ARCHIVE_LAG, seasonDone = endMs >= nextSeasonStart(startMs);
   const build = caughtUp || seasonDone || now - (+st.season_built_at || 0) > 6 * HOUR;
   if (build) { step('archive season'); reads += await buildSeason(env, now, season); }
-  await countReads(env, 'archive', now, reads, { archive_at: now, ...(build ? { season_built_at: now } : {}) }, writes);
+  // The period's draft is replaced now
+  const drafts = draftsOf(await getState(env)).filter(d => d.start >= b);
+  await countReads(env, 'archive', now, reads, { archive_at: now, ...(build ? { season_built_at: now } : {}), drafts: JSON.stringify(drafts.map(draftRow)) }, writes);
+  step('');
+}
+
+// ── Drafts: a finished day tallied DRAFT_LAG after it ends, from the matches
+// saved before `cut` (ms) — day_decks, card_days and player_days rows like the
+// archive's, which the final archive replaces (a superset: matches are only
+// added). No season totals or periods row. state.drafts: [[start, end, cut, x]]
+// (unix seconds, cut in ms as matches.seen), draft_to: where the next one starts.
+const draftRow = d => [d.start, d.end, d.cut, typeof d.x === 'string' ? JSON.parse(d.x) : d.x];
+function draftsOf(st) {
+  const arch = Math.floor((+st.archive_to || 0) / 1000);
+  return JSON.parse(st.drafts || '[]').filter(d => Array.isArray(d) && d.slice(0, 3).every(Number.isInteger) && d[0] >= arch)
+    .map(([start, end, cut, x]) => ({ start, end, cut, x: typeof x === 'string' ? x : JSON.stringify(x) })).sort((p, q) => p.start - q.start);
+}
+// The matches after a stored run (from `to` on) plus the drafts' matches saved after
+// their cut, as one range [lo, hi, condition] starting at the first draft
+function lateRange(stored, to, hi) {
+  const late = stored.filter(p => p.cut);
+  if (!late.length) return [to, hi];
+  return [late[0].start, hi, `(time >= ${to} OR ${late.map(p => `(time >= ${p.start} AND time < ${p.end} AND seen >= ${p.cut})`).join(' OR ')})`];
+}
+const draftStart = st => Math.max(+st.archive_to || 0, +st.draft_to || 0);
+async function draftPeriod(env, now, st) {
+  const startMs = draftStart(st), endMs = periodEnd(startMs);
+  const a = startMs / 1000, b = endMs / 1000, cut = now - 2 * MINUTE;
+  // Saved before the cut (a poll still running at `now` started a minute or more before it)
+  const cond = `(seen IS NULL OR seen < ${cut})`;
+  step('draft decks');
+  const dayRes = await archiveDecks(env, st, a, b, cond);
+  step('draft totals');
+  const tot = await periodTotals(env, a);
+  const batch = await env.DB.batch([cardDays(env, a, tot), playerDays(env, a, b, cond)]);
+  const cur = await getState(env);
+  const drafts = draftsOf(cur).filter(d => d.start !== a).concat([{ start: a, end: b, cut, x: tot.x }]).sort((p, q) => p.start - q.start);
+  await countReads(env, 'draft', now, rowsRead([dayRes, ...tot.res, ...batch]) + 2,
+    { draft_at: now, draft_to: endMs, drafts: JSON.stringify(drafts.map(draftRow)) }, rowsWritten([dayRes, ...batch]) + 3);
   step('');
 }
 
 // A period's day_decks rows: the full tally per deck (tower damage, rating bands
-// and gaps, close games, troops, counters for the top decks), so the stats can sum stored days
-async function archiveDecks(env, st, a, b) {
+// and gaps, close games, troops, counters for the top decks), so the stats can sum
+// stored days. `cond`: a draft's limit on which matches count.
+async function archiveDecks(env, st, a, b, cond) {
   const meta = await env.DB.prepare(`SELECT v FROM state WHERE k = 'meta'`).first();
   const c = await tallyContext(env, st, JSON.parse(meta?.v || 'null'), null);
-  const q = tallySQL(c, [['?1', '?2']], '?3');
+  const q = tallySQL(c, [['?1', '?2', cond]], '?3');
   return env.DB.prepare(`
     WITH ${q.tk}, s AS (${q.s}), lg AS (${q.g})
     INSERT OR REPLACE INTO day_decks (start, ${tallyCols(c)}) SELECT ?1, ${tallyCols(c)} FROM (${q.row})`).bind(a, b, JSON.stringify(c.topKeys)).run();
 }
 
-// A period's card totals (with rating bands), its periods row and the per-player
-// deck tallies — everything of the archive but the running season totals
-function periodTotals(env, a, b, season) {
-  return [
-    env.DB.prepare(`
-      INSERT OR REPLACE INTO card_days (start, card, n, w, d, t, b1n, b1w, b2n, b2w)
-      SELECT ?1, j.value, SUM(n), SUM(w), SUM(d), SUM(t), ${[0, 1, 2, 3].map(i => `SUM(${unpack('bd', i)})`).join(', ')}
-      FROM day_decks, json_each('["' || replace(deck, ',', '","') || '"]') AS j
-      WHERE start = ?1 GROUP BY j.value
-      UNION ALL SELECT ?1, '_', COALESCE(SUM(n), 0) / 2, 0, 0, 0, NULL, NULL, NULL, NULL FROM day_decks WHERE start = ?1`).bind(a),
-    // x: the period's rating gap and tower troop totals over every deck; set
-    // means the period's day_decks hold the full tally the stats can sum
-    env.DB.prepare(`
-      INSERT OR REPLACE INTO periods (start, end, season, matches, x)
-      SELECT ?1, ?2, ?3, COALESCE(SUM(n), 0) / 2, json_object('z', json_array(${gapVals('', v => `COALESCE(SUM(${v}), 0)`).join(', ')}),
-        'tr', json(COALESCE((SELECT json_group_array(json_array(troop, n, w, t)) FROM (
-          SELECT j.value ->> 0 AS troop, SUM(j.value ->> 1) AS n, SUM(j.value ->> 2) AS w, SUM(j.value ->> 3) AS t
-          FROM day_decks, json_each(day_decks.tr) AS j WHERE start = ?1 AND j.value ->> 0 IS NOT NULL GROUP BY troop)), '[]')))
-      FROM day_decks WHERE start = ?1`).bind(a, b, season),
-    // Per player and deck: /top sums a week of these (tracked players) instead of
-    // re-reading the week's matches, the stats count each deck's players from them
-    env.DB.prepare(`
-      INSERT OR REPLACE INTO player_days (start, tag, deck, n, w)
-      SELECT ?1, tag, deck, COUNT(*), SUM(w) FROM (
-        SELECT pa AS tag, da AS deck, ca > cb AS w FROM matches WHERE time >= ?1 AND time < ?2
-        UNION ALL SELECT pb, db, cb > ca FROM matches WHERE time >= ?1 AND time < ?2)
-      GROUP BY tag, deck`).bind(a, b),
-  ];
+// A period's card totals (with rating bands), tower troop and rating gap totals,
+// added up here from its day_decks rows: splitting every deck with json_each in
+// SQL read ~48k rows a period (Nov 2026), reading the rows ~4k
+async function periodTotals(env, a) {
+  const res = await env.DB.batch([
+    env.DB.prepare(`SELECT deck, n, w, d, t, ${[0, 1, 2, 3].map(i => `${unpack('bd', i)} AS b${i}`).join(', ')}, tr FROM day_decks WHERE start = ?1`).bind(a),
+    env.DB.prepare(`SELECT json_array(${gapVals('', v => `COALESCE(SUM(${v}), 0)`).join(', ')}) AS z FROM day_decks WHERE start = ?1`).bind(a),
+  ]);
+  const cards = {}, troops = {};
+  let sides = 0;
+  for (const r of res[0].results) {
+    sides += r.n;
+    for (const id of r.deck.split(',')) {
+      const e = (cards[id] ||= [0, 0, 0, 0, 0, 0, 0, 0]);
+      [r.n, r.w, r.d, r.t, r.b0, r.b1, r.b2, r.b3].forEach((v, i) => { e[i] += v || 0; });
+    }
+    for (const [id, n, w, t3] of JSON.parse(r.tr || '[]')) {
+      if (id == null) continue;
+      const e = (troops[id] ||= [0, 0, 0]);
+      e[0] += n || 0; e[1] += w || 0; e[2] += t3 || 0;
+    }
+  }
+  const tr = Object.entries(troops).map(([id, v]) => [+id, ...v]).sort((p, q) => p[0] - q[0]);
+  return { res, cards, matches: Math.floor(sides / 2), x: { z: JSON.parse(res[1].results[0]?.z || '[]'), tr } };
 }
+// card_days rows from those totals (card '_' is the period's match count)
+const cardDays = (env, a, tot) => env.DB.prepare(`
+  INSERT OR REPLACE INTO card_days (start, card, n, w, d, t, b1n, b1w, b2n, b2w)
+  SELECT ?1, value ->> 0, value ->> 1, value ->> 2, value ->> 3, value ->> 4, value ->> 5, value ->> 6, value ->> 7, value ->> 8 FROM json_each(?2)`)
+  .bind(a, JSON.stringify(Object.entries(tot.cards).map(([id, v]) => [id, ...v]).concat([['_', tot.matches, 0, 0, 0, null, null, null, null]])));
+// Per player and deck: /top sums a week of these instead of re-reading the week's
+// matches, the stats count each deck's players from them
+const playerDays = (env, a, b, cond) => env.DB.prepare(`
+  INSERT OR REPLACE INTO player_days (start, tag, deck, n, w)
+  SELECT ?1, tag, deck, COUNT(*), SUM(w) FROM (
+    SELECT pa AS tag, da AS deck, ca > cb AS w FROM matches WHERE time >= ?1 AND time < ?2${cond ? ` AND ${cond}` : ''}
+    UNION ALL SELECT pb, db, cb > ca FROM matches WHERE time >= ?1 AND time < ?2${cond ? ` AND ${cond}` : ''})
+  GROUP BY tag, deck`).bind(a, b);
 
 // One season's stats for /season, and the list of seasons for /seasons
 async function buildSeason(env, now, season) {

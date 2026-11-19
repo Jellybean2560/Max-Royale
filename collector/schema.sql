@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS matches (
   sb   INTEGER,
   la   REAL,                   -- elixir leaked
   lb   REAL,
+  seen INTEGER,                -- when polling saved it (ms; null before 19 Nov 2026): a draft's cut (ALTER TABLE matches ADD COLUMN seen INTEGER)
   PRIMARY KEY (time, pa, pb)
 ) WITHOUT ROWID;
 

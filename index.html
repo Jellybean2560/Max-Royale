@@ -6856,11 +6856,39 @@ async function fetchMetaJSON(url, cacheKey) {
   return out;
 }
 
+// The collector's live health (/health): paused at its daily database limits, or
+// stopped. Asked when the Meta screen opens, at most every 5 min; kept in memory
+let _metaHealth = null, _metaHealthAt = 0;
+async function loadMetaHealth() {
+  if (Date.now() - _metaHealthAt < 5 * 60e3) return;
+  _metaHealthAt = Date.now();
+  try {
+    const res = await fetch(META_URL.replace(/\/meta$/, '/health'), { cache: 'no-cache' });
+    if (!res.ok) return;
+    const h = await res.json(), changed = h.status !== _metaHealth?.status;
+    _metaHealth = h;
+    if (changed && currentScreen === 'meta') drawMeta();
+  } catch(e) {}  // offline: no note
+}
+function metaHealthHTML() {
+  const h = _metaHealth;
+  if (!h || h.status === 'ok') return '';
+  const at = t => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const msg = {
+    writes: `⏸️ <b>Collection paused until ${at(h.resumes)}.</b> The collector reached its daily database write limit, so it stops reading battle logs until the limit resets. Logs hold a player's last 30 battles, so most of the games in between are picked up when it resumes.`,
+    reads: `⏳ <b>Stats update delayed.</b> The collector has used today's database reads, so the next update waits until after ${at(h.resumes)}. Matches are still being collected.`,
+    stalled: `⚠️ <b>Collection has stopped.</b> No battle logs read since ${h.polled_at ? metaStatsTime(h.polled_at) : 'a while'}. The stats below may be out of date.`,
+    paused: `⏸️ <b>Collection is paused.</b> The stats below are from ${h.stats_at ? metaStatsTime(h.stats_at) : 'the last run'}.`,
+  }[h.status];
+  return msg ? `<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--surface2);border-left:3px solid var(--accent);font-size:12px">${msg}</div>` : '';
+}
+
 async function renderMetaScreen() {
   const el = document.getElementById('meta-result');
   if (!_meta) {
     try { _meta = JSON.parse(localStorage.getItem(META_CACHE_KEY) || 'null'); } catch(e) {}
   }
+  loadMetaHealth();
   await maybeLoadCards();
   if (_meta?.data) drawMeta();
   else el.innerHTML = '<div class="spinner"></div>';
@@ -6936,6 +6964,7 @@ function drawMeta() {
       Ranked matches of the <b>global top 1,000</b> Path of Legends players, last ${m.window_days} days.
       <div style="margin-top:4px"><b>${fmtNum(m.matches)}</b> matches · stats from ${metaStatsTime(m.updated)}${young ? ` · collecting since ${dateOf(m.started)} (full week from ${dateOf(m.started + m.window_days * 864e5)})` : ''}</div>
       <div style="font-size:11px;color:var(--muted);margin-top:4px">${metaNextText(m)}</div>
+      ${metaHealthHTML()}
       ${P.season ? `<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--surface2);font-size:12px">📅 <b>${metaSeasonName(P.season.start)} season${P.season.end > Date.now() ? ' so far' : ''}</b> on ${view === 'decks' ? 'Decks' : 'Cards'}: ${fmtNum(P.season.matches)} matches, ${[...new Set([metaUtcDay(P.season.from), metaUtcDay(Math.min(P.season.to, P.season.end) - 1)])].join(' – ')}${P.season.from > P.season.start + 864e5 ? ` (collected from ${metaUtcDay(P.season.from)})` : ''}. Stats, Players and You stay on the last 7 days.</div>` : ''}
       ${m.board?.held ? `<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:var(--surface2);font-size:12px">🔄 <b>New season.</b> The leaderboard reset on ${dateOf(seasonStartOf(Date.now()))} and only ${fmtNum(m.board.size)} players are back in Ultimate Champion. Until it fills up, last season's top 1,000 are still followed — some now play in lower leagues — so these stats lean on games from before the reset.</div>` : ''}
     </div>
