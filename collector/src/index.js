@@ -128,7 +128,7 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
-    if (['/meta', '/top', '/history', '/counters'].includes(url.pathname)) {
+    if (['/meta', '/top', '/history', '/counters', '/war'].includes(url.pathname)) {
       const row = await env.DB.prepare(`SELECT v FROM state WHERE k = ?1`).bind(url.pathname.slice(1)).first();
       return new Response(row?.v || JSON.stringify({ empty: true }), { headers: { ...headers, 'Cache-Control': 'public, max-age=600' } });
     }
@@ -217,6 +217,7 @@ async function tick(env) {
   // The archive takes one finished period a run, oldest first (a backlog drains as the budget allows)
   if (+st.archive_to && periodEnd(+st.archive_to) <= now - ARCHIVE_LAG && now - (+st.archive_try_at || 0) > 10 * MINUTE && fits('archive') && fitsWrites('archive')) return run('archive', archivePeriod);
   if (due('prune', PRUNE_EVERY) && fitsWrites('prune')) return run('prune', prune);
+  if (due('war', WAR_EVERY) && fits('war')) return run('war', computeWar);
   // Near the day's write limit: wait for midnight UTC (a log polled late still has 30 battles)
   if (writesFull) return;
   return pollPlayers(env, now, st);
@@ -312,6 +313,27 @@ function warGames(b, t) {
   const ra = a.rounds, ro = o.rounds;
   if (Array.isArray(ra) && Array.isArray(ro) && ra.length && ra.length === ro.length) return ra.flatMap((r, i) => game(i + 1, r, ro[i]));
   return game(0, a, o);
+}
+
+// /war: every deck in the war games of the last WAR_DAYS, both sides (the
+// opponent's deck is a war deck too) — [key, games, wins, avg card level of the
+// players with it, of their opponents, different players], most played first
+const WAR_DAYS = 28, WAR_EVERY = 6 * HOUR, WAR_DECKS = 500;
+async function computeWar(env, now) {
+  const since = Math.floor((now - WAR_DAYS * DAY) / 1000);
+  const [decks, tot] = await env.DB.batch([
+    env.DB.prepare(`
+      WITH s AS (
+        SELECT da AS deck, pa AS p, ca > cb AS w, va AS v, vb AS o FROM war_games WHERE time >= ?1
+        UNION ALL SELECT db, pb, cb > ca, vb, va FROM war_games WHERE time >= ?1)
+      SELECT deck, COUNT(*) AS n, SUM(w) AS w, ROUND(AVG(v), 2) AS v, ROUND(AVG(o), 2) AS o, COUNT(DISTINCT p) AS p
+      FROM s GROUP BY deck ORDER BY n DESC LIMIT ?2`).bind(since, WAR_DECKS),
+    env.DB.prepare(`SELECT COUNT(*) AS n, MIN(time) AS first FROM war_games WHERE time >= ?1`).bind(since),
+  ]);
+  const t = tot.results[0] || {};
+  const war = { updated: now, next: now + WAR_EVERY, window_days: WAR_DAYS, games: t.n || 0, first: t.first ? t.first * 1000 : null,
+    decks: decks.results.map(r => [r.deck, r.n, r.w, r.v, r.o, r.p]) };
+  await countReads(env, 'war', now, rowsRead([decks, tot]), { war_at: now, war: JSON.stringify(war) }, 3);
 }
 
 async function pollPlayers(env, now, st) {
@@ -1004,7 +1026,7 @@ async function prune(env, now, st) {
 }
 
 async function getState(env) {
-  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top', 'history', 'counters', 'deck_days', 'season_list', 'rivals', 'war_duel_sample')`).all();
+  const { results } = await env.DB.prepare(`SELECT k, v FROM state WHERE k NOT IN ('meta', 'top', 'history', 'counters', 'deck_days', 'season_list', 'rivals', 'war_duel_sample', 'war')`).all();
   return Object.fromEntries(results.map(r => [r.k, r.v]));
 }
 async function setState(env, values) {

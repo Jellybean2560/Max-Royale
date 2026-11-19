@@ -8242,6 +8242,7 @@ function metaYouHTML(P) {
   }
   parts.push(metaUnlockHTML(P, data));
   parts.push(bestDecksForYouHTML(P, data, mine));
+  parts.push(warSetHTML(P, data));
   parts.push(counterPickHTML(P, data));
   parts.push(deckFinisherHTML(P));
   // Most-used top-player cards (all forms together) you own but haven't maxed
@@ -8590,6 +8591,110 @@ function bestDecksForYouHTML(P, data, mine) {
   return head + fits.map(({ d, gold, avg, missing }) => metaDeckItemHTML(d, P,
     `Your avg level ${avg.toFixed(1)} · ${gold ? `<span class="text-accent">${fmtNum(gold)} 💰</span> to get all to ${target}` : `<span class="text-green">all at ${target}+ ✓</span>`}`
     + (missing.length ? ` · <span class="text-red">no ${missing.map(c => `${c.form === 'evo' ? 'Evo' : 'Hero'} ${esc(c.name)}`).join(', ')}</span>` : ''))).join('');
+}
+
+// ── War deck set: 4 decks (River Race) or 3 (Duel) without a card in two of them ──
+// Candidates are decks from the collector's war games (/war: top players' River
+// Race battles and duels and their opponents', last 28 days, WAR_MIN_GAMES+) and,
+// while war games are few, the ranked top decks. Each scores its win rate pulled
+// toward 50% when games are few, minus WAR_LEVEL_PENALTY per level your cards sit
+// below the level it's usually played at (war has no level cap; ranked top decks
+// count as level 15), minus WAR_FORM_PENALTY per evolution / hero form you lack.
+// The set with the highest total is found by a pruned search over the best WAR_POOL.
+const META_WAR_URL = META_URL.replace(/\/meta$/, '/war'), META_WAR_CACHE_KEY = 'cr_meta_war_cache';
+const WAR_MIN_GAMES = 5, WAR_POOL = 80, WAR_LEVEL_PENALTY = 0.03, WAR_FORM_PENALTY = 0.01, WAR_RANKED_LEVEL = 15;
+let _metaWar = null, _metaWarLoading = false, _warSize = 4, _warSource = 'all';
+async function loadMetaWar() {
+  if (!_metaWar) {
+    try { _metaWar = JSON.parse(localStorage.getItem(META_WAR_CACHE_KEY) || 'null'); } catch(e) {}
+  }
+  if ((_metaWar?.data && !metaStale(_metaWar)) || _metaWarLoading) return;
+  _metaWarLoading = true;
+  try { _metaWar = await fetchMetaJSON(META_WAR_URL, META_WAR_CACHE_KEY); }
+  catch(e) { if (!_metaWar) _metaWar = { error: e.message }; }
+  finally {
+    _metaWarLoading = false;
+    if (currentScreen === 'meta' && _metaView === 'you') redrawMetaList();
+  }
+}
+function setWarSize(n) { _warSize = n; redrawMetaList(); }
+function setWarSource(v) { _warSource = v; redrawMetaList(); }
+// The best set of k decks with no card in common: depth-first over the candidates
+// (best score first), skipping any branch that can't beat the best set found
+function bestWarSet(cands, k) {
+  let best = null, bestScore = -Infinity;
+  const pick = [], used = new Set();
+  const go = (from, sum) => {
+    if (pick.length === k) { if (sum > bestScore) { bestScore = sum; best = pick.slice(); } return; }
+    for (let i = from; i < cands.length; i++) {
+      // the rest can at most add the next scores in order
+      let bound = sum;
+      for (let j = 0; j < k - pick.length && i + j < cands.length; j++) bound += cands[i + j].score;
+      if (bound <= bestScore) return;
+      const c = cands[i];
+      if (c.ids.some(id => used.has(id))) continue;
+      c.ids.forEach(id => used.add(id)); pick.push(c);
+      go(i + 1, sum + c.score);
+      pick.pop(); c.ids.forEach(id => used.delete(id));
+    }
+  };
+  go(0, 0);
+  return best;
+}
+function warSetHTML(P, data) {
+  if (!_metaWar?.data && !_metaWar?.error) loadMetaWar();
+  else if (_metaWar?.data && metaStale(_metaWar)) loadMetaWar();
+  const W = _metaWar?.data?.decks ? _metaWar.data : null;
+  const owned = Object.fromEntries((data.cards || []).map(c => [c.id, c]));
+  const lvl = pc => toDisplayLevel((pc.rarity || 'common').toLowerCase(), pc.level);
+  const cand = new Map();  // by card set (forms aside): the best-scoring version
+  const add = (key, n, w, level, src) => {
+    const cards = metaDeckCards(key);
+    if (cards.length !== 8 || !cards.every(c => owned[c.id])) return;
+    const mine = cards.reduce((sum, c) => sum + lvl(owned[c.id]), 0) / 8;
+    const missing = cards.filter(c => (c.form === 'evo' && !ownsEvo(owned[c.id])) || (c.form === 'hero' && !ownsHero(owned[c.id])));
+    const prior = src === 'war' ? 5 : 10;
+    const score = (w + prior) / (n + 2 * prior) - WAR_LEVEL_PENALTY * Math.max(0, (level || WAR_RANKED_LEVEL) - mine) - WAR_FORM_PENALTY * missing.length;
+    const set = cards.map(c => c.id).sort((a, b) => a - b).join();
+    const prev = cand.get(set);
+    if (prev && prev.score >= score) return;
+    cand.set(set, { key, cards, names: cards.map(c => c.name), ids: cards.map(c => c.id), n, w, rate: w / Math.max(n, 1), level, mine, missing, src, score });
+  };
+  (W?.decks || []).filter(d => d[1] >= WAR_MIN_GAMES).forEach(([key, n, w, v]) => add(key, n, w, v, 'war'));
+  const warCount = cand.size;
+  if (_warSource === 'all') P.decks.filter(d => d.n >= META_FIT_MIN_GAMES).forEach(d => add(d.key, d.n, d.w, null, 'ranked'));
+  const pool = [...cand.values()].sort((a, b) => b.score - a.score).slice(0, WAR_POOL);
+  const set = pool.length >= _warSize ? bestWarSet(pool, _warSize) : null;
+  const chip = (on, label, fn) => `<button class="filter-btn ${on ? 'active' : ''}" onclick="${fn}">${label}</button>`;
+  const art = buildCardArtMap([]);
+  const note = W
+    ? `${fmtNum(W.games)} war games collected${W.first ? ` since ${new Date(W.first).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}` : ''} — ${warCount} of their decks (${WAR_MIN_GAMES}+ games) use only cards you've unlocked.${_warSource === 'all' && warCount < 40 ? ' Until there are more, top ranked decks fill in.' : ''}`
+    : _metaWar?.data ? 'No war games collected yet — using top ranked decks.'
+    : _metaWar?.error ? `War games couldn't be loaded (${esc(_metaWar.error)}) — using top ranked decks.` : 'Loading war games…';
+  return `
+    <div class="card">
+      <h3 style="margin-bottom:6px">⚔️ War deck set</h3>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${_warSize} decks without a card in two of them, from your unlocked cards. Ranked by win rate (pulled toward 50% for decks with few games), minus ${Math.round(WAR_LEVEL_PENALTY * 100)} points per level your cards sit below the level the deck is usually played at — war has no level cap. ${note}</div>
+      <div class="filter-bar" style="margin-bottom:6px">
+        ${chip(_warSize === 4, 'River Race · 4', 'setWarSize(4)')}${chip(_warSize === 3, 'Duel · 3', 'setWarSize(3)')}
+      </div>
+      <div class="filter-bar" style="margin-bottom:10px">
+        ${chip(_warSource === 'all', 'War + ranked decks', "setWarSource('all')")}${chip(_warSource === 'war', 'War games only', "setWarSource('war')")}
+      </div>
+      ${!set ? `<div style="font-size:12px;color:var(--muted)">${pool.length < _warSize ? `Not enough decks you can build yet (${pool.length}).` : `No ${_warSize} decks without shared cards among the best ${pool.length}.`}${_warSource === 'war' ? ' Try War + ranked decks.' : ''}</div>`
+        : set.map((d, i) => {
+          const names = d.names.join(', '), wr = Math.round(d.rate * 100);
+          return `<div class="deck-item">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:6px"><b style="color:var(--text)">Deck ${i + 1}</b> · ${d.src === 'war' ? `war: ${fmtNum(d.n)} games, usually at level ${d.level?.toFixed(1) ?? '?'}` : `ranked top decks: ${fmtNum(d.n)} games`} · <span class="${wr >= 50 ? 'text-green' : 'text-red'}">${wr}%</span> · your avg level ${d.mine.toFixed(1)}${d.missing.length ? ` · <span class="text-red">no ${d.missing.map(c => `${c.form === 'evo' ? 'Evo' : 'Hero'} ${esc(c.name)}`).join(', ')}</span>` : ''}</div>
+            <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:3px">${d.cards.map(c => deckTileHTML(c.name, c.form, art[c.name], 'deck-list-tile')).join('')}</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;margin-top:8px">
+              <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="copyDeckLink('${esc(names)}', this)">📋 Copy Deck</button>
+              <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;padding:6px 8px;justify-content:center" onclick="upgradeDeck('${esc(names)}')">💰 Upgrade Cost</button>
+              ${starBtnHTML(d.cards.map(c => ({ name: c.name, form: c.form })), `War set · ${wr}% win rate`)}
+            </div>
+          </div>`;
+        }).join('')}
+    </div>`;
 }
 
 // ── Players: the global top 1,000 with each one's most played ranked deck ──
